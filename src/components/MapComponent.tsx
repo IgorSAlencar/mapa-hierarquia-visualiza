@@ -49,10 +49,8 @@ const MapComponent: React.FC<MapComponentProps> = ({ selectedHierarchy, municipi
           description: "MapBox inicializado com sucesso.",
         });
 
-        if (selectedHierarchy && municipios.length > 0) {
-          console.log('📍 Adicionando polígonos...');
-          addMunicipalityPolygons();
-        }
+        // Sempre adicionar o Brasil por padrão
+        addMunicipalityPolygons();
       });
 
       map.current.on('error', (e) => {
@@ -131,20 +129,25 @@ const MapComponent: React.FC<MapComponentProps> = ({ selectedHierarchy, municipi
 
       const activeCodes = municipios.map(m => municipioToUF[m]).filter(Boolean);
 
+      // Filtro: mostrar Brasil inteiro se não há municípios específicos, senão apenas UFs selecionadas
+      const filter = activeCodes.length > 0 
+        ? [
+            'all',
+            ['==', ['get', 'iso_3166_1'], 'BR'],
+            ['in', ['get', 'iso_3166_2'], ['literal', activeCodes]]
+          ]
+        : ['==', ['get', 'iso_3166_1'], 'BR'];
+
       // Adicionar camada de preenchimento com filtro
       map.current.addLayer({
         id: 'municipios-fill',
         type: 'fill',
         source: 'municipios',
         'source-layer': 'country_boundaries',
-        filter: [
-          'all',
-          ['==', ['get', 'iso_3166_1'], 'BR'],
-          ['in', ['get', 'iso_3166_2'], ['literal', activeCodes]]
-        ],
+        filter: filter,
         paint: {
           'fill-color': selectedColor,
-          'fill-opacity': 0.6
+          'fill-opacity': activeCodes.length > 0 ? 0.6 : 0.3
         }
       });
 
@@ -154,49 +157,47 @@ const MapComponent: React.FC<MapComponentProps> = ({ selectedHierarchy, municipi
         type: 'line',
         source: 'municipios',
         'source-layer': 'country_boundaries',
-        filter: [
-          'all',
-          ['==', ['get', 'iso_3166_1'], 'BR'],
-          ['in', ['get', 'iso_3166_2'], ['literal', activeCodes]]
-        ],
+        filter: filter,
         paint: {
           'line-color': selectedColor,
-          'line-width': 2,
+          'line-width': activeCodes.length > 0 ? 2 : 1,
           'line-opacity': 1
         }
       });
 
-      // Adicionar camada de hover
-      map.current.addLayer({
-        id: 'municipios-hover',
-        type: 'fill',
-        source: 'municipios',
-        'source-layer': 'country_boundaries',
-        filter: ['==', ['get', 'iso_3166_2'], ''],
-        paint: {
-          'fill-color': selectedColor,
-          'fill-opacity': 0.8
-        }
-      });
-
-      // Adicionar interações de hover
-      map.current.on('mousemove', 'municipios-fill', (e) => {
-        if (e.features && e.features.length > 0) {
-          map.current!.getCanvas().style.cursor = 'pointer';
-          
-          const feature = e.features[0];
-          const hoveredUF = feature.properties?.iso_3166_2;
-          
-          if (hoveredUF) {
-            map.current!.setFilter('municipios-hover', ['==', ['get', 'iso_3166_2'], hoveredUF]);
+      // Adicionar camada de hover apenas se há UFs específicas
+      if (activeCodes.length > 0) {
+        map.current.addLayer({
+          id: 'municipios-hover',
+          type: 'fill',
+          source: 'municipios',
+          'source-layer': 'country_boundaries',
+          filter: ['==', ['get', 'iso_3166_2'], ''],
+          paint: {
+            'fill-color': selectedColor,
+            'fill-opacity': 0.8
           }
-        }
-      });
+        });
 
-      map.current.on('mouseleave', 'municipios-fill', () => {
-        map.current!.getCanvas().style.cursor = '';
-        map.current!.setFilter('municipios-hover', ['==', ['get', 'iso_3166_2'], '']);
-      });
+        // Adicionar interações de hover
+        map.current.on('mousemove', 'municipios-fill', (e) => {
+          if (e.features && e.features.length > 0) {
+            map.current!.getCanvas().style.cursor = 'pointer';
+            
+            const feature = e.features[0];
+            const hoveredUF = feature.properties?.iso_3166_2;
+            
+            if (hoveredUF) {
+              map.current!.setFilter('municipios-hover', ['==', ['get', 'iso_3166_2'], hoveredUF]);
+            }
+          }
+        });
+
+        map.current.on('mouseleave', 'municipios-fill', () => {
+          map.current!.getCanvas().style.cursor = '';
+          map.current!.setFilter('municipios-hover', ['==', ['get', 'iso_3166_2'], '']);
+        });
+      }
 
       console.log('✅ Choropleth adicionado com sucesso!');
     } catch (error) {
@@ -223,7 +224,7 @@ const MapComponent: React.FC<MapComponentProps> = ({ selectedHierarchy, municipi
           console.log('Camadas não existiam, continuando...');
         }
         
-        if (selectedHierarchy && municipios.length > 0) {
+        if (selectedHierarchy) {
           addMunicipalityPolygons();
         }
       };
@@ -255,10 +256,12 @@ const MapComponent: React.FC<MapComponentProps> = ({ selectedHierarchy, municipi
               className="w-3 h-3 rounded-full" 
               style={{ backgroundColor: `hsl(var(--hierarchy-${(parseInt(selectedHierarchy) % 5) + 1}))` }}
             />
-            <span className="text-sm font-medium">Hierarquia {selectedHierarchy}</span>
+            <span className="text-sm font-medium">
+              {municipios.length > 0 ? `Hierarquia ${selectedHierarchy}` : 'Brasil'}
+            </span>
           </div>
           <p className="text-xs text-muted-foreground mt-1">
-            {municipios.length} município(s) atendido(s)
+            {municipios.length > 0 ? `${municipios.length} município(s) atendido(s)` : 'País destacado'}
           </p>
         </div>
       )}
