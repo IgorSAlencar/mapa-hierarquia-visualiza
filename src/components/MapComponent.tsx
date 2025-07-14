@@ -172,13 +172,25 @@ const MapComponent: React.FC<MapComponentProps> = ({ selectedHierarchy, municipi
       data: geojsonData
     });
 
+    // Cores baseadas na hierarquia
+    const hierarchyColors = [
+      '#3b82f6', // blue-500
+      '#10b981', // emerald-500  
+      '#f59e0b', // amber-500
+      '#ef4444', // red-500
+      '#8b5cf6', // violet-500
+    ];
+    
+    const colorIndex = parseInt(selectedHierarchy || '1') % hierarchyColors.length;
+    const selectedColor = hierarchyColors[colorIndex];
+
     // Adicionar camada de preenchimento
     map.current.addLayer({
       id: 'municipios-fill',
       type: 'fill',
       source: 'municipios',
       paint: {
-        'fill-color': `hsl(var(--hierarchy-${(parseInt(selectedHierarchy || '1') % 5) + 1}))`,
+        'fill-color': selectedColor,
         'fill-opacity': 0.3
       }
     });
@@ -189,7 +201,7 @@ const MapComponent: React.FC<MapComponentProps> = ({ selectedHierarchy, municipi
       type: 'line',
       source: 'municipios',
       paint: {
-        'line-color': `hsl(var(--hierarchy-${(parseInt(selectedHierarchy || '1') % 5) + 1}))`,
+        'line-color': selectedColor,
         'line-width': 2,
         'line-opacity': 0.8
       }
