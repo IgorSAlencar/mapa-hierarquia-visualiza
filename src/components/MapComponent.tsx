@@ -1,11 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
 import mapboxgl from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
-import { Card } from '@/components/ui/card';
-import { Input } from '@/components/ui/input';
-import { Button } from '@/components/ui/button';
-import { MapPin, Search, Loader2 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
+import { MAPBOX_CONFIG } from '@/lib/mapbox-config';
 
 interface MapComponentProps {
   selectedHierarchy: string | null;
@@ -15,9 +12,6 @@ interface MapComponentProps {
 const MapComponent: React.FC<MapComponentProps> = ({ selectedHierarchy, municipios }) => {
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<mapboxgl.Map | null>(null);
-  const [mapboxToken, setMapboxToken] = useState<string>('');
-  const [isTokenSet, setIsTokenSet] = useState(false);
-  const [isLoading, setIsLoading] = useState(false);
   const { toast } = useToast();
 
   const initializeMap = async () => {
@@ -31,19 +25,18 @@ const MapComponent: React.FC<MapComponentProps> = ({ selectedHierarchy, municipi
 
     try {
       // Configurar token antes de qualquer operação
-      const token = 'pk.eyJ1IjoiaWdyYWxlbmNhciIsImEiOiJjbWFpN3VhbDIwZWh2MnJxNDEycG1haHZpIn0.IPFXEakhJ0tprRmq4JEn_w';
       console.log('🔑 Configurando token do MapBox...');
-      mapboxgl.accessToken = token;
+      mapboxgl.accessToken = MAPBOX_CONFIG.accessToken;
       
       console.log('🗺️ Criando instância do mapa...');
       map.current = new mapboxgl.Map({
         container: mapContainer.current,
-        style: 'mapbox://styles/mapbox/light-v11',
-        center: [-54.0, -14.0], // Centro do Brasil
-        zoom: 4,
-        minZoom: 3,
-        maxZoom: 8,
-        maxBounds: [[-75, -35], [-30, 10]] // Limita visualização ao Brasil
+        style: MAPBOX_CONFIG.defaultStyle,
+        center: MAPBOX_CONFIG.center,
+        zoom: MAPBOX_CONFIG.zoom.initial,
+        minZoom: MAPBOX_CONFIG.zoom.min,
+        maxZoom: MAPBOX_CONFIG.zoom.max,
+        maxBounds: MAPBOX_CONFIG.bounds.brazil
       });
 
       console.log('⚙️ Adicionando controles de navegação...');
@@ -211,27 +204,9 @@ const MapComponent: React.FC<MapComponentProps> = ({ selectedHierarchy, municipi
     }
   };
 
-  const handleTokenSubmit = async () => {
-    console.log('🔘 Botão clicado - iniciando processo...');
-    
-    if (!mapboxToken.trim()) {
-      console.log('⚠️ Token vazio detectado');
-      toast({
-        title: "Token requerido",
-        description: "Por favor, insira seu token público do MapBox.",
-        variant: "destructive"
-      });
-      return;
-    }
-    
-    console.log('🔄 Validando token e preparando mapa...');
-    setIsLoading(true);
-    setIsTokenSet(true);
-    setIsLoading(false);
-  };
 
   useEffect(() => {
-    if (isTokenSet && map.current && map.current.isStyleLoaded()) {
+    if (map.current && map.current.isStyleLoaded()) {
       // Aguardar carregamento completo antes de manipular camadas
       const updatePolygons = () => {
         try {
@@ -255,56 +230,20 @@ const MapComponent: React.FC<MapComponentProps> = ({ selectedHierarchy, municipi
 
       updatePolygons();
     }
-  }, [selectedHierarchy, municipios, isTokenSet]);
+  }, [selectedHierarchy, municipios]);
 
   // Inicializar mapa após container estar disponível
   useEffect(() => {
-    if (isTokenSet && mapContainer.current && !map.current) {
+    if (mapContainer.current && !map.current) {
       initializeMap();
     }
-  }, [isTokenSet]);
+  }, []);
 
   useEffect(() => {
     return () => {
       map.current?.remove();
     };
   }, []);
-
-  if (!isTokenSet) {
-    return (
-      <Card className="h-full flex items-center justify-center p-8">
-        <div className="text-center max-w-md space-y-4">
-          <MapPin className="h-12 w-12 mx-auto text-map-primary" />
-          <h3 className="text-lg font-semibold">Configure o MapBox</h3>
-          <p className="text-sm text-muted-foreground">
-            Insira seu token público do MapBox para visualizar o mapa.
-            Obtenha em: <a href="https://mapbox.com" target="_blank" rel="noopener noreferrer" className="text-map-primary hover:underline">mapbox.com</a>
-          </p>
-          <div className="space-y-2">
-            <Input
-              type="password"
-              placeholder="pk.eyJ1IjoieW91ci11c2VybmFtZSI..."
-              value={mapboxToken}
-              onChange={(e) => setMapboxToken(e.target.value)}
-              className="w-full"
-            />
-            <Button 
-              onClick={handleTokenSubmit} 
-              disabled={isLoading}
-              className="w-full"
-            >
-              {isLoading ? (
-                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-              ) : (
-                <Search className="h-4 w-4 mr-2" />
-              )}
-              {isLoading ? 'Carregando...' : 'Carregar Mapa'}
-            </Button>
-          </div>
-        </div>
-      </Card>
-    );
-  }
 
   return (
     <div className="relative h-full rounded-lg overflow-hidden">
