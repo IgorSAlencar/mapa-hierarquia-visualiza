@@ -84,7 +84,7 @@ const MapComponent: React.FC<MapComponentProps> = ({ selectedHierarchy, municipi
   const addMunicipalityPolygons = () => {
     if (!map.current || !map.current.isStyleLoaded()) return;
 
-    // Aguardar o mapa estar completamente carregado
+    // Remover camadas existentes
     const removeExistingLayers = () => {
       try {
         if (map.current?.getLayer('municipios-fill')) {
@@ -92,6 +92,9 @@ const MapComponent: React.FC<MapComponentProps> = ({ selectedHierarchy, municipi
         }
         if (map.current?.getLayer('municipios-line')) {
           map.current.removeLayer('municipios-line');
+        }
+        if (map.current?.getLayer('municipios-hover')) {
+          map.current.removeLayer('municipios-hover');
         }
         if (map.current?.getSource('municipios')) {
           map.current.removeSource('municipios');
@@ -103,95 +106,52 @@ const MapComponent: React.FC<MapComponentProps> = ({ selectedHierarchy, municipi
 
     removeExistingLayers();
 
-    // Dados simplificados dos UFs brasileiros
-    const ufPolygons: { [key: string]: any } = {
-      'São Paulo': {
-        type: 'Feature',
-        properties: { name: 'São Paulo', code: 'SP' },
-        geometry: {
-          type: 'Polygon',
-          coordinates: [[
-            [-50.5, -19.5], [-44.0, -19.5], [-44.0, -25.5], [-50.5, -25.5], [-50.5, -19.5]
-          ]]
-        }
-      },
-      'Rio de Janeiro': {
-        type: 'Feature',
-        properties: { name: 'Rio de Janeiro', code: 'RJ' },
-        geometry: {
-          type: 'Polygon',
-          coordinates: [[
-            [-45.0, -20.5], [-40.5, -20.5], [-40.5, -23.5], [-45.0, -23.5], [-45.0, -20.5]
-          ]]
-        }
-      },
-      'Belo Horizonte': {
-        type: 'Feature',
-        properties: { name: 'Minas Gerais', code: 'MG' },
-        geometry: {
-          type: 'Polygon',
-          coordinates: [[
-            [-51.0, -14.0], [-39.5, -14.0], [-39.5, -22.5], [-51.0, -22.5], [-51.0, -14.0]
-          ]]
-        }
-      },
-      'Salvador': {
-        type: 'Feature',
-        properties: { name: 'Bahia', code: 'BA' },
-        geometry: {
-          type: 'Polygon',
-          coordinates: [[
-            [-47.5, -8.5], [-37.0, -8.5], [-37.0, -18.5], [-47.5, -18.5], [-47.5, -8.5]
-          ]]
-        }
-      },
-      'Porto Alegre': {
-        type: 'Feature',
-        properties: { name: 'Rio Grande do Sul', code: 'RS' },
-        geometry: {
-          type: 'Polygon',
-          coordinates: [[
-            [-57.5, -27.0], [-49.5, -27.0], [-49.5, -33.5], [-57.5, -33.5], [-57.5, -27.0]
-          ]]
-        }
-      }
-    };
-
-    // Criar GeoJSON com os municípios atendidos
-    const features = municipios
-      .filter(municipio => ufPolygons[municipio])
-      .map(municipio => ufPolygons[municipio]);
-
-    if (features.length === 0) return;
-
-    const geojsonData = {
-      type: 'FeatureCollection' as const,
-      features: features
-    };
-
-    // Cores baseadas na hierarquia
-    const hierarchyColors = [
-      '#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6'
-    ];
-    
-    const colorIndex = parseInt(selectedHierarchy || '1') % hierarchyColors.length;
-    const selectedColor = hierarchyColors[colorIndex];
-
+    // Usar dados reais do Brasil via tileset do MapBox
     try {
-      // Adicionar fonte de dados
+      // Adicionar fonte de dados dos estados brasileiros
       map.current.addSource('municipios', {
-        type: 'geojson',
-        data: geojsonData
+        type: 'vector',
+        url: 'mapbox://mapbox.country-boundaries-v1'
       });
 
-      // Adicionar camada de preenchimento
+      // Cores da hierarquia
+      const hierarchyColors = [
+        '#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6'
+      ];
+      
+      const colorIndex = parseInt(selectedHierarchy || '1') % hierarchyColors.length;
+      const selectedColor = hierarchyColors[colorIndex];
+
+      // Mapear municípios para códigos de UF
+      const municipioToUF: { [key: string]: string } = {
+        'São Paulo': 'SP',
+        'Rio de Janeiro': 'RJ',
+        'Belo Horizonte': 'MG',
+        'Salvador': 'BA',
+        'Porto Alegre': 'RS',
+        'Fortaleza': 'CE',
+        'Brasília': 'DF',
+        'Curitiba': 'PR',
+        'Recife': 'PE',
+        'Manaus': 'AM'
+      };
+
+      const activeCodes = municipios.map(m => municipioToUF[m]).filter(Boolean);
+
+      // Adicionar camada de preenchimento com filtro
       map.current.addLayer({
         id: 'municipios-fill',
         type: 'fill',
         source: 'municipios',
+        'source-layer': 'country_boundaries',
+        filter: [
+          'all',
+          ['==', ['get', 'iso_3166_1'], 'BR'],
+          ['in', ['get', 'iso_3166_2'], ['literal', activeCodes]]
+        ],
         paint: {
           'fill-color': selectedColor,
-          'fill-opacity': 0.3
+          'fill-opacity': 0.6
         }
       });
 
@@ -200,16 +160,54 @@ const MapComponent: React.FC<MapComponentProps> = ({ selectedHierarchy, municipi
         id: 'municipios-line',
         type: 'line',
         source: 'municipios',
+        'source-layer': 'country_boundaries',
+        filter: [
+          'all',
+          ['==', ['get', 'iso_3166_1'], 'BR'],
+          ['in', ['get', 'iso_3166_2'], ['literal', activeCodes]]
+        ],
         paint: {
           'line-color': selectedColor,
           'line-width': 2,
-          'line-opacity': 0.8
+          'line-opacity': 1
         }
       });
 
-      console.log('✅ Polígonos adicionados com sucesso!');
+      // Adicionar camada de hover
+      map.current.addLayer({
+        id: 'municipios-hover',
+        type: 'fill',
+        source: 'municipios',
+        'source-layer': 'country_boundaries',
+        filter: ['==', ['get', 'iso_3166_2'], ''],
+        paint: {
+          'fill-color': selectedColor,
+          'fill-opacity': 0.8
+        }
+      });
+
+      // Adicionar interações de hover
+      map.current.on('mousemove', 'municipios-fill', (e) => {
+        if (e.features && e.features.length > 0) {
+          map.current!.getCanvas().style.cursor = 'pointer';
+          
+          const feature = e.features[0];
+          const hoveredUF = feature.properties?.iso_3166_2;
+          
+          if (hoveredUF) {
+            map.current!.setFilter('municipios-hover', ['==', ['get', 'iso_3166_2'], hoveredUF]);
+          }
+        }
+      });
+
+      map.current.on('mouseleave', 'municipios-fill', () => {
+        map.current!.getCanvas().style.cursor = '';
+        map.current!.setFilter('municipios-hover', ['==', ['get', 'iso_3166_2'], '']);
+      });
+
+      console.log('✅ Choropleth adicionado com sucesso!');
     } catch (error) {
-      console.error('❌ Erro ao adicionar camadas:', error);
+      console.error('❌ Erro ao adicionar choropleth:', error);
     }
   };
 
