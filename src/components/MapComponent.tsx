@@ -38,9 +38,12 @@ const MapComponent: React.FC<MapComponentProps> = ({ selectedHierarchy, municipi
       console.log('🗺️ Criando instância do mapa...');
       map.current = new mapboxgl.Map({
         container: mapContainer.current,
-        style: 'mapbox://styles/mapbox/streets-v12',
-        center: [-47.9292, -15.7801],
-        zoom: 4.5
+        style: 'mapbox://styles/mapbox/light-v11',
+        center: [-54.0, -14.0], // Centro do Brasil
+        zoom: 4,
+        minZoom: 3,
+        maxZoom: 8,
+        maxBounds: [[-75, -35], [-30, 10]] // Limita visualização ao Brasil
       });
 
       console.log('⚙️ Adicionando controles de navegação...');
