@@ -82,112 +82,135 @@ const MapComponent: React.FC<MapComponentProps> = ({ selectedHierarchy, municipi
   };
 
   const addMunicipalityPolygons = () => {
-    if (!map.current) return;
+    if (!map.current || !map.current.isStyleLoaded()) return;
 
-    // Remover camadas existentes se houver
-    if (map.current.getLayer('municipios-fill')) {
-      map.current.removeLayer('municipios-fill');
-    }
-    if (map.current.getLayer('municipios-line')) {
-      map.current.removeLayer('municipios-line');
-    }
-    if (map.current.getSource('municipios')) {
-      map.current.removeSource('municipios');
-    }
-
-    // Mapeamento dos municípios para códigos IBGE dos UFs
-    const municipioToUFCode: { [key: string]: string } = {
-      'São Paulo': '35',
-      'Rio de Janeiro': '33', 
-      'Belo Horizonte': '31',
-      'Salvador': '29',
-      'Fortaleza': '23',
-      'Brasília': '53',
-      'Curitiba': '41',
-      'Recife': '26',
-      'Porto Alegre': '43',
-      'Manaus': '13'
+    // Aguardar o mapa estar completamente carregado
+    const removeExistingLayers = () => {
+      try {
+        if (map.current?.getLayer('municipios-fill')) {
+          map.current.removeLayer('municipios-fill');
+        }
+        if (map.current?.getLayer('municipios-line')) {
+          map.current.removeLayer('municipios-line');
+        }
+        if (map.current?.getSource('municipios')) {
+          map.current.removeSource('municipios');
+        }
+      } catch (error) {
+        console.log('Camadas não existiam, continuando...');
+      }
     };
 
-    // Obter códigos dos UFs atendidos
-    const ufsAtendidos = municipios
-      .map(municipio => municipioToUFCode[municipio])
-      .filter(uf => uf);
+    removeExistingLayers();
 
-    if (ufsAtendidos.length === 0) return;
+    // Dados simplificados dos UFs brasileiros
+    const ufPolygons: { [key: string]: any } = {
+      'São Paulo': {
+        type: 'Feature',
+        properties: { name: 'São Paulo', code: 'SP' },
+        geometry: {
+          type: 'Polygon',
+          coordinates: [[
+            [-50.5, -19.5], [-44.0, -19.5], [-44.0, -25.5], [-50.5, -25.5], [-50.5, -19.5]
+          ]]
+        }
+      },
+      'Rio de Janeiro': {
+        type: 'Feature',
+        properties: { name: 'Rio de Janeiro', code: 'RJ' },
+        geometry: {
+          type: 'Polygon',
+          coordinates: [[
+            [-45.0, -20.5], [-40.5, -20.5], [-40.5, -23.5], [-45.0, -23.5], [-45.0, -20.5]
+          ]]
+        }
+      },
+      'Belo Horizonte': {
+        type: 'Feature',
+        properties: { name: 'Minas Gerais', code: 'MG' },
+        geometry: {
+          type: 'Polygon',
+          coordinates: [[
+            [-51.0, -14.0], [-39.5, -14.0], [-39.5, -22.5], [-51.0, -22.5], [-51.0, -14.0]
+          ]]
+        }
+      },
+      'Salvador': {
+        type: 'Feature',
+        properties: { name: 'Bahia', code: 'BA' },
+        geometry: {
+          type: 'Polygon',
+          coordinates: [[
+            [-47.5, -8.5], [-37.0, -8.5], [-37.0, -18.5], [-47.5, -18.5], [-47.5, -8.5]
+          ]]
+        }
+      },
+      'Porto Alegre': {
+        type: 'Feature',
+        properties: { name: 'Rio Grande do Sul', code: 'RS' },
+        geometry: {
+          type: 'Polygon',
+          coordinates: [[
+            [-57.5, -27.0], [-49.5, -27.0], [-49.5, -33.5], [-57.5, -33.5], [-57.5, -27.0]
+          ]]
+        }
+      }
+    };
 
-    console.log('📍 Usando dados nativos do MapBox para UFs:', ufsAtendidos);
+    // Criar GeoJSON com os municípios atendidos
+    const features = municipios
+      .filter(municipio => ufPolygons[municipio])
+      .map(municipio => ufPolygons[municipio]);
+
+    if (features.length === 0) return;
+
+    const geojsonData = {
+      type: 'FeatureCollection' as const,
+      features: features
+    };
 
     // Cores baseadas na hierarquia
     const hierarchyColors = [
-      '#3b82f6', // blue-500
-      '#10b981', // emerald-500  
-      '#f59e0b', // amber-500
-      '#ef4444', // red-500
-      '#8b5cf6', // violet-500
+      '#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6'
     ];
     
     const colorIndex = parseInt(selectedHierarchy || '1') % hierarchyColors.length;
     const selectedColor = hierarchyColors[colorIndex];
 
-    // Usar fonte de dados administrativa nativa do MapBox
-    map.current.addSource('municipios', {
-      type: 'vector',
-      url: 'mapbox://mapbox.boundaries-adm1-v3'
-    });
+    try {
+      // Adicionar fonte de dados
+      map.current.addSource('municipios', {
+        type: 'geojson',
+        data: geojsonData
+      });
 
-    // Adicionar camada de preenchimento com filtro para UFs brasileiros
-    map.current.addLayer({
-      id: 'municipios-fill',
-      type: 'fill',
-      source: 'municipios',
-      'source-layer': 'boundaries_admin_1',
-      filter: [
-        'all',
-        ['==', ['get', 'iso_3166_1'], 'BR'],
-        ['in', ['get', 'iso_3166_2'], ['literal', ufsAtendidos.map(uf => `BR-${uf}`)]]
-      ],
-      paint: {
-        'fill-color': selectedColor,
-        'fill-opacity': 0.3
-      }
-    });
+      // Adicionar camada de preenchimento
+      map.current.addLayer({
+        id: 'municipios-fill',
+        type: 'fill',
+        source: 'municipios',
+        paint: {
+          'fill-color': selectedColor,
+          'fill-opacity': 0.3
+        }
+      });
 
-    // Adicionar camada de contorno
-    map.current.addLayer({
-      id: 'municipios-line',
-      type: 'line',
-      source: 'municipios',
-      'source-layer': 'boundaries_admin_1',
-      filter: [
-        'all',
-        ['==', ['get', 'iso_3166_1'], 'BR'],
-        ['in', ['get', 'iso_3166_2'], ['literal', ufsAtendidos.map(uf => `BR-${uf}`)]]
-      ],
-      paint: {
-        'line-color': selectedColor,
-        'line-width': 2,
-        'line-opacity': 0.8
-      }
-    });
+      // Adicionar camada de contorno
+      map.current.addLayer({
+        id: 'municipios-line',
+        type: 'line',
+        source: 'municipios',
+        paint: {
+          'line-color': selectedColor,
+          'line-width': 2,
+          'line-opacity': 0.8
+        }
+      });
 
-    // Adicionar popup ao clicar
-    map.current.on('click', 'municipios-fill', (e) => {
-      if (e.features && e.features[0]) {
-        const feature = e.features[0];
-        new mapboxgl.Popup()
-          .setLngLat(e.lngLat)
-          .setHTML(`
-            <div class="p-2">
-              <h3 class="font-medium text-sm">${feature.properties?.name_pt || feature.properties?.name}</h3>
-              <p class="text-xs text-muted-foreground">Hierarquia: ${selectedHierarchy}</p>
-            </div>
-          `)
-          .addTo(map.current!);
-      }
-    });
-
-    console.log('✅ Choropleth nativo do MapBox carregado!');
+      console.log('✅ Polígonos adicionados com sucesso!');
+    } catch (error) {
+      console.error('❌ Erro ao adicionar camadas:', error);
+    }
   };
 
   const handleTokenSubmit = async () => {
@@ -210,21 +233,29 @@ const MapComponent: React.FC<MapComponentProps> = ({ selectedHierarchy, municipi
   };
 
   useEffect(() => {
-    if (isTokenSet && map.current) {
-      // Limpar camadas existentes se houver
-      if (map.current.getLayer('municipios-fill')) {
-        map.current.removeLayer('municipios-fill');
-      }
-      if (map.current.getLayer('municipios-line')) {
-        map.current.removeLayer('municipios-line');
-      }
-      if (map.current.getSource('municipios')) {
-        map.current.removeSource('municipios');
-      }
-      
-      if (selectedHierarchy && municipios.length > 0) {
-        addMunicipalityPolygons();
-      }
+    if (isTokenSet && map.current && map.current.isStyleLoaded()) {
+      // Aguardar carregamento completo antes de manipular camadas
+      const updatePolygons = () => {
+        try {
+          if (map.current?.getLayer('municipios-fill')) {
+            map.current.removeLayer('municipios-fill');
+          }
+          if (map.current?.getLayer('municipios-line')) {
+            map.current.removeLayer('municipios-line');
+          }
+          if (map.current?.getSource('municipios')) {
+            map.current.removeSource('municipios');
+          }
+        } catch (error) {
+          console.log('Camadas não existiam, continuando...');
+        }
+        
+        if (selectedHierarchy && municipios.length > 0) {
+          addMunicipalityPolygons();
+        }
+      };
+
+      updatePolygons();
     }
   }, [selectedHierarchy, municipios, isTokenSet]);
 
