@@ -22,58 +22,48 @@ const MapComponent: React.FC<MapComponentProps> = ({ selectedHierarchy, municipi
 
   const initializeMap = async () => {
     console.log('🚀 Iniciando inicialização do mapa...');
-    console.log('📍 Token fornecido:', mapboxToken ? 'Token presente' : 'Token ausente');
     console.log('📦 Container disponível:', mapContainer.current ? 'Sim' : 'Não');
     
-    if (!mapContainer.current || !mapboxToken) {
-      console.error('❌ Pré-condições não atendidas para inicializar mapa');
+    if (!mapContainer.current) {
+      console.error('❌ Container não disponível para inicializar mapa');
       return;
     }
 
     try {
+      // Configurar token antes de qualquer operação
+      const token = 'pk.eyJ1IjoiaWdyYWxlbmNhciIsImEiOiJjbWFpN3VhbDIwZWh2MnJxNDEycG1haHZpIn0.IPFXEakhJ0tprRmq4JEn_w';
       console.log('🔑 Configurando token do MapBox...');
-      mapboxgl.accessToken = mapboxToken;
+      mapboxgl.accessToken = token;
       
       console.log('🗺️ Criando instância do mapa...');
       map.current = new mapboxgl.Map({
         container: mapContainer.current,
-        style: 'mapbox://styles/mapbox/light-v11',
-        center: [-47.9292, -15.7801], // Brasília centro
-        zoom: 4.5,
-        projection: 'mercator'
+        style: 'mapbox://styles/mapbox/streets-v12',
+        center: [-47.9292, -15.7801],
+        zoom: 4.5
       });
 
       console.log('⚙️ Adicionando controles de navegação...');
-      // Adicionar controles de navegação
-      map.current.addControl(
-        new mapboxgl.NavigationControl({
-          visualizePitch: true,
-        }),
-        'top-right'
-      );
+      map.current.addControl(new mapboxgl.NavigationControl(), 'top-right');
 
-      // Aguardar o mapa carregar completamente
       map.current.on('load', () => {
         console.log('✅ Mapa carregado com sucesso!');
-        setIsTokenSet(true);
         toast({
           title: "Mapa carregado!",
           description: "MapBox inicializado com sucesso.",
         });
 
-        // Adicionar marcadores se necessário
         if (selectedHierarchy && municipios.length > 0) {
           console.log('📍 Adicionando marcadores...');
           addMunicipalityMarkers();
         }
       });
 
-      // Tratamento de erros
       map.current.on('error', (e) => {
         console.error('❌ Erro no MapBox:', e);
         toast({
           title: "Erro no mapa",
-          description: "Verifique se o token está correto. Erro: " + e.error?.message,
+          description: "Erro ao carregar o mapa: " + (e.error?.message || 'Erro desconhecido'),
           variant: "destructive"
         });
       });
@@ -82,7 +72,7 @@ const MapComponent: React.FC<MapComponentProps> = ({ selectedHierarchy, municipi
       console.error('❌ Erro ao inicializar mapa:', error);
       toast({
         title: "Erro de inicialização",
-        description: "Falha ao inicializar o MapBox. Verifique o token.",
+        description: "Falha ao inicializar o MapBox.",
         variant: "destructive"
       });
     }
