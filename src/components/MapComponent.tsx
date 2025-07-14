@@ -57,8 +57,8 @@ const MapComponent: React.FC<MapComponentProps> = ({ selectedHierarchy, municipi
         });
 
         if (selectedHierarchy && municipios.length > 0) {
-          console.log('📍 Adicionando marcadores...');
-          addMunicipalityMarkers();
+          console.log('📍 Adicionando polígonos...');
+          addMunicipalityPolygons();
         }
       });
 
@@ -81,68 +81,145 @@ const MapComponent: React.FC<MapComponentProps> = ({ selectedHierarchy, municipi
     }
   };
 
-  const addMunicipalityMarkers = () => {
+  const addMunicipalityPolygons = () => {
     if (!map.current) return;
 
-    // Coordenadas de exemplo para alguns municípios brasileiros
-    const municipalityCoords: { [key: string]: [number, number] } = {
-      'São Paulo': [-46.6333, -23.5505],
-      'Rio de Janeiro': [-43.1729, -22.9068],
-      'Belo Horizonte': [-43.9378, -19.9208],
-      'Salvador': [-38.5014, -12.9714],
-      'Fortaleza': [-38.5267, -3.7319],
-      'Brasília': [-47.9292, -15.7801],
-      'Curitiba': [-49.2647, -25.4284],
-      'Recife': [-34.8755, -8.0476],
-      'Porto Alegre': [-51.2177, -30.0346],
-      'Manaus': [-60.0261, -3.1190]
+    // Remover camadas existentes se houver
+    if (map.current.getLayer('municipios-fill')) {
+      map.current.removeLayer('municipios-fill');
+    }
+    if (map.current.getLayer('municipios-line')) {
+      map.current.removeLayer('municipios-line');
+    }
+    if (map.current.getSource('municipios')) {
+      map.current.removeSource('municipios');
+    }
+
+    // Dados de exemplo de polígonos de algumas regiões brasileiras
+    const regionPolygons: { [key: string]: any } = {
+      'São Paulo': {
+        type: 'Feature',
+        properties: { name: 'São Paulo' },
+        geometry: {
+          type: 'Polygon',
+          coordinates: [[
+            [-48.5, -21.5], [-46.0, -21.5], [-44.0, -23.5], 
+            [-44.0, -25.5], [-48.5, -25.5], [-50.0, -23.0], [-48.5, -21.5]
+          ]]
+        }
+      },
+      'Rio de Janeiro': {
+        type: 'Feature',
+        properties: { name: 'Rio de Janeiro' },
+        geometry: {
+          type: 'Polygon',
+          coordinates: [[
+            [-45.0, -21.0], [-40.5, -21.0], [-40.5, -23.5], 
+            [-45.0, -23.5], [-45.0, -21.0]
+          ]]
+        }
+      },
+      'Minas Gerais': {
+        type: 'Feature',
+        properties: { name: 'Minas Gerais' },
+        geometry: {
+          type: 'Polygon',
+          coordinates: [[
+            [-51.0, -14.0], [-39.5, -14.0], [-39.5, -22.5], 
+            [-51.0, -22.5], [-51.0, -14.0]
+          ]]
+        }
+      },
+      'Bahia': {
+        type: 'Feature',
+        properties: { name: 'Bahia' },
+        geometry: {
+          type: 'Polygon',
+          coordinates: [[
+            [-47.5, -8.5], [-37.0, -8.5], [-37.0, -18.5], 
+            [-47.5, -18.5], [-47.5, -8.5]
+          ]]
+        }
+      },
+      'Rio Grande do Sul': {
+        type: 'Feature',
+        properties: { name: 'Rio Grande do Sul' },
+        geometry: {
+          type: 'Polygon',
+          coordinates: [[
+            [-57.5, -27.0], [-49.5, -27.0], [-49.5, -33.5], 
+            [-57.5, -33.5], [-57.5, -27.0]
+          ]]
+        }
+      }
     };
 
-    municipios.forEach((municipio, index) => {
-      const coords = municipalityCoords[municipio] || [-47.9292 + (index * 2), -15.7801 + (index * 1.5)];
-      
-      // Criar marcador personalizado
-      const markerElement = document.createElement('div');
-      markerElement.className = 'custom-marker';
-      markerElement.style.cssText = `
-        width: 20px;
-        height: 20px;
-        border-radius: 50%;
-        background: hsl(var(--hierarchy-${(parseInt(selectedHierarchy || '1') % 5) + 1}));
-        border: 2px solid white;
-        box-shadow: 0 2px 8px rgba(0,0,0,0.3);
-        cursor: pointer;
-        transition: transform 0.2s;
-      `;
-      
-      markerElement.addEventListener('mouseenter', () => {
-        markerElement.style.transform = 'scale(1.5)';
-      });
-      
-      markerElement.addEventListener('mouseleave', () => {
-        markerElement.style.transform = 'scale(1)';
-      });
+    // Criar GeoJSON com os municípios atendidos
+    const features = municipios
+      .filter(municipio => regionPolygons[municipio])
+      .map(municipio => regionPolygons[municipio]);
 
-      new mapboxgl.Marker(markerElement)
-        .setLngLat(coords)
-        .setPopup(
-          new mapboxgl.Popup({ offset: 25 })
-            .setHTML(`
-              <div class="p-2">
-                <h3 class="font-medium text-sm">${municipio}</h3>
-                <p class="text-xs text-muted-foreground">Hierarquia: ${selectedHierarchy}</p>
-              </div>
-            `)
-        )
-        .addTo(map.current!);
+    if (features.length === 0) return;
+
+    const geojsonData = {
+      type: 'FeatureCollection' as const,
+      features: features
+    };
+
+    // Adicionar fonte de dados
+    map.current.addSource('municipios', {
+      type: 'geojson',
+      data: geojsonData
     });
 
-    // Ajustar o zoom para mostrar todos os marcadores
-    if (municipios.length > 0) {
+    // Adicionar camada de preenchimento
+    map.current.addLayer({
+      id: 'municipios-fill',
+      type: 'fill',
+      source: 'municipios',
+      paint: {
+        'fill-color': `hsl(var(--hierarchy-${(parseInt(selectedHierarchy || '1') % 5) + 1}))`,
+        'fill-opacity': 0.3
+      }
+    });
+
+    // Adicionar camada de contorno
+    map.current.addLayer({
+      id: 'municipios-line',
+      type: 'line',
+      source: 'municipios',
+      paint: {
+        'line-color': `hsl(var(--hierarchy-${(parseInt(selectedHierarchy || '1') % 5) + 1}))`,
+        'line-width': 2,
+        'line-opacity': 0.8
+      }
+    });
+
+    // Adicionar popup ao clicar
+    map.current.on('click', 'municipios-fill', (e) => {
+      if (e.features && e.features[0]) {
+        const feature = e.features[0];
+        new mapboxgl.Popup()
+          .setLngLat(e.lngLat)
+          .setHTML(`
+            <div class="p-2">
+              <h3 class="font-medium text-sm">${feature.properties?.name}</h3>
+              <p class="text-xs text-muted-foreground">Hierarquia: ${selectedHierarchy}</p>
+            </div>
+          `)
+          .addTo(map.current!);
+      }
+    });
+
+    // Ajustar zoom para mostrar todas as regiões
+    if (features.length > 0) {
       const bounds = new mapboxgl.LngLatBounds();
-      municipios.forEach((municipio, index) => {
-        const coords = municipalityCoords[municipio] || [-47.9292 + (index * 2), -15.7801 + (index * 1.5)];
-        bounds.extend(coords);
+      features.forEach(feature => {
+        if (feature.geometry.type === 'Polygon') {
+          feature.geometry.coordinates[0].forEach((coord: number[]) => {
+            bounds.extend(coord as [number, number]);
+          });
+        }
       });
       map.current?.fitBounds(bounds, { padding: 50 });
     }
@@ -169,12 +246,19 @@ const MapComponent: React.FC<MapComponentProps> = ({ selectedHierarchy, municipi
 
   useEffect(() => {
     if (isTokenSet && map.current) {
-      // Limpar marcadores existentes
-      const markers = document.querySelectorAll('.custom-marker');
-      markers.forEach(marker => marker.remove());
+      // Limpar camadas existentes se houver
+      if (map.current.getLayer('municipios-fill')) {
+        map.current.removeLayer('municipios-fill');
+      }
+      if (map.current.getLayer('municipios-line')) {
+        map.current.removeLayer('municipios-line');
+      }
+      if (map.current.getSource('municipios')) {
+        map.current.removeSource('municipios');
+      }
       
       if (selectedHierarchy && municipios.length > 0) {
-        addMunicipalityMarkers();
+        addMunicipalityPolygons();
       }
     }
   }, [selectedHierarchy, municipios, isTokenSet]);
