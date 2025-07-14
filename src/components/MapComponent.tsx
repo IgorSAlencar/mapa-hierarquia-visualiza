@@ -81,7 +81,7 @@ const MapComponent: React.FC<MapComponentProps> = ({ selectedHierarchy, municipi
     }
   };
 
-  const addMunicipalityPolygons = () => {
+  const addMunicipalityPolygons = async () => {
     if (!map.current) return;
 
     // Remover camadas existentes se houver
@@ -95,145 +95,131 @@ const MapComponent: React.FC<MapComponentProps> = ({ selectedHierarchy, municipi
       map.current.removeSource('municipios');
     }
 
-    // Dados de exemplo de polígonos de algumas regiões brasileiras
-    const regionPolygons: { [key: string]: any } = {
-      'São Paulo': {
-        type: 'Feature',
-        properties: { name: 'São Paulo' },
-        geometry: {
-          type: 'Polygon',
-          coordinates: [[
-            [-48.5, -21.5], [-46.0, -21.5], [-44.0, -23.5], 
-            [-44.0, -25.5], [-48.5, -25.5], [-50.0, -23.0], [-48.5, -21.5]
-          ]]
-        }
-      },
-      'Rio de Janeiro': {
-        type: 'Feature',
-        properties: { name: 'Rio de Janeiro' },
-        geometry: {
-          type: 'Polygon',
-          coordinates: [[
-            [-45.0, -21.0], [-40.5, -21.0], [-40.5, -23.5], 
-            [-45.0, -23.5], [-45.0, -21.0]
-          ]]
-        }
-      },
-      'Minas Gerais': {
-        type: 'Feature',
-        properties: { name: 'Minas Gerais' },
-        geometry: {
-          type: 'Polygon',
-          coordinates: [[
-            [-51.0, -14.0], [-39.5, -14.0], [-39.5, -22.5], 
-            [-51.0, -22.5], [-51.0, -14.0]
-          ]]
-        }
-      },
-      'Bahia': {
-        type: 'Feature',
-        properties: { name: 'Bahia' },
-        geometry: {
-          type: 'Polygon',
-          coordinates: [[
-            [-47.5, -8.5], [-37.0, -8.5], [-37.0, -18.5], 
-            [-47.5, -18.5], [-47.5, -8.5]
-          ]]
-        }
-      },
-      'Rio Grande do Sul': {
-        type: 'Feature',
-        properties: { name: 'Rio Grande do Sul' },
-        geometry: {
-          type: 'Polygon',
-          coordinates: [[
-            [-57.5, -27.0], [-49.5, -27.0], [-49.5, -33.5], 
-            [-57.5, -33.5], [-57.5, -27.0]
-          ]]
-        }
+    try {
+      console.log('📍 Carregando dados geográficos dos UFs...');
+      
+      // Carregar dados reais dos contornos dos UFs brasileiros
+      const response = await fetch('https://servicodados.ibge.gov.br/api/v3/malhas/paises/BR?formato=application/vnd.geo+json&qualidade=intermediaria&intrarregiao=uf');
+      const brasilGeoData = await response.json();
+
+      // Mapeamento dos municípios para UFs (exemplo)
+      const municipioToUF: { [key: string]: string } = {
+        'São Paulo': 'SP',
+        'Rio de Janeiro': 'RJ', 
+        'Belo Horizonte': 'MG',
+        'Salvador': 'BA',
+        'Fortaleza': 'CE',
+        'Brasília': 'DF',
+        'Curitiba': 'PR',
+        'Recife': 'PE',
+        'Porto Alegre': 'RS',
+        'Manaus': 'AM'
+      };
+
+      // Filtrar apenas os UFs que atendem os municípios selecionados
+      const ufsAtendidos = municipios
+        .map(municipio => municipioToUF[municipio])
+        .filter(uf => uf);
+
+      const featuresAtendidos = brasilGeoData.features.filter((feature: any) => 
+        ufsAtendidos.includes(feature.properties.codarea)
+      );
+
+      if (featuresAtendidos.length === 0) {
+        console.log('❌ Nenhuma UF encontrada para os municípios selecionados');
+        return;
       }
-    };
 
-    // Criar GeoJSON com os municípios atendidos
-    const features = municipios
-      .filter(municipio => regionPolygons[municipio])
-      .map(municipio => regionPolygons[municipio]);
+      const geojsonData = {
+        type: 'FeatureCollection' as const,
+        features: featuresAtendidos
+      };
 
-    if (features.length === 0) return;
+      // Adicionar fonte de dados
+      map.current.addSource('municipios', {
+        type: 'geojson',
+        data: geojsonData
+      });
 
-    const geojsonData = {
-      type: 'FeatureCollection' as const,
-      features: features
-    };
+      // Cores baseadas na hierarquia
+      const hierarchyColors = [
+        '#3b82f6', // blue-500
+        '#10b981', // emerald-500  
+        '#f59e0b', // amber-500
+        '#ef4444', // red-500
+        '#8b5cf6', // violet-500
+      ];
+      
+      const colorIndex = parseInt(selectedHierarchy || '1') % hierarchyColors.length;
+      const selectedColor = hierarchyColors[colorIndex];
 
-    // Adicionar fonte de dados
-    map.current.addSource('municipios', {
-      type: 'geojson',
-      data: geojsonData
-    });
-
-    // Cores baseadas na hierarquia
-    const hierarchyColors = [
-      '#3b82f6', // blue-500
-      '#10b981', // emerald-500  
-      '#f59e0b', // amber-500
-      '#ef4444', // red-500
-      '#8b5cf6', // violet-500
-    ];
-    
-    const colorIndex = parseInt(selectedHierarchy || '1') % hierarchyColors.length;
-    const selectedColor = hierarchyColors[colorIndex];
-
-    // Adicionar camada de preenchimento
-    map.current.addLayer({
-      id: 'municipios-fill',
-      type: 'fill',
-      source: 'municipios',
-      paint: {
-        'fill-color': selectedColor,
-        'fill-opacity': 0.3
-      }
-    });
-
-    // Adicionar camada de contorno
-    map.current.addLayer({
-      id: 'municipios-line',
-      type: 'line',
-      source: 'municipios',
-      paint: {
-        'line-color': selectedColor,
-        'line-width': 2,
-        'line-opacity': 0.8
-      }
-    });
-
-    // Adicionar popup ao clicar
-    map.current.on('click', 'municipios-fill', (e) => {
-      if (e.features && e.features[0]) {
-        const feature = e.features[0];
-        new mapboxgl.Popup()
-          .setLngLat(e.lngLat)
-          .setHTML(`
-            <div class="p-2">
-              <h3 class="font-medium text-sm">${feature.properties?.name}</h3>
-              <p class="text-xs text-muted-foreground">Hierarquia: ${selectedHierarchy}</p>
-            </div>
-          `)
-          .addTo(map.current!);
-      }
-    });
-
-    // Ajustar zoom para mostrar todas as regiões
-    if (features.length > 0) {
-      const bounds = new mapboxgl.LngLatBounds();
-      features.forEach(feature => {
-        if (feature.geometry.type === 'Polygon') {
-          feature.geometry.coordinates[0].forEach((coord: number[]) => {
-            bounds.extend(coord as [number, number]);
-          });
+      // Adicionar camada de preenchimento
+      map.current.addLayer({
+        id: 'municipios-fill',
+        type: 'fill',
+        source: 'municipios',
+        paint: {
+          'fill-color': selectedColor,
+          'fill-opacity': 0.3
         }
       });
-      map.current?.fitBounds(bounds, { padding: 50 });
+
+      // Adicionar camada de contorno
+      map.current.addLayer({
+        id: 'municipios-line',
+        type: 'line',
+        source: 'municipios',
+        paint: {
+          'line-color': selectedColor,
+          'line-width': 2,
+          'line-opacity': 0.8
+        }
+      });
+
+      // Adicionar popup ao clicar
+      map.current.on('click', 'municipios-fill', (e) => {
+        if (e.features && e.features[0]) {
+          const feature = e.features[0];
+          new mapboxgl.Popup()
+            .setLngLat(e.lngLat)
+            .setHTML(`
+              <div class="p-2">
+                <h3 class="font-medium text-sm">${feature.properties?.nome || 'UF'}</h3>
+                <p class="text-xs text-muted-foreground">Hierarquia: ${selectedHierarchy}</p>
+              </div>
+            `)
+            .addTo(map.current!);
+        }
+      });
+
+      // Ajustar zoom para mostrar todas as regiões
+      if (featuresAtendidos.length > 0) {
+        const bounds = new mapboxgl.LngLatBounds();
+        featuresAtendidos.forEach((feature: any) => {
+          if (feature.geometry.type === 'Polygon') {
+            feature.geometry.coordinates[0].forEach((coord: number[]) => {
+              bounds.extend(coord as [number, number]);
+            });
+          } else if (feature.geometry.type === 'MultiPolygon') {
+            feature.geometry.coordinates.forEach((polygon: number[][][]) => {
+              polygon[0].forEach((coord: number[]) => {
+                bounds.extend(coord as [number, number]);
+              });
+            });
+          }
+        });
+        map.current?.fitBounds(bounds, { padding: 50 });
+      }
+
+      console.log('✅ Contornos reais dos UFs carregados com sucesso!');
+
+    } catch (error) {
+      console.error('❌ Erro ao carregar dados geográficos:', error);
+      toast({
+        title: "Erro nos dados geográficos",
+        description: "Não foi possível carregar os contornos reais dos UFs.",
+        variant: "destructive"
+      });
     }
   };
 
