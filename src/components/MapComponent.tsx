@@ -168,17 +168,10 @@ const MapComponent: React.FC<MapComponentProps> = ({ selectedHierarchy, municipi
       return;
     }
     
-    console.log('🔄 Iniciando carregamento...');
+    console.log('🔄 Validando token e preparando mapa...');
     setIsLoading(true);
-    
-    try {
-      await initializeMap();
-    } catch (error) {
-      console.error('❌ Erro no handleTokenSubmit:', error);
-    } finally {
-      setIsLoading(false);
-      console.log('✅ Processo finalizado');
-    }
+    setIsTokenSet(true);
+    setIsLoading(false);
   };
 
   useEffect(() => {
@@ -192,6 +185,13 @@ const MapComponent: React.FC<MapComponentProps> = ({ selectedHierarchy, municipi
       }
     }
   }, [selectedHierarchy, municipios, isTokenSet]);
+
+  // Inicializar mapa após container estar disponível
+  useEffect(() => {
+    if (isTokenSet && mapContainer.current && !map.current) {
+      initializeMap();
+    }
+  }, [isTokenSet]);
 
   useEffect(() => {
     return () => {
