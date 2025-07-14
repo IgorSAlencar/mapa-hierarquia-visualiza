@@ -4,7 +4,7 @@ import 'mapbox-gl/dist/mapbox-gl.css';
 import { Card } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
-import { MapPin, Search } from 'lucide-react';
+import { MapPin, Search, Loader2 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 
 interface MapComponentProps {
@@ -17,39 +17,75 @@ const MapComponent: React.FC<MapComponentProps> = ({ selectedHierarchy, municipi
   const map = useRef<mapboxgl.Map | null>(null);
   const [mapboxToken, setMapboxToken] = useState<string>('');
   const [isTokenSet, setIsTokenSet] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
   const { toast } = useToast();
 
-  const initializeMap = () => {
-    if (!mapContainer.current || !mapboxToken) return;
-
-    mapboxgl.accessToken = mapboxToken;
+  const initializeMap = async () => {
+    console.log('🚀 Iniciando inicialização do mapa...');
+    console.log('📍 Token fornecido:', mapboxToken ? 'Token presente' : 'Token ausente');
+    console.log('📦 Container disponível:', mapContainer.current ? 'Sim' : 'Não');
     
-    map.current = new mapboxgl.Map({
-      container: mapContainer.current,
-      style: 'mapbox://styles/mapbox/light-v11',
-      center: [-47.9292, -15.7801], // Brasília centro
-      zoom: 4.5,
-      projection: 'mercator'
-    });
-
-    // Adicionar controles de navegação
-    map.current.addControl(
-      new mapboxgl.NavigationControl({
-        visualizePitch: true,
-      }),
-      'top-right'
-    );
-
-    // Adicionar marcadores para municípios quando hierarquia é selecionada
-    if (selectedHierarchy && municipios.length > 0) {
-      addMunicipalityMarkers();
+    if (!mapContainer.current || !mapboxToken) {
+      console.error('❌ Pré-condições não atendidas para inicializar mapa');
+      return;
     }
 
-    setIsTokenSet(true);
-    toast({
-      title: "Mapa carregado!",
-      description: "MapBox inicializado com sucesso.",
-    });
+    try {
+      console.log('🔑 Configurando token do MapBox...');
+      mapboxgl.accessToken = mapboxToken;
+      
+      console.log('🗺️ Criando instância do mapa...');
+      map.current = new mapboxgl.Map({
+        container: mapContainer.current,
+        style: 'mapbox://styles/mapbox/light-v11',
+        center: [-47.9292, -15.7801], // Brasília centro
+        zoom: 4.5,
+        projection: 'mercator'
+      });
+
+      console.log('⚙️ Adicionando controles de navegação...');
+      // Adicionar controles de navegação
+      map.current.addControl(
+        new mapboxgl.NavigationControl({
+          visualizePitch: true,
+        }),
+        'top-right'
+      );
+
+      // Aguardar o mapa carregar completamente
+      map.current.on('load', () => {
+        console.log('✅ Mapa carregado com sucesso!');
+        setIsTokenSet(true);
+        toast({
+          title: "Mapa carregado!",
+          description: "MapBox inicializado com sucesso.",
+        });
+
+        // Adicionar marcadores se necessário
+        if (selectedHierarchy && municipios.length > 0) {
+          console.log('📍 Adicionando marcadores...');
+          addMunicipalityMarkers();
+        }
+      });
+
+      // Tratamento de erros
+      map.current.on('error', (e) => {
+        console.error('❌ Erro no MapBox:', e);
+        toast({
+          title: "Erro no mapa",
+          description: "Verifique se o token está correto. Erro: " + e.error?.message,
+          variant: "destructive"
+        });
+      });
+
+    } catch (error) {
+      console.error('❌ Erro ao inicializar mapa:', error);
+      toast({
+        title: "Erro de inicialização",
+        description: "Falha ao inicializar o MapBox. Verifique o token.",
+        variant: "destructive"
+      });
+    }
   };
 
   const addMunicipalityMarkers = () => {
@@ -119,8 +155,11 @@ const MapComponent: React.FC<MapComponentProps> = ({ selectedHierarchy, municipi
     }
   };
 
-  const handleTokenSubmit = () => {
+  const handleTokenSubmit = async () => {
+    console.log('🔘 Botão clicado - iniciando processo...');
+    
     if (!mapboxToken.trim()) {
+      console.log('⚠️ Token vazio detectado');
       toast({
         title: "Token requerido",
         description: "Por favor, insira seu token público do MapBox.",
@@ -128,7 +167,18 @@ const MapComponent: React.FC<MapComponentProps> = ({ selectedHierarchy, municipi
       });
       return;
     }
-    initializeMap();
+    
+    console.log('🔄 Iniciando carregamento...');
+    setIsLoading(true);
+    
+    try {
+      await initializeMap();
+    } catch (error) {
+      console.error('❌ Erro no handleTokenSubmit:', error);
+    } finally {
+      setIsLoading(false);
+      console.log('✅ Processo finalizado');
+    }
   };
 
   useEffect(() => {
@@ -167,9 +217,17 @@ const MapComponent: React.FC<MapComponentProps> = ({ selectedHierarchy, municipi
               onChange={(e) => setMapboxToken(e.target.value)}
               className="w-full"
             />
-            <Button onClick={handleTokenSubmit} className="w-full">
-              <Search className="h-4 w-4 mr-2" />
-              Carregar Mapa
+            <Button 
+              onClick={handleTokenSubmit} 
+              disabled={isLoading}
+              className="w-full"
+            >
+              {isLoading ? (
+                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+              ) : (
+                <Search className="h-4 w-4 mr-2" />
+              )}
+              {isLoading ? 'Carregando...' : 'Carregar Mapa'}
             </Button>
           </div>
         </div>
