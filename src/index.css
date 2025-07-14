@@ -2,14 +2,25 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Definition of the design system. All colors, gradients, fonts, etc should be defined here. 
-All colors MUST be HSL.
-*/
+/* Design system para aplicação de mapa comercial */
 
 @layer base {
   :root {
-    --background: 0 0% 100%;
-    --foreground: 222.2 84% 4.9%;
+    --background: 215 27% 97%;
+    --foreground: 215 25% 10%;
+    
+    /* MapBox theme colors */
+    --map-primary: 200 95% 47%;
+    --map-secondary: 280 100% 70%;
+    --map-accent: 45 100% 55%;
+    --map-surface: 210 40% 98%;
+    
+    /* Hierarchy colors */
+    --hierarchy-1: 200 95% 47%;
+    --hierarchy-2: 280 100% 70%;
+    --hierarchy-3: 45 100% 55%;
+    --hierarchy-4: 120 60% 50%;
+    --hierarchy-5: 15 80% 55%;
 
     --card: 0 0% 100%;
     --card-foreground: 222.2 84% 4.9%;

@@ -24,6 +24,19 @@ export default {
 				ring: 'hsl(var(--ring))',
 				background: 'hsl(var(--background))',
 				foreground: 'hsl(var(--foreground))',
+				
+				// Map colors
+				'map-primary': 'hsl(var(--map-primary))',
+				'map-secondary': 'hsl(var(--map-secondary))',
+				'map-accent': 'hsl(var(--map-accent))',
+				'map-surface': 'hsl(var(--map-surface))',
+				
+				// Hierarchy colors
+				'hierarchy-1': 'hsl(var(--hierarchy-1))',
+				'hierarchy-2': 'hsl(var(--hierarchy-2))',
+				'hierarchy-3': 'hsl(var(--hierarchy-3))',
+				'hierarchy-4': 'hsl(var(--hierarchy-4))',
+				'hierarchy-5': 'hsl(var(--hierarchy-5))',
 				primary: {
 					DEFAULT: 'hsl(var(--primary))',
 					foreground: 'hsl(var(--primary-foreground))'
