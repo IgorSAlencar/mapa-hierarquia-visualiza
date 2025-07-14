@@ -81,7 +81,7 @@ const MapComponent: React.FC<MapComponentProps> = ({ selectedHierarchy, municipi
     }
   };
 
-  const addMunicipalityPolygons = async () => {
+  const addMunicipalityPolygons = () => {
     if (!map.current) return;
 
     // Remover camadas existentes se houver
@@ -95,132 +95,99 @@ const MapComponent: React.FC<MapComponentProps> = ({ selectedHierarchy, municipi
       map.current.removeSource('municipios');
     }
 
-    try {
-      console.log('📍 Carregando dados geográficos dos UFs...');
-      
-      // Carregar dados reais dos contornos dos UFs brasileiros
-      const response = await fetch('https://servicodados.ibge.gov.br/api/v3/malhas/paises/BR?formato=application/vnd.geo+json&qualidade=intermediaria&intrarregiao=uf');
-      const brasilGeoData = await response.json();
+    // Mapeamento dos municípios para códigos IBGE dos UFs
+    const municipioToUFCode: { [key: string]: string } = {
+      'São Paulo': '35',
+      'Rio de Janeiro': '33', 
+      'Belo Horizonte': '31',
+      'Salvador': '29',
+      'Fortaleza': '23',
+      'Brasília': '53',
+      'Curitiba': '41',
+      'Recife': '26',
+      'Porto Alegre': '43',
+      'Manaus': '13'
+    };
 
-      // Mapeamento dos municípios para UFs (exemplo)
-      const municipioToUF: { [key: string]: string } = {
-        'São Paulo': 'SP',
-        'Rio de Janeiro': 'RJ', 
-        'Belo Horizonte': 'MG',
-        'Salvador': 'BA',
-        'Fortaleza': 'CE',
-        'Brasília': 'DF',
-        'Curitiba': 'PR',
-        'Recife': 'PE',
-        'Porto Alegre': 'RS',
-        'Manaus': 'AM'
-      };
+    // Obter códigos dos UFs atendidos
+    const ufsAtendidos = municipios
+      .map(municipio => municipioToUFCode[municipio])
+      .filter(uf => uf);
 
-      // Filtrar apenas os UFs que atendem os municípios selecionados
-      const ufsAtendidos = municipios
-        .map(municipio => municipioToUF[municipio])
-        .filter(uf => uf);
+    if (ufsAtendidos.length === 0) return;
 
-      const featuresAtendidos = brasilGeoData.features.filter((feature: any) => 
-        ufsAtendidos.includes(feature.properties.codarea)
-      );
+    console.log('📍 Usando dados nativos do MapBox para UFs:', ufsAtendidos);
 
-      if (featuresAtendidos.length === 0) {
-        console.log('❌ Nenhuma UF encontrada para os municípios selecionados');
-        return;
+    // Cores baseadas na hierarquia
+    const hierarchyColors = [
+      '#3b82f6', // blue-500
+      '#10b981', // emerald-500  
+      '#f59e0b', // amber-500
+      '#ef4444', // red-500
+      '#8b5cf6', // violet-500
+    ];
+    
+    const colorIndex = parseInt(selectedHierarchy || '1') % hierarchyColors.length;
+    const selectedColor = hierarchyColors[colorIndex];
+
+    // Usar fonte de dados administrativa nativa do MapBox
+    map.current.addSource('municipios', {
+      type: 'vector',
+      url: 'mapbox://mapbox.boundaries-adm1-v3'
+    });
+
+    // Adicionar camada de preenchimento com filtro para UFs brasileiros
+    map.current.addLayer({
+      id: 'municipios-fill',
+      type: 'fill',
+      source: 'municipios',
+      'source-layer': 'boundaries_admin_1',
+      filter: [
+        'all',
+        ['==', ['get', 'iso_3166_1'], 'BR'],
+        ['in', ['get', 'iso_3166_2'], ['literal', ufsAtendidos.map(uf => `BR-${uf}`)]]
+      ],
+      paint: {
+        'fill-color': selectedColor,
+        'fill-opacity': 0.3
       }
+    });
 
-      const geojsonData = {
-        type: 'FeatureCollection' as const,
-        features: featuresAtendidos
-      };
-
-      // Adicionar fonte de dados
-      map.current.addSource('municipios', {
-        type: 'geojson',
-        data: geojsonData
-      });
-
-      // Cores baseadas na hierarquia
-      const hierarchyColors = [
-        '#3b82f6', // blue-500
-        '#10b981', // emerald-500  
-        '#f59e0b', // amber-500
-        '#ef4444', // red-500
-        '#8b5cf6', // violet-500
-      ];
-      
-      const colorIndex = parseInt(selectedHierarchy || '1') % hierarchyColors.length;
-      const selectedColor = hierarchyColors[colorIndex];
-
-      // Adicionar camada de preenchimento
-      map.current.addLayer({
-        id: 'municipios-fill',
-        type: 'fill',
-        source: 'municipios',
-        paint: {
-          'fill-color': selectedColor,
-          'fill-opacity': 0.3
-        }
-      });
-
-      // Adicionar camada de contorno
-      map.current.addLayer({
-        id: 'municipios-line',
-        type: 'line',
-        source: 'municipios',
-        paint: {
-          'line-color': selectedColor,
-          'line-width': 2,
-          'line-opacity': 0.8
-        }
-      });
-
-      // Adicionar popup ao clicar
-      map.current.on('click', 'municipios-fill', (e) => {
-        if (e.features && e.features[0]) {
-          const feature = e.features[0];
-          new mapboxgl.Popup()
-            .setLngLat(e.lngLat)
-            .setHTML(`
-              <div class="p-2">
-                <h3 class="font-medium text-sm">${feature.properties?.nome || 'UF'}</h3>
-                <p class="text-xs text-muted-foreground">Hierarquia: ${selectedHierarchy}</p>
-              </div>
-            `)
-            .addTo(map.current!);
-        }
-      });
-
-      // Ajustar zoom para mostrar todas as regiões
-      if (featuresAtendidos.length > 0) {
-        const bounds = new mapboxgl.LngLatBounds();
-        featuresAtendidos.forEach((feature: any) => {
-          if (feature.geometry.type === 'Polygon') {
-            feature.geometry.coordinates[0].forEach((coord: number[]) => {
-              bounds.extend(coord as [number, number]);
-            });
-          } else if (feature.geometry.type === 'MultiPolygon') {
-            feature.geometry.coordinates.forEach((polygon: number[][][]) => {
-              polygon[0].forEach((coord: number[]) => {
-                bounds.extend(coord as [number, number]);
-              });
-            });
-          }
-        });
-        map.current?.fitBounds(bounds, { padding: 50 });
+    // Adicionar camada de contorno
+    map.current.addLayer({
+      id: 'municipios-line',
+      type: 'line',
+      source: 'municipios',
+      'source-layer': 'boundaries_admin_1',
+      filter: [
+        'all',
+        ['==', ['get', 'iso_3166_1'], 'BR'],
+        ['in', ['get', 'iso_3166_2'], ['literal', ufsAtendidos.map(uf => `BR-${uf}`)]]
+      ],
+      paint: {
+        'line-color': selectedColor,
+        'line-width': 2,
+        'line-opacity': 0.8
       }
+    });
 
-      console.log('✅ Contornos reais dos UFs carregados com sucesso!');
+    // Adicionar popup ao clicar
+    map.current.on('click', 'municipios-fill', (e) => {
+      if (e.features && e.features[0]) {
+        const feature = e.features[0];
+        new mapboxgl.Popup()
+          .setLngLat(e.lngLat)
+          .setHTML(`
+            <div class="p-2">
+              <h3 class="font-medium text-sm">${feature.properties?.name_pt || feature.properties?.name}</h3>
+              <p class="text-xs text-muted-foreground">Hierarquia: ${selectedHierarchy}</p>
+            </div>
+          `)
+          .addTo(map.current!);
+      }
+    });
 
-    } catch (error) {
-      console.error('❌ Erro ao carregar dados geográficos:', error);
-      toast({
-        title: "Erro nos dados geográficos",
-        description: "Não foi possível carregar os contornos reais dos UFs.",
-        variant: "destructive"
-      });
-    }
+    console.log('✅ Choropleth nativo do MapBox carregado!');
   };
 
   const handleTokenSubmit = async () => {
