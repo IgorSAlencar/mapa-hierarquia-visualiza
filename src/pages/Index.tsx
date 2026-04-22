@@ -28,7 +28,7 @@ const Index = () => {
   return (
     <div className="min-h-screen bg-background">
       <header className="border-b bg-map-surface/50 backdrop-blur-sm">
-        <div className="container mx-auto px-4 py-4">
+        <div className="w-full px-4 py-4">
           <div className="flex items-center space-x-3">
             <div className="p-2 bg-map-primary/10 rounded-lg">
               <Map className="h-6 w-6 text-map-primary" />

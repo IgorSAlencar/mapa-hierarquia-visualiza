@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import mapboxgl, { type FilterSpecification } from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
-import { BarChart3, Layers, Search, SlidersHorizontal } from 'lucide-react';
+import { BarChart3, Layers, MapPinOff, Search, SlidersHorizontal, Store, User } from 'lucide-react';
 import ExpressoBottomSheet from '@/components/ExpressoBottomSheet';
 import ExpressoStatePanel from '@/components/ExpressoStatePanel';
 import { Input } from '@/components/ui/input';
@@ -11,9 +11,21 @@ import { MAPBOX_CONFIG } from '@/lib/mapbox-config';
 import {
   buildExpressoRegionMetrics,
   buildMunicipalityProductivityRows,
+  emptyProdutoExpressoResumo,
   type ProdutoExpressoId,
 } from '@/lib/expressoRegionMock';
 import type { MarcadorMapa } from '@/data/commercialStructureMock';
+import {
+  filterRegionMapPoints,
+  MOCK_REGION_SUPERVISORES,
+  regionPointsToFeatureCollection,
+} from '@/data/regionMapPointsMock';
+import {
+  buildMunicipalityValueMap,
+  computeValueRangeFromRows,
+  mergeChoroplethIntoFeatureCollection,
+} from '@/lib/municipalityChoropleth';
+import { fetchAgencyPoints, fetchStorePoints, type BboxQuery, type SqlMapPoint } from '@/lib/mapDataApi';
 
 const BRAZIL_BOUNDARY_GEOJSON =
   'https://raw.githubusercontent.com/johan/world.geo.json/master/countries/BRA.geo.json';
@@ -308,7 +320,8 @@ function findMunicipalityFeatureContainingLngLat(
 
 function resetMunicipalityVisuals(
   m: mapboxgl.Map,
-  fcRef?: React.MutableRefObject<GeoJSON.FeatureCollection>
+  fcRef?: React.MutableRefObject<GeoJSON.FeatureCollection>,
+  rawFcRef?: React.MutableRefObject<GeoJSON.FeatureCollection>
 ) {
   const empty: GeoJSON.FeatureCollection = { type: 'FeatureCollection', features: [] };
   const contextSource = m.getSource('municipalities-context') as mapboxgl.GeoJSONSource | undefined;
@@ -316,6 +329,19 @@ function resetMunicipalityVisuals(
   const selectedSource = m.getSource('selected-municipality') as mapboxgl.GeoJSONSource | undefined;
   selectedSource?.setData(empty);
   if (fcRef) fcRef.current = empty;
+  if (rawFcRef) rawFcRef.current = empty;
+}
+
+function clearRegionOverlaySources(m: mapboxgl.Map) {
+  const empty: GeoJSON.FeatureCollection = { type: 'FeatureCollection', features: [] };
+  for (const sourceId of [
+    'region-overlay-agencias',
+    'region-overlay-supervisores',
+    'region-overlay-lojas',
+  ] as const) {
+    const source = m.getSource(sourceId) as mapboxgl.GeoJSONSource | undefined;
+    source?.setData(empty);
+  }
 }
 
 function resolveStateId(props?: GeoJSON.GeoJsonProperties): string {
@@ -458,8 +484,18 @@ const MapComponent: React.FC<MapComponentProps> = ({
   const selectStateFeatureRef = useRef<((feature: GeoJSON.Feature) => void) | null>(null);
   const selectMunicipalityFeatureRef = useRef<((feature: GeoJSON.Feature) => void) | null>(null);
   const municipiosCacheRef = useRef<Record<string, GeoJSON.FeatureCollection>>({});
+  const allMunicipalitiesFcRef = useRef<GeoJSON.FeatureCollection>({
+    type: 'FeatureCollection',
+    features: [],
+  });
+  const loadingAllMunicipalitiesRef = useRef(false);
   /** Municípios do UF atual (mesmo dado da fonte municipalities-context) para hit-test por polígono. */
   const municipalitiesFcRef = useRef<GeoJSON.FeatureCollection>({
+    type: 'FeatureCollection',
+    features: [],
+  });
+  /** GeoJSON municipal bruto (sem heatValue), para restaurar após coropleto. */
+  const municipalitiesRawFcRef = useRef<GeoJSON.FeatureCollection>({
     type: 'FeatureCollection',
     features: [],
   });
@@ -467,15 +503,35 @@ const MapComponent: React.FC<MapComponentProps> = ({
   const [selectedStateLabel, setSelectedStateLabel] = useState<string | null>(null);
   const [selectedStateFeature, setSelectedStateFeature] = useState<GeoJSON.Feature | null>(null);
   const [selectedCityLabel, setSelectedCityLabel] = useState<string | null>(null);
-  const [showLojasOnMap, setShowLojasOnMap] = useState(false);
+  const [selectedMunicipalityFeature, setSelectedMunicipalityFeature] = useState<GeoJSON.Feature | null>(
+    null
+  );
+  const [overlayAgencias, setOverlayAgencias] = useState(false);
+  const [overlaySupervisores, setOverlaySupervisores] = useState(false);
+  const [overlayLojas, setOverlayLojas] = useState(false);
+  const [sqlAgencyPoints, setSqlAgencyPoints] = useState<SqlMapPoint[]>([]);
+  const [sqlStorePoints, setSqlStorePoints] = useState<SqlMapPoint[]>([]);
+  const [loadingAgencyPoints, setLoadingAgencyPoints] = useState(false);
+  const [loadingStorePoints, setLoadingStorePoints] = useState(false);
+  const refreshTimerRef = useRef<number | null>(null);
+  const mapTransitionTimerRef = useRef<number | null>(null);
+  const mapTransitionStartRef = useRef<number>(Date.now());
+  const [mapReadyVersion, setMapReadyVersion] = useState(0);
+  const [isMapTransitionLoading, setIsMapTransitionLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchOpen, setSearchOpen] = useState(false);
   const [stateSearchOptions, setStateSearchOptions] = useState<SearchOption[]>([]);
   const [municipalitySearchOptions, setMunicipalitySearchOptions] = useState<SearchOption[]>([]);
+  const [allMunicipalityNames, setAllMunicipalityNames] = useState<string[]>([]);
   const [mapStyleMode, setMapStyleMode] = useState<'default' | 'satellite'>('default');
   const [productivitySheetOpen, setProductivitySheetOpen] = useState(false);
   const [selectedBottomProduct, setSelectedBottomProduct] = useState<ProdutoExpressoId | null>(null);
   const [productivityScope, setProductivityScope] = useState<'estado' | 'municipio'>('estado');
+  const [municipalityChoroplethEnabled, setMunicipalityChoroplethEnabled] = useState(false);
+  /** Incrementa quando o GeoJSON de municípios (UF ou Brasil) é escrito nos refs — refs sozinhos não disparam o efeito do coroplético. */
+  const [municipalitiesGeoVersion, setMunicipalitiesGeoVersion] = useState(0);
+  const [choroplethLegend, setChoroplethLegend] = useState<{ min: number; max: number } | null>(null);
+  const [outsideMaskColor, setOutsideMaskColor] = useState<string>(MAPBOX_CONFIG.outsideBrazilMaskColor);
   const activeBaseStyle =
     mapStyleMode === 'satellite' ? MAPBOX_CONFIG.styles.satellite : MAPBOX_CONFIG.styles.default;
 
@@ -483,6 +539,71 @@ const MapComponent: React.FC<MapComponentProps> = ({
     () => buildExpressoRegionMetrics(mapMarkers, selectedStateFeature),
     [mapMarkers, selectedStateFeature]
   );
+
+  const filteredRegionAgencias = useMemo(
+    () => filterRegionMapPoints(sqlAgencyPoints, selectedMunicipalityFeature, selectedStateFeature),
+    [sqlAgencyPoints, selectedMunicipalityFeature, selectedStateFeature]
+  );
+  const filteredRegionSupervisores = useMemo(
+    () =>
+      filterRegionMapPoints(MOCK_REGION_SUPERVISORES, selectedMunicipalityFeature, selectedStateFeature),
+    [selectedMunicipalityFeature, selectedStateFeature]
+  );
+  const filteredRegionLojas = useMemo(
+    () => filterRegionMapPoints(sqlStorePoints, selectedMunicipalityFeature, selectedStateFeature),
+    [sqlStorePoints, selectedMunicipalityFeature, selectedStateFeature]
+  );
+
+  const getCurrentMapBbox = (): BboxQuery | null => {
+    const m = map.current;
+    if (!m) return null;
+    const bounds = m.getBounds();
+    return {
+      minLng: bounds.getWest(),
+      minLat: bounds.getSouth(),
+      maxLng: bounds.getEast(),
+      maxLat: bounds.getNorth(),
+    };
+  };
+
+  const refreshOverlayDataForViewport = async () => {
+    const bbox = getCurrentMapBbox();
+    if (!bbox) return;
+
+    if (overlayAgencias && !loadingAgencyPoints) {
+      setLoadingAgencyPoints(true);
+      try {
+        const points = await fetchAgencyPoints({ bbox, limit: 12000 });
+        setSqlAgencyPoints(points);
+      } catch (error) {
+        console.error('Falha ao carregar agências SQL:', error);
+        toast({
+          title: 'Falha ao carregar agências',
+          description: 'Não foi possível buscar agências no SQL Server.',
+          variant: 'destructive',
+        });
+      } finally {
+        setLoadingAgencyPoints(false);
+      }
+    }
+
+    if (overlayLojas && !loadingStorePoints) {
+      setLoadingStorePoints(true);
+      try {
+        const points = await fetchStorePoints({ bbox, limit: 15000 });
+        setSqlStorePoints(points);
+      } catch (error) {
+        console.error('Falha ao carregar lojas SQL:', error);
+        toast({
+          title: 'Falha ao carregar lojas',
+          description: 'Não foi possível buscar lojas no SQL Server.',
+          variant: 'destructive',
+        });
+      } finally {
+        setLoadingStorePoints(false);
+      }
+    }
+  };
 
   const visibleSearchOptions = useMemo(() => {
     const q = normalizeText(searchQuery);
@@ -495,9 +616,12 @@ const MapComponent: React.FC<MapComponentProps> = ({
   }, [searchQuery, stateSearchOptions, municipalitySearchOptions]);
 
   const municipalityNamesForTable = useMemo(() => {
-    const names = municipalitySearchOptions.map((item) => item.label).filter(Boolean);
+    const names =
+      selectedStateFeature == null
+        ? allMunicipalityNames
+        : municipalitySearchOptions.map((item) => item.label).filter(Boolean);
     return names.length > 0 ? names.slice(0, 60) : selectedCityLabel ? [selectedCityLabel] : [];
-  }, [municipalitySearchOptions, selectedCityLabel]);
+  }, [allMunicipalityNames, municipalitySearchOptions, selectedCityLabel, selectedStateFeature]);
 
   const stateNamesForTable = useMemo(
     () => stateSearchOptions.map((item) => item.label).filter(Boolean).slice(0, 60),
@@ -513,16 +637,25 @@ const MapComponent: React.FC<MapComponentProps> = ({
   const productsForBottomSheet = useMemo(
     () =>
       expressoMetrics?.produtos ?? [
-        { id: 'consignado' as const, nome: 'Consignado', variacaoPct: 0, lojas: 0, producaoMes: 0, subprodutos: [] },
-        { id: 'lime' as const, nome: 'Lime', variacaoPct: 0, lojas: 0, producaoMes: 0, subprodutos: [] },
-        { id: 'contas' as const, nome: 'Contas', variacaoPct: 0, lojas: 0, producaoMes: 0, subprodutos: [] },
-        { id: 'seguros' as const, nome: 'Seguros', variacaoPct: 0, lojas: 0, producaoMes: 0, subprodutos: [] },
+        emptyProdutoExpressoResumo('consignado', 'Consignado'),
+        emptyProdutoExpressoResumo('lime', 'Lime'),
+        emptyProdutoExpressoResumo('contas', 'Contas'),
+        emptyProdutoExpressoResumo('seguros', 'Seguros'),
       ],
     [expressoMetrics]
   );
   const hasStatePanel = Boolean(selectedStateLabel && expressoMetrics);
+  const hasMapSelection = Boolean(
+    selectedStateFeature || selectedMunicipalityFeature || selectedCityLabel
+  );
+  const choroplethModeLabel = useMemo(() => {
+    if (!municipalityChoroplethEnabled || !selectedBottomProduct) return null;
+    if (productivityScope === 'estado') return 'Estados (Brasil)';
+    return selectedStateFeature ? 'Municípios do estado selecionado' : 'Todos os municípios (Brasil)';
+  }, [municipalityChoroplethEnabled, selectedBottomProduct, productivityScope, selectedStateFeature]);
 
   const clusterClickHandlerRef = useRef<((e: mapboxgl.MapLayerMouseEvent) => void) | null>(null);
+  const regionOverlayClickHandlerRef = useRef<((e: mapboxgl.MapLayerMouseEvent) => void) | null>(null);
 
   const handleSearchSelect = (option: SearchOption) => {
     if (option.kind === 'estado') {
@@ -552,9 +685,78 @@ const MapComponent: React.FC<MapComponentProps> = ({
     }
   };
 
+  const startMapTransitionLoading = () => {
+    mapTransitionStartRef.current = Date.now();
+    setIsMapTransitionLoading(true);
+  };
+
+  const finishMapTransitionLoading = () => {
+    const elapsed = Date.now() - mapTransitionStartRef.current;
+    const remaining = Math.max(0, 900 - elapsed);
+    if (mapTransitionTimerRef.current != null) {
+      window.clearTimeout(mapTransitionTimerRef.current);
+    }
+    mapTransitionTimerRef.current = window.setTimeout(() => {
+      setIsMapTransitionLoading(false);
+      mapTransitionTimerRef.current = null;
+    }, remaining);
+  };
+
+  const handleToggleAgencias = async () => {
+    if (overlayAgencias) {
+      setOverlayAgencias(false);
+      return;
+    }
+
+    const bbox = getCurrentMapBbox();
+    setLoadingAgencyPoints(true);
+    try {
+      const points = await fetchAgencyPoints({ bbox, limit: 12000 });
+      setSqlAgencyPoints(points);
+      setOverlayAgencias(true);
+    } catch (error) {
+        console.error('Falha ao carregar agências SQL:', error);
+        toast({
+          title: 'Falha ao carregar agências',
+          description: 'Não foi possível buscar agências no SQL Server.',
+          variant: 'destructive',
+        });
+      return;
+    } finally {
+      setLoadingAgencyPoints(false);
+    }
+  };
+
+  const handleToggleLojas = async () => {
+    if (overlayLojas) {
+      setOverlayLojas(false);
+      return;
+    }
+
+    const bbox = getCurrentMapBbox();
+    setLoadingStorePoints(true);
+    try {
+      const points = await fetchStorePoints({ bbox, limit: 15000 });
+      setSqlStorePoints(points);
+      setOverlayLojas(true);
+    } catch (error) {
+        console.error('Falha ao carregar lojas SQL:', error);
+        toast({
+          title: 'Falha ao carregar lojas',
+          description: 'Não foi possível buscar lojas no SQL Server.',
+          variant: 'destructive',
+        });
+      return;
+    } finally {
+      setLoadingStorePoints(false);
+    }
+  };
+
   const openProductivitySheet = () => {
     setProductivityScope(selectedStateFeature ? 'municipio' : 'estado');
     setSelectedBottomProduct(null);
+    setMunicipalityChoroplethEnabled(false);
+    setChoroplethLegend(null);
     setProductivitySheetOpen(true);
   };
 
@@ -569,19 +771,48 @@ const MapComponent: React.FC<MapComponentProps> = ({
     if (m?.getLayer('br-states-outline')) {
       m.setFilter('br-states-outline', null);
     }
-    if (m) resetMunicipalityVisuals(m, municipalitiesFcRef);
-    setShowLojasOnMap(false);
-    if (m) setAgencyLayersVisibility(m, false);
+    const statesSrc = m?.getSource('br-states') as mapboxgl.GeoJSONSource | undefined;
+    if (statesSrc && m?.isStyleLoaded()) {
+      try {
+        statesSrc.setData(BRAZIL_STATES_GEOJSON);
+      } catch {
+        /* ignore */
+      }
+    }
+    if (m?.getLayer('br-states-choropleth')) {
+      try {
+        m.setPaintProperty('br-states-choropleth', 'fill-color', '#93c5fd');
+        m.setPaintProperty('br-states-choropleth', 'fill-opacity', 0);
+      } catch {
+        /* ignore */
+      }
+    }
+    if (m) clearRegionOverlaySources(m);
+    if (m) resetMunicipalityVisuals(m, municipalitiesFcRef, municipalitiesRawFcRef);
     setSelectedStateLabel(null);
     setSelectedStateFeature(null);
     setSelectedCityLabel(null);
+    setSelectedMunicipalityFeature(null);
     setMunicipalitySearchOptions([]);
     setSearchQuery('');
     setSearchOpen(false);
     setProductivitySheetOpen(false);
     setSelectedBottomProduct(null);
     setProductivityScope('estado');
+    setMunicipalityChoroplethEnabled(false);
+    setChoroplethLegend(null);
     selectedStateCodeRef.current = null;
+    if (m?.isStyleLoaded()) {
+      try {
+        m.fitBounds(MAPBOX_CONFIG.bounds.brazil, {
+          padding: 56,
+          maxZoom: 4.75,
+          duration: 650,
+        });
+      } catch {
+        /* ignore */
+      }
+    }
   };
 
   const initializeMap = async () => {
@@ -612,10 +843,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
       });
 
       map.current.on('load', async () => {
-        toast({
-          title: 'Mapa carregado!',
-          description: 'MapBox inicializado com sucesso.',
-        });
+        setMapReadyVersion((v) => v + 1);
 
         const m = map.current!;
         try {
@@ -632,6 +860,14 @@ const MapComponent: React.FC<MapComponentProps> = ({
         m.touchZoomRotate.disableRotation();
         const sym = firstSymbolLayerId(m);
 
+        /** GeoJSON no Mapbox pode não estar “pronto” no mesmo tick do setData; re-dispara o coroplético no próximo task. */
+        const scheduleMunicipalitiesChoroplethReapply = () => {
+          setMunicipalitiesGeoVersion((v) => v + 1);
+          window.setTimeout(() => {
+            setMunicipalitiesGeoVersion((v) => v + 1);
+          }, 0);
+        };
+
         const loadMunicipiosByUf = async (uf: string): Promise<GeoJSON.FeatureCollection | null> => {
           if (municipiosCacheRef.current[uf]) return municipiosCacheRef.current[uf];
           const ibgeCode = UF_TO_IBGE_CODE[uf];
@@ -642,6 +878,36 @@ const MapComponent: React.FC<MapComponentProps> = ({
           const fc = (await response.json()) as GeoJSON.FeatureCollection;
           municipiosCacheRef.current[uf] = fc;
           return fc;
+        };
+        const loadAllMunicipios = async (): Promise<GeoJSON.FeatureCollection> => {
+          if (allMunicipalitiesFcRef.current.features.length > 0) return allMunicipalitiesFcRef.current;
+          if (loadingAllMunicipalitiesRef.current) {
+            return { type: 'FeatureCollection', features: [] };
+          }
+          loadingAllMunicipalitiesRef.current = true;
+          try {
+            const ufs = Object.keys(UF_TO_IBGE_CODE);
+            const chunks = await Promise.all(
+              ufs.map(async (uf) => {
+                const fc = await loadMunicipiosByUf(uf);
+                return fc?.features ?? [];
+              })
+            );
+            const merged: GeoJSON.FeatureCollection = {
+              type: 'FeatureCollection',
+              features: chunks.flat(),
+            };
+            allMunicipalitiesFcRef.current = merged;
+            const names = merged.features
+              .map((f) => municipalityNameFromProperties(f.properties))
+              .filter((name) => name.trim().length > 0)
+              .slice(0, 5000);
+            setAllMunicipalityNames(names);
+            scheduleMunicipalitiesChoroplethReapply();
+            return merged;
+          } finally {
+            loadingAllMunicipalitiesRef.current = false;
+          }
         };
 
         void fetch(BRAZIL_STATES_GEOJSON)
@@ -685,6 +951,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
             const mask = buildOutsideBrazilMaskFeature(br);
             m.addSource('brazil-outside-mask', { type: 'geojson', data: mask });
             const maskColor = resolveLandMatchMaskColor(m);
+            setOutsideMaskColor(maskColor);
             m.addLayer(
               {
                 id: 'brazil-outside-mask-fill',
@@ -706,6 +973,8 @@ const MapComponent: React.FC<MapComponentProps> = ({
             console.warn('Máscara fora do Brasil não aplicada:', e);
           }
         }
+
+        finishMapTransitionLoading();
 
         m.addSource('structure-people', {
           type: 'geojson',
@@ -747,6 +1016,15 @@ const MapComponent: React.FC<MapComponentProps> = ({
               'fill-opacity': 0.09,
             },
           });
+          m.addLayer({
+            id: 'br-states-choropleth',
+            type: 'fill',
+            source: 'br-states',
+            paint: {
+              'fill-color': '#93c5fd',
+              'fill-opacity': 0,
+            },
+          });
 
           m.addLayer({
             id: 'br-states-dim',
@@ -773,9 +1051,14 @@ const MapComponent: React.FC<MapComponentProps> = ({
             const stateId = resolveStateId(f.properties);
             if (!stateId) return;
 
-            resetMunicipalityVisuals(m, municipalitiesFcRef);
+            // Ao trocar de estado, desligamos overlays regionais para evitar contexto antigo na tela.
+            setOverlayAgencias(false);
+            setOverlayLojas(false);
+            clearRegionOverlaySources(m);
+            resetMunicipalityVisuals(m, municipalitiesFcRef, municipalitiesRawFcRef);
             setMunicipalitySearchOptions([]);
             setSelectedCityLabel(null);
+            setSelectedMunicipalityFeature(null);
 
             const uf = resolveStateCode(f.properties);
             selectedStateCodeRef.current = uf;
@@ -798,7 +1081,9 @@ const MapComponent: React.FC<MapComponentProps> = ({
                     | undefined;
                   ctx?.setData(munis);
                   municipalitiesFcRef.current = munis;
+                  municipalitiesRawFcRef.current = munis;
                   setMunicipalitySearchOptions(buildMunicipalitySearchOptions(munis, uf));
+                  scheduleMunicipalitiesChoroplethReapply();
                 })
                 .catch((err) => console.warn('Municípios do estado não carregados:', err));
             }
@@ -828,6 +1113,9 @@ const MapComponent: React.FC<MapComponentProps> = ({
           m.on('mouseleave', 'br-states-hit', () => {
             m.getCanvas().style.cursor = '';
           });
+          void loadAllMunicipios().catch((err) =>
+            console.warn('Falha ao preparar municípios do Brasil para coropleto:', err)
+          );
         } catch (e) {
           console.warn('Camadas de estados não aplicadas:', e);
         }
@@ -888,8 +1176,13 @@ const MapComponent: React.FC<MapComponentProps> = ({
           const selectMunicipalityFeature = (feature: GeoJSON.Feature) => {
             const source = m.getSource('selected-municipality') as mapboxgl.GeoJSONSource | undefined;
             if (!source) return;
+            // Ao trocar de município, desligamos overlays regionais para o usuário reativar no novo contexto.
+            setOverlayAgencias(false);
+            setOverlayLojas(false);
+            clearRegionOverlaySources(m);
             source.setData({ type: 'FeatureCollection', features: [feature] });
             const municipalityName = municipalityNameFromProperties(feature.properties) || 'Município';
+            setSelectedMunicipalityFeature(feature);
             setSelectedCityLabel(municipalityName);
             setSearchQuery(municipalityName);
             setSearchOpen(false);
@@ -912,6 +1205,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
               if (topId === 'municipalities-context-fill') return;
               if (topId.startsWith('selected-municipality')) return;
               if (topId.startsWith('structure-')) return;
+              if (topId.startsWith('region-overlay-')) return;
             }
 
             const muniByPoly = findMunicipalityFeatureContainingLngLat(municipalitiesFcRef.current, e.lngLat);
@@ -956,6 +1250,8 @@ const MapComponent: React.FC<MapComponentProps> = ({
 
                 contextSource.setData(municipios);
                 municipalitiesFcRef.current = municipios;
+                municipalitiesRawFcRef.current = municipios;
+                scheduleMunicipalitiesChoroplethReapply();
 
                 const cityNameNorm = normalizeText(cityName);
                 const match = municipios.features.find((feature) => {
@@ -968,6 +1264,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
                   return;
                 } else {
                   source.setData({ type: 'FeatureCollection', features: [] });
+                  setSelectedMunicipalityFeature(null);
                 }
               } catch (error) {
                 console.warn('Não foi possível carregar contorno do município:', error);
@@ -1135,7 +1432,75 @@ const MapComponent: React.FC<MapComponentProps> = ({
           m.on('mouseleave', layerId, clearStructPointer);
         }
 
-        setAgencyLayersVisibility(m, false);
+        const emptyRegionFc: GeoJSON.FeatureCollection = { type: 'FeatureCollection', features: [] };
+        m.addSource('region-overlay-agencias', { type: 'geojson', data: emptyRegionFc });
+        m.addSource('region-overlay-supervisores', { type: 'geojson', data: emptyRegionFc });
+        m.addSource('region-overlay-lojas', { type: 'geojson', data: emptyRegionFc });
+
+        m.addLayer({
+          id: 'region-overlay-agencias-cir',
+          type: 'circle',
+          source: 'region-overlay-agencias',
+          paint: {
+            'circle-radius': 7,
+            'circle-color': '#b91c1c',
+            'circle-stroke-width': 2,
+            'circle-stroke-color': '#fff',
+            'circle-opacity': 0.95,
+          },
+        });
+        m.addLayer({
+          id: 'region-overlay-supervisores-cir',
+          type: 'circle',
+          source: 'region-overlay-supervisores',
+          paint: {
+            'circle-radius': 7,
+            'circle-color': '#7c3aed',
+            'circle-stroke-width': 2,
+            'circle-stroke-color': '#fff',
+            'circle-opacity': 0.95,
+          },
+        });
+        m.addLayer({
+          id: 'region-overlay-lojas-cir',
+          type: 'circle',
+          source: 'region-overlay-lojas',
+          paint: {
+            'circle-radius': 7,
+            'circle-color': '#0d9488',
+            'circle-stroke-width': 2,
+            'circle-stroke-color': '#fff',
+            'circle-opacity': 0.95,
+          },
+        });
+
+        const onRegionOverlayClick = (e: mapboxgl.MapLayerMouseEvent) => {
+          const f = e.features?.[0];
+          if (!f || !f.properties || !map.current) return;
+          const nome = String(f.properties.nome ?? '');
+          const sub = String(f.properties.subtitulo ?? '');
+          new mapboxgl.Popup({ maxWidth: '280px' })
+            .setLngLat(e.lngLat)
+            .setHTML(
+              `<div class="text-sm"><strong>${escapeHtml(nome)}</strong><br/><span class="text-gray-600">${escapeHtml(sub)}</span></div>`
+            )
+            .addTo(map.current);
+        };
+        regionOverlayClickHandlerRef.current = onRegionOverlayClick;
+
+        const regionOverlayLayerIds = [
+          'region-overlay-agencias-cir',
+          'region-overlay-supervisores-cir',
+          'region-overlay-lojas-cir',
+        ] as const;
+
+        for (const layerId of regionOverlayLayerIds) {
+          m.on('click', layerId, onRegionOverlayClick);
+          m.on('mouseenter', layerId, setStructPointer);
+          m.on('mouseleave', layerId, clearStructPointer);
+        }
+
+        setAgencyLayersVisibility(m, mapMarkersRef.current.some((x) => x.kind === 'agencia'));
 
         const initial = mapMarkersRef.current;
         if (initial.length > 0) {
@@ -1199,6 +1564,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
 
   useEffect(() => {
     if (!mapContainer.current) return;
+    startMapTransitionLoading();
     if (map.current) {
       map.current.remove();
       map.current = null;
@@ -1209,13 +1575,72 @@ const MapComponent: React.FC<MapComponentProps> = ({
   useEffect(() => {
     const m = map.current;
     if (!m?.isStyleLoaded()) return;
-    setAgencyLayersVisibility(m, showLojasOnMap);
+    setAgencyLayersVisibility(m, mapMarkers.some((x) => x.kind === 'agencia'));
     try {
       m.resize();
     } catch {
       /* ignore */
     }
-  }, [showLojasOnMap]);
+  }, [mapMarkers]);
+
+  useEffect(() => {
+    const m = map.current;
+    if (!m) return;
+    if (!overlayAgencias && !overlayLojas) return;
+
+    const scheduleRefresh = () => {
+      if (refreshTimerRef.current != null) {
+        window.clearTimeout(refreshTimerRef.current);
+      }
+      refreshTimerRef.current = window.setTimeout(() => {
+        void refreshOverlayDataForViewport();
+      }, 220);
+    };
+
+    m.on('moveend', scheduleRefresh);
+    return () => {
+      m.off('moveend', scheduleRefresh);
+      if (refreshTimerRef.current != null) {
+        window.clearTimeout(refreshTimerRef.current);
+        refreshTimerRef.current = null;
+      }
+    };
+  }, [overlayAgencias, overlayLojas, mapReadyVersion]);
+
+  useEffect(() => {
+    const m = map.current;
+    if (!m?.isStyleLoaded()) return;
+    const empty: GeoJSON.FeatureCollection = { type: 'FeatureCollection', features: [] };
+    const MAX_RENDER_POINTS = 25000;
+    const apply = (
+      sourceId: string,
+      active: boolean,
+      points: Parameters<typeof regionPointsToFeatureCollection>[0]
+    ) => {
+      const src = m.getSource(sourceId) as mapboxgl.GeoJSONSource | undefined;
+      if (!src) return;
+      if (!active) {
+        src.setData(empty);
+        return;
+      }
+
+      const boundedPoints =
+        points.length > MAX_RENDER_POINTS ? points.slice(0, MAX_RENDER_POINTS) : points;
+
+      src.setData(regionPointsToFeatureCollection(boundedPoints));
+    };
+    apply('region-overlay-agencias', overlayAgencias, filteredRegionAgencias);
+    apply('region-overlay-supervisores', overlaySupervisores, filteredRegionSupervisores);
+    apply('region-overlay-lojas', overlayLojas, filteredRegionLojas);
+  }, [
+    mapReadyVersion,
+    overlayAgencias,
+    overlaySupervisores,
+    overlayLojas,
+    filteredRegionAgencias,
+    filteredRegionSupervisores,
+    filteredRegionLojas,
+  ]);
 
   useEffect(() => {
     const m = map.current;
@@ -1233,6 +1658,159 @@ const MapComponent: React.FC<MapComponentProps> = ({
     const timer = window.setTimeout(syncMapSize, 360);
     return () => window.clearTimeout(timer);
   }, [filtersPanelOpen]);
+
+  useEffect(() => {
+    const m = map.current;
+    if (!m?.isStyleLoaded()) return;
+
+    const restoreDefaultMunicipalityPaint = () => {
+      if (!m.getLayer('municipalities-context-fill')) return;
+      try {
+        m.setPaintProperty('municipalities-context-fill', 'fill-color', '#67e8f9');
+        m.setPaintProperty('municipalities-context-fill', 'fill-opacity', 0.06);
+        m.setPaintProperty('municipalities-context-line', 'line-color', '#0891b2');
+        m.setPaintProperty('municipalities-context-line', 'line-width', 1.1);
+        m.setPaintProperty('municipalities-context-line', 'line-opacity', 0.42);
+      } catch {
+        /* estilo / ordem de camadas */
+      }
+    };
+    const restoreStateChoroplethPaint = () => {
+      if (!m.getLayer('br-states-choropleth')) return;
+      try {
+        m.setPaintProperty('br-states-choropleth', 'fill-color', '#93c5fd');
+        m.setPaintProperty('br-states-choropleth', 'fill-opacity', 0);
+      } catch {
+        /* ignore */
+      }
+    };
+
+    const ctx = m.getSource('municipalities-context') as mapboxgl.GeoJSONSource | undefined;
+    if (!ctx) {
+      setChoroplethLegend(null);
+      return;
+    }
+
+    const raw = municipalitiesRawFcRef.current;
+    const shouldChoropleth = municipalityChoroplethEnabled && selectedBottomProduct != null;
+
+    if (!shouldChoropleth) {
+      try {
+        if (raw.features.length > 0) {
+          ctx.setData(raw);
+          municipalitiesFcRef.current = raw;
+        }
+        restoreDefaultMunicipalityPaint();
+        restoreStateChoroplethPaint();
+      } catch {
+        /* ignore */
+      }
+      setChoroplethLegend(null);
+      return;
+    }
+    if (productivityScope === 'estado') {
+      const rows = buildMunicipalityProductivityRows(selectedBottomProduct, stateNamesForTable);
+      const { min, max } = computeValueRangeFromRows(rows, 'producaoMes');
+      const valueMap = buildMunicipalityValueMap(rows, 'producaoMes');
+      const statesMerged: GeoJSON.FeatureCollection = {
+        type: 'FeatureCollection',
+        features: stateSearchOptions.map((option) => {
+          const key = normalizeText(option.label);
+          const v = valueMap.get(key);
+          const missing = v === undefined || !Number.isFinite(v);
+          return {
+            ...option.feature,
+            properties: {
+              ...(option.feature.properties as GeoJSON.GeoJsonProperties),
+              heatMissing: missing ? 1 : 0,
+              ...(missing ? {} : { heatValue: v as number }),
+            },
+          } as GeoJSON.Feature;
+        }),
+      };
+      const fillColorExpr: mapboxgl.ExpressionSpecification = [
+        'case',
+        ['==', ['get', 'heatMissing'], 1],
+        '#cbd5e1',
+        ['interpolate', ['linear'], ['to-number', ['get', 'heatValue']], min, '#e0f2fe', max, '#0c4a6e'],
+      ];
+      try {
+        const statesSource = m.getSource('br-states') as mapboxgl.GeoJSONSource | undefined;
+        statesSource?.setData(statesMerged);
+        restoreDefaultMunicipalityPaint();
+        m.setPaintProperty('br-states-choropleth', 'fill-color', fillColorExpr);
+        m.setPaintProperty('br-states-choropleth', 'fill-opacity', 0.72);
+        setChoroplethLegend({ min, max });
+      } catch {
+        restoreStateChoroplethPaint();
+        setChoroplethLegend(null);
+      }
+      return;
+    }
+
+    const rawToUse =
+      selectedStateFeature == null && allMunicipalitiesFcRef.current.features.length > 0
+        ? allMunicipalitiesFcRef.current
+        : raw;
+    const names = rawToUse.features
+      .map((f) => municipalityNameFromProperties(f.properties))
+      .filter((n) => n.trim().length > 0);
+    const rows = buildMunicipalityProductivityRows(selectedBottomProduct, names);
+    const { min, max } = computeValueRangeFromRows(rows, 'producaoMes');
+    const valueMap = buildMunicipalityValueMap(rows, 'producaoMes');
+    const merged = mergeChoroplethIntoFeatureCollection(rawToUse, valueMap);
+    try {
+      restoreStateChoroplethPaint();
+      ctx.setData(merged);
+      municipalitiesFcRef.current = merged;
+      const fillColorExpr: mapboxgl.ExpressionSpecification = [
+        'case',
+        ['==', ['get', 'heatMissing'], 1],
+        '#cbd5e1',
+        ['interpolate', ['linear'], ['to-number', ['get', 'heatValue']], min, '#e0f2fe', max, '#0c4a6e'],
+      ];
+      m.setPaintProperty('municipalities-context-fill', 'fill-color', fillColorExpr);
+      m.setPaintProperty('municipalities-context-fill', 'fill-opacity', 0.72);
+      m.setPaintProperty('municipalities-context-line', 'line-color', '#64748b');
+      m.setPaintProperty('municipalities-context-line', 'line-width', 0.85);
+      m.setPaintProperty('municipalities-context-line', 'line-opacity', 0.55);
+      setChoroplethLegend({ min, max });
+    } catch {
+      restoreDefaultMunicipalityPaint();
+      setChoroplethLegend(null);
+    }
+  }, [
+    municipalityChoroplethEnabled,
+    selectedBottomProduct,
+    selectedStateFeature,
+    municipalitySearchOptions,
+    selectedMunicipalityFeature,
+    productivityScope,
+    stateNamesForTable,
+    municipalitiesGeoVersion,
+  ]);
+
+  /** Com coropleto ativo, o destaque do município não pode cobrir o degradê (fill transparente + contorno leve). */
+  useEffect(() => {
+    const m = map.current;
+    if (!m?.isStyleLoaded()) return;
+    if (!m.getLayer('selected-municipality-fill') || !m.getLayer('selected-municipality-line')) return;
+    try {
+      if (municipalityChoroplethEnabled) {
+        m.setPaintProperty('selected-municipality-fill', 'fill-opacity', 0);
+        m.setPaintProperty('selected-municipality-line', 'line-width', 1.1);
+        m.setPaintProperty('selected-municipality-line', 'line-opacity', 0.55);
+        m.setPaintProperty('selected-municipality-line', 'line-color', '#0f172a');
+      } else {
+        m.setPaintProperty('selected-municipality-fill', 'fill-opacity', 0.12);
+        m.setPaintProperty('selected-municipality-line', 'line-width', 2.2);
+        m.setPaintProperty('selected-municipality-line', 'line-opacity', 0.85);
+        m.setPaintProperty('selected-municipality-line', 'line-color', '#0284c7');
+      }
+    } catch {
+      /* estilo recarregando */
+    }
+  }, [municipalityChoroplethEnabled]);
 
   useEffect(() => {
     return () => {
@@ -1253,17 +1831,49 @@ const MapComponent: React.FC<MapComponentProps> = ({
       if (m && municipalityClickHandlerRef.current) {
         m.off('click', 'municipalities-context-fill', municipalityClickHandlerRef.current);
       }
+      if (m && regionOverlayClickHandlerRef.current) {
+        const h = regionOverlayClickHandlerRef.current;
+        for (const id of [
+          'region-overlay-agencias-sym',
+          'region-overlay-supervisores-sym',
+          'region-overlay-lojas-sym',
+          'region-overlay-agencias-cir',
+          'region-overlay-supervisores-cir',
+          'region-overlay-lojas-cir',
+        ] as const) {
+          m.off('click', id, h);
+        }
+      }
       map.current?.remove();
       map.current = null;
+      if (mapTransitionTimerRef.current != null) {
+        window.clearTimeout(mapTransitionTimerRef.current);
+        mapTransitionTimerRef.current = null;
+      }
     };
   }, []);
 
   return (
     <div className="relative h-full rounded-lg overflow-hidden">
       <div ref={mapContainer} className="absolute inset-0" />
+      {isMapTransitionLoading && (
+        <div
+          className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center"
+          style={{ backgroundColor: outsideMaskColor }}
+        >
+          <div className="w-[min(86vw,340px)] rounded-xl border border-white/35 bg-white/15 px-4 py-3 shadow-sm">
+            <p className="text-center text-xs font-medium text-slate-800">
+              Carregando visual do mapa...
+            </p>
+            <div className="mt-2 h-1 overflow-hidden rounded-full bg-white/35">
+              <div className="h-full w-1/2 animate-pulse rounded-full bg-slate-700/70" />
+            </div>
+          </div>
+        </div>
+      )}
       <div className="absolute top-4 left-4 z-20 w-[min(95vw,380px)]">
         <div>
-          <div className="relative h-10 rounded-full border border-red-200/80 bg-white/95 shadow-lg backdrop-blur-sm">
+          <div className="relative h-10 rounded-full border border-slate-200/90 bg-white/95 shadow-md shadow-slate-900/5 backdrop-blur-sm">
             <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <Input
               value={searchQuery}
@@ -1280,7 +1890,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
             />
           </div>
           {searchOpen && searchQuery.trim().length >= 2 && (
-            <div className="mt-2 max-h-72 overflow-auto rounded-lg border border-red-100 bg-white p-1">
+            <div className="mt-2 max-h-72 overflow-auto rounded-xl border border-slate-200/90 bg-white/98 p-1 shadow-md shadow-slate-900/5">
               {visibleSearchOptions.length === 0 ? (
                 <p className="px-2 py-2 text-xs text-muted-foreground">
                   Nenhum resultado. Tente outro nome.
@@ -1292,7 +1902,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
                     type="button"
                     onMouseDown={(e) => e.preventDefault()}
                     onClick={() => handleSearchSelect(option)}
-                    className="flex w-full items-center justify-between rounded-md px-2 py-2 text-left hover:bg-red-50"
+                    className="flex w-full items-center justify-between rounded-lg px-2 py-2 text-left hover:bg-slate-50"
                   >
                     <span className="text-sm text-slate-800">{option.label}</span>
                     <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-slate-600">
@@ -1303,17 +1913,65 @@ const MapComponent: React.FC<MapComponentProps> = ({
               )}
             </div>
           )}
+          <div className="mt-2 flex flex-wrap gap-2">
+            <button
+              type="button"
+              title="Mostrar agências no mapa"
+              aria-label="Mostrar agências no mapa"
+              aria-pressed={overlayAgencias}
+              onClick={handleToggleAgencias}
+              className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full border text-[10px] font-bold shadow-sm backdrop-blur-sm transition-colors ${
+                overlayAgencias
+                  ? 'border-slate-600 bg-slate-700 text-white shadow-slate-900/15'
+                  : 'border-slate-200/90 bg-white/95 text-slate-600 hover:border-slate-300 hover:bg-slate-50'
+              }`}
+            >
+              AG
+            </button>
+            <button
+              type="button"
+              title="Mostrar supervisores no mapa"
+              aria-label="Mostrar supervisores no mapa"
+              aria-pressed={overlaySupervisores}
+              onClick={() => setOverlaySupervisores((v) => !v)}
+              className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full border shadow-sm backdrop-blur-sm transition-colors ${
+                overlaySupervisores
+                  ? 'border-slate-600 bg-slate-700 text-white shadow-slate-900/15'
+                  : 'border-slate-200/90 bg-white/95 text-slate-600 hover:border-slate-300 hover:bg-slate-50'
+              }`}
+            >
+              <User className="h-4 w-4" />
+            </button>
+            <button
+              type="button"
+              title="Mostrar lojas no mapa"
+              aria-label="Mostrar lojas no mapa"
+              aria-pressed={overlayLojas}
+              onClick={handleToggleLojas}
+              className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full border shadow-sm backdrop-blur-sm transition-colors ${
+                overlayLojas
+                  ? 'border-slate-600 bg-slate-700 text-white shadow-slate-900/15'
+                  : 'border-slate-200/90 bg-white/95 text-slate-600 hover:border-slate-300 hover:bg-slate-50'
+              }`}
+            >
+              <Store className="h-4 w-4" />
+            </button>
+          </div>
         </div>
       </div>
-      <div className="absolute right-4 top-1/2 z-20 -translate-y-1/2">
-        <div className="rounded-3xl border border-red-100/90 bg-white/95 p-2 shadow-xl backdrop-blur-sm">
+      <div
+        className={`absolute top-4 z-20 transition-[right] duration-500 ease-out ${
+          hasStatePanel ? 'right-[calc(min(96vw,420px)+0.75rem)]' : 'right-4'
+        }`}
+      >
+        <div className="rounded-3xl border border-slate-200/90 bg-white/95 p-2 shadow-lg shadow-slate-900/10 backdrop-blur-sm">
           <div className="flex flex-col items-center gap-2">
             <Button
               type="button"
               size="icon"
               onClick={onOpenFilters}
               aria-label="Abrir filtros"
-              className="h-10 w-10 rounded-full border border-red-200 bg-white text-red-700 shadow-sm hover:bg-red-50"
+              className="h-10 w-10 rounded-full border border-slate-200/90 bg-white text-slate-600 shadow-sm hover:bg-slate-50 hover:text-slate-900"
             >
               <SlidersHorizontal className="h-4 w-4" />
             </Button>
@@ -1325,7 +1983,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
                 setMapStyleMode((prev) => (prev === 'default' ? 'satellite' : 'default'));
               }}
               aria-label="Alternar estilo do mapa"
-              className="h-10 w-10 rounded-full border border-red-200 bg-white text-red-700 shadow-sm hover:bg-red-50"
+              className="h-10 w-10 rounded-full border border-slate-200/90 bg-white text-slate-600 shadow-sm hover:bg-slate-50 hover:text-slate-900"
             >
               <Layers className="h-4 w-4" />
             </Button>
@@ -1334,17 +1992,17 @@ const MapComponent: React.FC<MapComponentProps> = ({
               size="icon"
               onClick={openProductivitySheet}
               aria-label="Abrir produtividade por município"
-              className="h-10 w-10 rounded-full border border-red-200 bg-white text-red-700 shadow-sm hover:bg-red-50"
+              className="h-10 w-10 rounded-full border border-slate-200/90 bg-white text-slate-600 shadow-sm hover:bg-slate-50 hover:text-slate-900"
             >
               <BarChart3 className="h-4 w-4" />
             </Button>
-            <div className="my-1 h-px w-8 bg-red-100" />
+            <div className="my-1 h-px w-8 bg-slate-200/90" />
             <Button
               type="button"
               size="icon"
               onClick={handleZoomIn}
               aria-label="Aproximar mapa"
-              className="h-10 w-10 rounded-full border border-red-200 bg-white text-red-700 shadow-sm hover:bg-red-50"
+              className="h-10 w-10 rounded-full border border-slate-200/90 bg-white text-slate-600 shadow-sm hover:bg-slate-50 hover:text-slate-900"
             >
               <span className="text-xl leading-none">+</span>
             </Button>
@@ -1353,23 +2011,37 @@ const MapComponent: React.FC<MapComponentProps> = ({
               size="icon"
               onClick={handleZoomOut}
               aria-label="Afastar mapa"
-              className="h-10 w-10 rounded-full border border-red-200 bg-white text-red-700 shadow-sm hover:bg-red-50"
+              className="h-10 w-10 rounded-full border border-slate-200/90 bg-white text-slate-600 shadow-sm hover:bg-slate-50 hover:text-slate-900"
             >
               <span className="text-xl leading-none">-</span>
+            </Button>
+            <Button
+              type="button"
+              size="icon"
+              onClick={clearSelectedState}
+              disabled={!hasMapSelection}
+              title={
+                hasMapSelection
+                  ? 'Limpar seleção (estado/município) e voltar a visão do Brasil'
+                  : 'Nada selecionado no mapa'
+              }
+              aria-label="Limpar seleção do mapa"
+              className="h-10 w-10 rounded-full border border-slate-200/90 bg-white text-slate-600 shadow-sm hover:bg-slate-50 hover:text-slate-900 disabled:pointer-events-none disabled:opacity-40"
+            >
+              <MapPinOff className="h-4 w-4" />
             </Button>
           </div>
         </div>
       </div>
       {mapMarkers.length > 0 && (
-        <div className="absolute left-4 top-[104px] z-10 max-w-[240px] rounded-lg border border-border/60 bg-map-surface/95 p-3 shadow-lg backdrop-blur-sm">
+        <div className="absolute left-4 top-[152px] z-10 max-w-[240px] rounded-lg border border-border/60 bg-map-surface/95 p-3 shadow-lg backdrop-blur-sm">
           <p className="text-sm font-medium">Camada comercial</p>
           <p className="mt-1 text-xs text-muted-foreground">
             {mapMarkers.filter((x) => x.kind === 'pessoa').length} correspondentes no mapa
             {mapMarkers.filter((x) => x.kind === 'agencia').length > 0 && (
               <>
                 {' '}
-                · {mapMarkers.filter((x) => x.kind === 'agencia').length} lojas (ativar no painel do
-                estado)
+                · {mapMarkers.filter((x) => x.kind === 'agencia').length} agências (filtros)
               </>
             )}
           </p>
@@ -1381,30 +2053,97 @@ const MapComponent: React.FC<MapComponentProps> = ({
           cityFocus={selectedCityLabel}
           metrics={expressoMetrics}
           onClose={clearSelectedState}
-          showLojasOnMap={showLojasOnMap}
-          onShowLojasOnMapChange={setShowLojasOnMap}
           onOpenProductivitySheet={openProductivitySheet}
         />
       )}
-      <ExpressoBottomSheet
-        open={productivitySheetOpen}
-        products={productsForBottomSheet}
-        selectedProduct={selectedBottomProduct}
-        rows={municipalityProductivityRows}
-        scope={productivityScope}
-        showMunicipalityScope={Boolean(selectedStateFeature)}
-        onScopeChange={(scope) => {
-          if (scope === 'municipio' && !selectedStateFeature) return;
-          setProductivityScope(scope);
-        }}
-        rightInsetClass={hasStatePanel ? 'right-[min(96vw,420px)]' : 'right-0'}
-        onClose={() => {
-          setProductivitySheetOpen(false);
-          setSelectedBottomProduct(null);
-        }}
-        onBackToCards={() => setSelectedBottomProduct(null)}
-        onSelectProduct={setSelectedBottomProduct}
-      />
+      {(() => {
+        const productivityDockInset = hasStatePanel ? 'left-0 right-[min(96vw,420px)]' : 'left-0 right-0';
+        const showChoroplethLegend =
+          municipalityChoroplethEnabled && choroplethLegend != null && selectedBottomProduct != null;
+
+        const legendBody =
+          showChoroplethLegend && choroplethLegend ? (
+            <>
+              <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Produção no mês</p>
+              <div
+                className="mt-1.5 h-2.5 w-full rounded-full"
+                style={{
+                  background: 'linear-gradient(to right, #e0f2fe, #0c4a6e)',
+                }}
+              />
+              <div className="mt-1 flex justify-between gap-2 text-[10px] tabular-nums text-slate-600">
+                <span>
+                  {choroplethLegend.min.toLocaleString('pt-BR', {
+                    style: 'currency',
+                    currency: 'BRL',
+                    maximumFractionDigits: 0,
+                  })}
+                </span>
+                <span>
+                  {choroplethLegend.max.toLocaleString('pt-BR', {
+                    style: 'currency',
+                    currency: 'BRL',
+                    maximumFractionDigits: 0,
+                  })}
+                </span>
+              </div>
+              <p className="mt-1 text-[9px] text-slate-400">Cinza: sem dado para o município</p>
+            </>
+          ) : null;
+
+        if (productivitySheetOpen) {
+          return (
+            <div
+              className={`pointer-events-none absolute bottom-0 z-30 flex flex-col-reverse gap-2 pb-[env(safe-area-inset-bottom,0px)] ${productivityDockInset}`}
+            >
+              {/* Em column-reverse o 1º filho fica colado ao rodapé: sheet primeiro, legenda acima. */}
+              <div className="pointer-events-auto min-w-0 w-full">
+                <ExpressoBottomSheet
+                  dock
+                  open={productivitySheetOpen}
+                  products={productsForBottomSheet}
+                  selectedProduct={selectedBottomProduct}
+                  rows={municipalityProductivityRows}
+                  scope={productivityScope}
+                  showMunicipalityScope={Boolean(selectedStateFeature)}
+                  onScopeChange={(scope) => {
+                    if (scope === 'municipio' && !selectedStateFeature) return;
+                    setProductivityScope(scope);
+                  }}
+                  rightInsetClass={hasStatePanel ? 'right-[min(96vw,420px)]' : 'right-0'}
+                  onClose={() => {
+                    setProductivitySheetOpen(false);
+                    setSelectedBottomProduct(null);
+                    setMunicipalityChoroplethEnabled(false);
+                    setChoroplethLegend(null);
+                  }}
+                  onBackToCards={() => {
+                    setSelectedBottomProduct(null);
+                    setMunicipalityChoroplethEnabled(false);
+                    setChoroplethLegend(null);
+                  }}
+                  onSelectProduct={setSelectedBottomProduct}
+                  choroplethEnabled={municipalityChoroplethEnabled}
+                  onChoroplethEnabledChange={setMunicipalityChoroplethEnabled}
+                  canUseChoropleth
+                  choroplethModeLabel={choroplethModeLabel ?? undefined}
+                />
+              </div>
+              {legendBody ? (
+                <div className="pointer-events-none mx-4 max-w-[220px] self-start rounded-lg border border-slate-200/90 bg-white/95 px-3 py-2 shadow-md backdrop-blur-sm">
+                  {legendBody}
+                </div>
+              ) : null}
+            </div>
+          );
+        }
+
+        return legendBody ? (
+          <div className="pointer-events-none absolute bottom-4 left-4 z-20 max-w-[220px] rounded-lg border border-slate-200/90 bg-white/95 px-3 py-2 shadow-md backdrop-blur-sm">
+            {legendBody}
+          </div>
+        ) : null;
+      })()}
     </div>
   );
 };

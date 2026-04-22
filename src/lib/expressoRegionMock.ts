@@ -1,8 +1,20 @@
 import type { MarcadorMapa } from '@/data/commercialStructureMock';
+import { format, subDays, subMonths } from 'date-fns';
+import { ptBR } from 'date-fns/locale/pt-BR';
 
 type GeoJSONPosition = [number, number];
 
 export type ProdutoExpressoId = 'consignado' | 'lime' | 'contas' | 'seguros';
+
+export type ProdutoStatusSemantico = 'critico' | 'atencao' | 'saudavel';
+
+export type PeriodoEvolucaoId = '7d' | '30d' | '3m' | '12m';
+
+export interface EvolucaoChartPoint {
+  label: string;
+  atualMil: number;
+  anteriorMil: number;
+}
 
 export interface SubprodutoExpresso {
   id: string;
@@ -18,14 +30,53 @@ export interface ProdutoExpressoResumo {
   nome: string;
   variacaoPct: number;
   lojas: number;
+  lojasAtivas: number;
   producaoMes: number;
+  /** Participação na produção total da região (%) */
+  participacaoPct: number;
+  statusSemantico: ProdutoStatusSemantico;
+  insightDestaque: string;
+  evolucaoPorPeriodo: Record<PeriodoEvolucaoId, EvolucaoChartPoint[]>;
   subprodutos: SubprodutoExpresso[];
 }
 
 export interface ExpressoRegionMetrics {
   agencias: number;
+  pas: number;
+  pracasPresencas: number;
   lojas: number;
+  lojasAtivas: number;
   produtos: ProdutoExpressoResumo[];
+}
+
+function zeroEvolucaoSeries(len: number): EvolucaoChartPoint[] {
+  return Array.from({ length: len }, () => ({
+    label: '—',
+    atualMil: 0,
+    anteriorMil: 0,
+  }));
+}
+
+/** Fallback quando ainda não há métricas da região (tipagem alinhada a `ProdutoExpressoResumo`). */
+export function emptyProdutoExpressoResumo(id: ProdutoExpressoId, nome: string): ProdutoExpressoResumo {
+  return {
+    id,
+    nome,
+    variacaoPct: 0,
+    lojas: 0,
+    lojasAtivas: 0,
+    producaoMes: 0,
+    participacaoPct: 0,
+    statusSemantico: 'saudavel',
+    insightDestaque: 'Selecione um estado no mapa para carregar o desempenho por produto.',
+    evolucaoPorPeriodo: {
+      '7d': zeroEvolucaoSeries(7),
+      '30d': zeroEvolucaoSeries(6),
+      '3m': zeroEvolucaoSeries(6),
+      '12m': zeroEvolucaoSeries(6),
+    },
+    subprodutos: [],
+  };
 }
 
 export interface MunicipalityProductivityRow {
@@ -88,6 +139,73 @@ function markersInState(markers: MarcadorMapa[], stateFeature: GeoJSON.Feature |
 
 const SEGUROS_SUBNOMES = ['Vida', 'Residencial', 'Acidentes pessoais'] as const;
 
+function deriveStatusSemantico(variacaoPct: number, participacaoPct: number): ProdutoStatusSemantico {
+  if (variacaoPct <= -8 || (variacaoPct <= -4 && participacaoPct >= 28)) return 'critico';
+  if (variacaoPct < 0) return 'atencao';
+  return 'saudavel';
+}
+
+function deriveInsightDestaque(p: {
+  nome: string;
+  variacaoPct: number;
+  participacaoPct: number;
+  statusSemantico: ProdutoStatusSemantico;
+}): string {
+  const { nome, variacaoPct, participacaoPct, statusSemantico } = p;
+  if (statusSemantico === 'critico' && variacaoPct < 0) {
+    const impacto = Math.min(95, Math.max(12, Math.round(participacaoPct * 0.85)));
+    return `Queda relevante na produção de ${nome}, impactando cerca de ${impacto}% da retração total da região.`;
+  }
+  if (statusSemantico === 'atencao' && variacaoPct < 0) {
+    return `${nome} recua frente ao mês anterior, mas ainda concentra ${participacaoPct.toLocaleString('pt-BR', { maximumFractionDigits: 1 })}% da produção regional — vale monitorar lojas com maior contribuição negativa.`;
+  }
+  if (variacaoPct > 0) {
+    return `${nome} avança ${Math.abs(variacaoPct).toLocaleString('pt-BR', { maximumFractionDigits: 1 })}% vs. período anterior, reforçando ${participacaoPct.toLocaleString('pt-BR', { maximumFractionDigits: 1 })}% da produção da região.`;
+  }
+  return `${nome} está estável em relação ao período anterior, com participação de ${participacaoPct.toLocaleString('pt-BR', { maximumFractionDigits: 1 })}% na região.`;
+}
+
+function buildEvolucaoPorPeriodo(
+  seedKey: string,
+  salt: number,
+  producaoMes: number,
+  variacaoPct: number
+): Record<PeriodoEvolucaoId, EvolucaoChartPoint[]> {
+  const atualEnd = Math.max(0.05, producaoMes / 1000);
+  const ratio = 1 + variacaoPct / 100;
+  const anteriorEnd = Math.max(0.05, atualEnd / (Math.abs(ratio) < 0.02 ? 0.02 : ratio));
+
+  const mk = (len: number, labelAt: (idx: number) => string): EvolucaoChartPoint[] => {
+    const out: EvolucaoChartPoint[] = [];
+    for (let i = 0; i < len; i += 1) {
+      const t = len === 1 ? 1 : i / (len - 1);
+      const wobble = (seededRange(seedKey, salt * 47 + i * 3, -18, 18) / 100) * 0.12;
+      const pathA = atualEnd * (0.78 + 0.22 * t + wobble);
+      const pathB = anteriorEnd * (0.82 + 0.18 * t + wobble * 0.65);
+      out.push({
+        label: labelAt(i),
+        atualMil: Math.max(0, Math.round(pathA * 10) / 10),
+        anteriorMil: Math.max(0, Math.round(pathB * 10) / 10),
+      });
+    }
+    out[len - 1] = {
+      label: out[len - 1].label,
+      atualMil: Math.round(atualEnd * 10) / 10,
+      anteriorMil: Math.round(anteriorEnd * 10) / 10,
+    };
+    return out;
+  };
+
+  const ref = new Date();
+
+  return {
+    '7d': mk(7, (i) => format(subDays(ref, 6 - i), 'dd/MMM', { locale: ptBR })),
+    '30d': mk(6, (i) => format(subDays(ref, 30 - i * 6), 'dd/MMM', { locale: ptBR })),
+    '3m': mk(6, (i) => format(subDays(ref, 90 - i * 18), 'dd/MMM', { locale: ptBR })),
+    '12m': mk(6, (i) => format(subMonths(ref, (5 - i) * 2), "MMM ''yy", { locale: ptBR })),
+  };
+}
+
 function buildProdutos(seed: string, lojas: number, producaoRegional: number): ProdutoExpressoResumo[] {
   const ids: ProdutoExpressoId[] = ['consignado', 'lime', 'contas', 'seguros'];
   const weights = ids.map((_, i) => 18 + seededRange(seed, 10 + i, 0, 24));
@@ -96,7 +214,7 @@ function buildProdutos(seed: string, lojas: number, producaoRegional: number): P
   let remLojas = lojas;
   let remProd = producaoRegional;
 
-  return ids.map((id, i) => {
+  const raw = ids.map((id, i) => {
     const isLast = i === ids.length - 1;
     const lojasP = isLast ? remLojas : Math.max(0, Math.round((lojas * weights[i]) / totalW));
     const prodP = isLast ? remProd : Math.max(0, Math.round((producaoRegional * weights[i]) / totalW));
@@ -164,14 +282,39 @@ function buildProdutos(seed: string, lojas: number, producaoRegional: number): P
       });
     }
 
+    const lojasAtivasP = Math.max(
+      0,
+      Math.min(lojasP, Math.round(lojasP * (0.68 + seededRange(seed, 250 + i, 0, 28) / 100)))
+    );
+    const evolucaoPorPeriodo = buildEvolucaoPorPeriodo(`${seed}:${id}`, i, prodP, Math.round(variacaoPct * 10) / 10);
+
     return {
       id,
       nome,
       variacaoPct: Math.round(variacaoPct * 10) / 10,
       lojas: lojasP,
+      lojasAtivas: lojasAtivasP,
       producaoMes: prodP,
+      participacaoPct: 0,
+      statusSemantico: 'saudavel',
+      insightDestaque: '',
+      evolucaoPorPeriodo,
       subprodutos,
     };
+  });
+
+  const totalProd = raw.reduce((s, p) => s + p.producaoMes, 0) || 1;
+
+  return raw.map((p) => {
+    const participacaoPct = Math.round((p.producaoMes / totalProd) * 1000) / 10;
+    const statusSemantico = deriveStatusSemantico(p.variacaoPct, participacaoPct);
+    const insightDestaque = deriveInsightDestaque({
+      nome: p.nome,
+      variacaoPct: p.variacaoPct,
+      participacaoPct,
+      statusSemantico,
+    });
+    return { ...p, participacaoPct, statusSemantico, insightDestaque };
   });
 }
 
@@ -191,13 +334,19 @@ export function buildExpressoRegionMetrics(
     ).toUpperCase() || 'UF';
 
   const agencias = inState.filter((m) => m.kind === 'agencia').length;
+  const pas = Math.max(0, Math.round(agencias * 0.62));
+  const pracasPresencas = Math.max(0, agencias - pas);
   const lojas = agencias;
+  const lojasAtivas = Math.max(0, Math.min(lojas, Math.round(lojas * (0.72 + seededRange(sigla, 2, 0, 18) / 100))));
   const base = Math.max(1, agencias * 42 + inState.filter((m) => m.kind === 'pessoa').length * 18);
   const producaoRegional = base * (800 + seededRange(sigla, 1, 0, 400));
 
   return {
     agencias,
+    pas,
+    pracasPresencas,
     lojas,
+    lojasAtivas,
     produtos: buildProdutos(sigla, lojas, producaoRegional),
   };
 }
