@@ -1,7 +1,16 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import mapboxgl, { type FilterSpecification } from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
-import { BarChart3, Layers, MapPinOff, Search, SlidersHorizontal, Store, User } from 'lucide-react';
+import {
+  BarChart3,
+  LayoutGrid,
+  Layers,
+  MapPinOff,
+  Search,
+  SlidersHorizontal,
+  Store,
+  User,
+} from 'lucide-react';
 import ExpressoBottomSheet from '@/components/ExpressoBottomSheet';
 import ExpressoStatePanel from '@/components/ExpressoStatePanel';
 import { Input } from '@/components/ui/input';
@@ -171,6 +180,48 @@ function applyBrazilBasemapLabelTweaks(m: mapboxgl.Map) {
 
 function firstSymbolLayerId(m: mapboxgl.Map): string | undefined {
   return m.getStyle().layers?.find((l) => l.type === 'symbol')?.id;
+}
+
+function isStandardStyleUrl(styleUrl: string): boolean {
+  return styleUrl.includes('mapbox/standard');
+}
+
+type FillPaint = NonNullable<mapboxgl.FillLayerSpecification['paint']>;
+type LinePaint = NonNullable<mapboxgl.LineLayerSpecification['paint']>;
+type CirclePaint = NonNullable<mapboxgl.CircleLayerSpecification['paint']>;
+
+/** Standard usa iluminação do basemap; fills precisam de emissive para não “apagarem”. */
+function fillPaintForStandard(styleUrl: string, paint: FillPaint): FillPaint {
+  if (!isStandardStyleUrl(styleUrl)) return paint;
+  return { ...paint, 'fill-emissive-strength': 1 };
+}
+
+function linePaintForStandard(styleUrl: string, paint: LinePaint): LinePaint {
+  if (!isStandardStyleUrl(styleUrl)) return paint;
+  return { ...paint, 'line-emissive-strength': 1 };
+}
+
+function circlePaintForStandard(styleUrl: string, paint: CirclePaint): CirclePaint {
+  if (!isStandardStyleUrl(styleUrl)) return paint;
+  return { ...paint, 'circle-emissive-strength': 1 };
+}
+
+function applyStandardWarmBasemap(m: mapboxgl.Map) {
+  const tryTheme = (theme: string) => {
+    try {
+      m.setConfigProperty('basemap', 'theme', theme);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  if (!tryTheme('warm')) tryTheme('default');
+  try {
+    m.setConfigProperty('basemap', 'show3dObjects', false);
+    m.setConfigProperty('basemap', 'lightPreset', 'day');
+  } catch {
+    /* ignore */
+  }
 }
 
 function markersToFeatureCollection(markers: MarcadorMapa[]): GeoJSON.FeatureCollection {
@@ -414,6 +465,34 @@ function cityLabelLayerIds(m: mapboxgl.Map): string[] {
     .map((layer) => layer.id);
 }
 
+type MapStyleMode = 'default' | 'satellite' | 'standardWarm';
+
+const MAP_LAYOUT_OPTIONS: {
+  id: MapStyleMode;
+  label: string;
+  caption: string;
+  previewClass: string;
+}[] = [
+  {
+    id: 'default',
+    label: 'Mapa claro (Light)',
+    caption: 'Claro',
+    previewClass: 'bg-gradient-to-br from-white via-slate-100 to-slate-300 ring-1 ring-inset ring-slate-300/80',
+  },
+  {
+    id: 'satellite',
+    label: 'Satélite com ruas',
+    caption: 'Sat.',
+    previewClass: 'bg-gradient-to-br from-emerald-950 via-slate-900 to-slate-950 ring-1 ring-inset ring-slate-700',
+  },
+  {
+    id: 'standardWarm',
+    label: 'Mapbox Standard (tema warm)',
+    caption: 'Warm',
+    previewClass: 'bg-gradient-to-br from-amber-50 via-orange-100 to-amber-200 ring-1 ring-inset ring-amber-400/90',
+  },
+];
+
 type SearchOption = {
   id: string;
   label: string;
@@ -523,7 +602,36 @@ const MapComponent: React.FC<MapComponentProps> = ({
   const [stateSearchOptions, setStateSearchOptions] = useState<SearchOption[]>([]);
   const [municipalitySearchOptions, setMunicipalitySearchOptions] = useState<SearchOption[]>([]);
   const [allMunicipalityNames, setAllMunicipalityNames] = useState<string[]>([]);
-  const [mapStyleMode, setMapStyleMode] = useState<'default' | 'satellite'>('default');
+  const [mapStyleMode, setMapStyleMode] = useState<MapStyleMode>('default');
+  /** Abre o seletor de layout ao clicar (útil sem hover, ex.: touch). Combinado com hover no botão Layers. */
+  const [mapLayoutMenuPinned, setMapLayoutMenuPinned] = useState(false);
+  const [mapLayoutFlyoutHover, setMapLayoutFlyoutHover] = useState(false);
+  const layoutFlyoutHoverTimerRef = useRef<number | null>(null);
+  const mapLayoutPickerRef = useRef<HTMLDivElement>(null);
+
+  const clearLayoutHoverTimer = useCallback(() => {
+    if (layoutFlyoutHoverTimerRef.current != null) {
+      window.clearTimeout(layoutFlyoutHoverTimerRef.current);
+      layoutFlyoutHoverTimerRef.current = null;
+    }
+  }, []);
+
+  const scheduleLayoutHoverEnd = useCallback(() => {
+    clearLayoutHoverTimer();
+    layoutFlyoutHoverTimerRef.current = window.setTimeout(() => {
+      setMapLayoutFlyoutHover(false);
+      layoutFlyoutHoverTimerRef.current = null;
+    }, 140);
+  }, [clearLayoutHoverTimer]);
+
+  const openLayoutFlyoutHover = useCallback(() => {
+    clearLayoutHoverTimer();
+    setMapLayoutFlyoutHover(true);
+  }, [clearLayoutHoverTimer]);
+
+  useEffect(() => () => clearLayoutHoverTimer(), [clearLayoutHoverTimer]);
+
+  const showLayoutFlyout = mapLayoutMenuPinned || mapLayoutFlyoutHover;
   const [productivitySheetOpen, setProductivitySheetOpen] = useState(false);
   const [selectedBottomProduct, setSelectedBottomProduct] = useState<ProdutoExpressoId | null>(null);
   const [productivityScope, setProductivityScope] = useState<'estado' | 'municipio'>('estado');
@@ -531,9 +639,29 @@ const MapComponent: React.FC<MapComponentProps> = ({
   /** Incrementa quando o GeoJSON de municípios (UF ou Brasil) é escrito nos refs — refs sozinhos não disparam o efeito do coroplético. */
   const [municipalitiesGeoVersion, setMunicipalitiesGeoVersion] = useState(0);
   const [choroplethLegend, setChoroplethLegend] = useState<{ min: number; max: number } | null>(null);
+  /** Malha municipal (preenchimento + contornos do contexto); não afeta zoom nem contorno do município selecionado. */
+  const [municipalityMeshVisible, setMunicipalityMeshVisible] = useState(true);
   const [outsideMaskColor, setOutsideMaskColor] = useState<string>(MAPBOX_CONFIG.outsideBrazilMaskColor);
   const activeBaseStyle =
-    mapStyleMode === 'satellite' ? MAPBOX_CONFIG.styles.satellite : MAPBOX_CONFIG.styles.default;
+    mapStyleMode === 'satellite'
+      ? MAPBOX_CONFIG.styles.satellite
+      : mapStyleMode === 'standardWarm'
+        ? MAPBOX_CONFIG.styles.standardWarm
+        : MAPBOX_CONFIG.styles.default;
+
+  useEffect(() => {
+    if (!mapLayoutMenuPinned) return;
+    const onPointerDown = (e: PointerEvent) => {
+      const root = mapLayoutPickerRef.current;
+      if (root && !root.contains(e.target as Node)) {
+        setMapLayoutMenuPinned(false);
+        setMapLayoutFlyoutHover(false);
+        clearLayoutHoverTimer();
+      }
+    };
+    document.addEventListener('pointerdown', onPointerDown, true);
+    return () => document.removeEventListener('pointerdown', onPointerDown, true);
+  }, [mapLayoutMenuPinned, clearLayoutHoverTimer]);
 
   const expressoMetrics = useMemo(
     () => buildExpressoRegionMetrics(mapMarkers, selectedStateFeature),
@@ -573,7 +701,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
     if (overlayAgencias && !loadingAgencyPoints) {
       setLoadingAgencyPoints(true);
       try {
-        const points = await fetchAgencyPoints({ bbox, limit: 12000 });
+        const points = await fetchAgencyPoints({ bbox });
         setSqlAgencyPoints(points);
       } catch (error) {
         console.error('Falha ao carregar agências SQL:', error);
@@ -590,7 +718,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
     if (overlayLojas && !loadingStorePoints) {
       setLoadingStorePoints(true);
       try {
-        const points = await fetchStorePoints({ bbox, limit: 15000 });
+        const points = await fetchStorePoints({ bbox });
         setSqlStorePoints(points);
       } catch (error) {
         console.error('Falha ao carregar lojas SQL:', error);
@@ -711,7 +839,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
     const bbox = getCurrentMapBbox();
     setLoadingAgencyPoints(true);
     try {
-      const points = await fetchAgencyPoints({ bbox, limit: 12000 });
+      const points = await fetchAgencyPoints({ bbox });
       setSqlAgencyPoints(points);
       setOverlayAgencias(true);
     } catch (error) {
@@ -736,7 +864,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
     const bbox = getCurrentMapBbox();
     setLoadingStorePoints(true);
     try {
-      const points = await fetchStorePoints({ bbox, limit: 15000 });
+      const points = await fetchStorePoints({ bbox });
       setSqlStorePoints(points);
       setOverlayLojas(true);
     } catch (error) {
@@ -821,7 +949,9 @@ const MapComponent: React.FC<MapComponentProps> = ({
     try {
       mapboxgl.accessToken = MAPBOX_CONFIG.accessToken;
 
-      map.current = new mapboxgl.Map({
+      const mapInit: mapboxgl.MapOptions & {
+        config?: { basemap: Record<string, string | boolean> };
+      } = {
         container: mapContainer.current,
         style: activeBaseStyle,
         projection: MAPBOX_CONFIG.projection,
@@ -840,12 +970,26 @@ const MapComponent: React.FC<MapComponentProps> = ({
         minZoom: MAPBOX_CONFIG.zoom.min,
         maxZoom: MAPBOX_CONFIG.zoom.max,
         maxBounds: MAPBOX_CONFIG.bounds.panLimit,
-      });
+      };
+      if (isStandardStyleUrl(activeBaseStyle)) {
+        mapInit.config = {
+          basemap: {
+            theme: 'warm',
+            show3dObjects: false,
+            lightPreset: 'day',
+          },
+        };
+      }
+
+      map.current = new mapboxgl.Map(mapInit);
 
       map.current.on('load', async () => {
         setMapReadyVersion((v) => v + 1);
 
         const m = map.current!;
+        if (isStandardStyleUrl(activeBaseStyle)) {
+          applyStandardWarmBasemap(m);
+        }
         try {
           m.setProjection(MAPBOX_CONFIG.projection);
         } catch {
@@ -930,10 +1074,10 @@ const MapComponent: React.FC<MapComponentProps> = ({
               source: 'brasil-context',
               'source-layer': 'country_boundaries',
               filter: ['==', ['get', 'iso_3166_1'], 'BR'],
-              paint: {
+              paint: fillPaintForStandard(activeBaseStyle, {
                 'fill-color': '#94a3b8',
                 'fill-opacity': 0.12,
-              },
+              }),
             },
             sym
           );
@@ -957,10 +1101,10 @@ const MapComponent: React.FC<MapComponentProps> = ({
                 id: 'brazil-outside-mask-fill',
                 type: 'fill',
                 source: 'brazil-outside-mask',
-                paint: {
+                paint: fillPaintForStandard(activeBaseStyle, {
                   'fill-color': maskColor,
                   'fill-opacity': 1,
-                },
+                }),
               },
               sym
             );
@@ -999,11 +1143,11 @@ const MapComponent: React.FC<MapComponentProps> = ({
             id: 'br-states-outline',
             type: 'line',
             source: 'br-states',
-            paint: {
+            paint: linePaintForStandard(activeBaseStyle, {
               'line-color': '#334155',
               'line-width': 1.2,
               'line-opacity': 0.45,
-            },
+            }),
           });
 
           m.addLayer({
@@ -1011,19 +1155,19 @@ const MapComponent: React.FC<MapComponentProps> = ({
             type: 'fill',
             source: 'br-states',
             filter: ['==', ['get', 'sigla'], '__none__'],
-            paint: {
+            paint: fillPaintForStandard(activeBaseStyle, {
               'fill-color': '#93c5fd',
               'fill-opacity': 0.09,
-            },
+            }),
           });
           m.addLayer({
             id: 'br-states-choropleth',
             type: 'fill',
             source: 'br-states',
-            paint: {
+            paint: fillPaintForStandard(activeBaseStyle, {
               'fill-color': '#93c5fd',
               'fill-opacity': 0,
-            },
+            }),
           });
 
           m.addLayer({
@@ -1031,20 +1175,20 @@ const MapComponent: React.FC<MapComponentProps> = ({
             type: 'fill',
             source: 'br-states',
             filter: ['==', ['get', 'sigla'], '__none__'],
-            paint: {
+            paint: fillPaintForStandard(activeBaseStyle, {
               'fill-color': '#9ca3af',
               'fill-opacity': 0.4,
-            },
+            }),
           });
 
           m.addLayer({
             id: 'br-states-hit',
             type: 'fill',
             source: 'br-states',
-            paint: {
+            paint: fillPaintForStandard(activeBaseStyle, {
               'fill-color': '#000000',
               'fill-opacity': 0.001,
-            },
+            }),
           });
 
           const applyStateSelection = (f: GeoJSON.Feature) => {
@@ -1130,21 +1274,21 @@ const MapComponent: React.FC<MapComponentProps> = ({
             id: 'municipalities-context-fill',
             type: 'fill',
             source: 'municipalities-context',
-            paint: {
+            paint: fillPaintForStandard(activeBaseStyle, {
               'fill-color': '#67e8f9',
               'fill-opacity': 0.06,
-            },
+            }),
           }, sym);
 
           m.addLayer({
             id: 'municipalities-context-line',
             type: 'line',
             source: 'municipalities-context',
-            paint: {
+            paint: linePaintForStandard(activeBaseStyle, {
               'line-color': '#0891b2',
               'line-width': 1.1,
               'line-opacity': 0.42,
-            },
+            }),
           }, sym);
 
           m.addSource('selected-municipality', {
@@ -1156,21 +1300,21 @@ const MapComponent: React.FC<MapComponentProps> = ({
             id: 'selected-municipality-fill',
             type: 'fill',
             source: 'selected-municipality',
-            paint: {
+            paint: fillPaintForStandard(activeBaseStyle, {
               'fill-color': '#38bdf8',
               'fill-opacity': 0.12,
-            },
+            }),
           }, sym);
 
           m.addLayer({
             id: 'selected-municipality-line',
             type: 'line',
             source: 'selected-municipality',
-            paint: {
+            paint: linePaintForStandard(activeBaseStyle, {
               'line-color': '#0284c7',
               'line-width': 2.2,
               'line-opacity': 0.85,
-            },
+            }),
           }, sym);
 
           const selectMunicipalityFeature = (feature: GeoJSON.Feature) => {
@@ -1306,13 +1450,13 @@ const MapComponent: React.FC<MapComponentProps> = ({
           source: 'structure-agencies',
           filter: ['has', 'point_count'],
           layout: { visibility: 'none' },
-          paint: {
+          paint: circlePaintForStandard(activeBaseStyle, {
             'circle-color': 'rgba(185, 28, 28, 0.92)',
             'circle-radius': ['step', ['get', 'point_count'], 18, 10, 24, 28, 30, 100, 38],
             'circle-stroke-width': 2,
             'circle-stroke-color': '#ffffff',
             'circle-opacity': 0.95,
-          },
+          }),
         });
 
         m.addLayer({
@@ -1337,20 +1481,20 @@ const MapComponent: React.FC<MapComponentProps> = ({
           source: 'structure-agencies',
           filter: ['!', ['has', 'point_count']],
           layout: { visibility: 'none' },
-          paint: {
+          paint: circlePaintForStandard(activeBaseStyle, {
             'circle-radius': 8,
             'circle-color': '#b91c1c',
             'circle-stroke-width': 2,
             'circle-stroke-color': '#ffffff',
             'circle-opacity': 0.95,
-          },
+          }),
         });
 
         m.addLayer({
           id: 'structure-people-circles',
           type: 'circle',
           source: 'structure-people',
-          paint: {
+          paint: circlePaintForStandard(activeBaseStyle, {
             'circle-radius': 7,
             'circle-color': [
               'match',
@@ -1370,7 +1514,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
             'circle-stroke-width': 2,
             'circle-stroke-color': '#ffffff',
             'circle-opacity': 0.95,
-          },
+          }),
         });
 
         const onStructClick = (e: mapboxgl.MapLayerMouseEvent) => {
@@ -1441,37 +1585,37 @@ const MapComponent: React.FC<MapComponentProps> = ({
           id: 'region-overlay-agencias-cir',
           type: 'circle',
           source: 'region-overlay-agencias',
-          paint: {
+          paint: circlePaintForStandard(activeBaseStyle, {
             'circle-radius': 7,
             'circle-color': '#b91c1c',
             'circle-stroke-width': 2,
             'circle-stroke-color': '#fff',
             'circle-opacity': 0.95,
-          },
+          }),
         });
         m.addLayer({
           id: 'region-overlay-supervisores-cir',
           type: 'circle',
           source: 'region-overlay-supervisores',
-          paint: {
+          paint: circlePaintForStandard(activeBaseStyle, {
             'circle-radius': 7,
             'circle-color': '#7c3aed',
             'circle-stroke-width': 2,
             'circle-stroke-color': '#fff',
             'circle-opacity': 0.95,
-          },
+          }),
         });
         m.addLayer({
           id: 'region-overlay-lojas-cir',
           type: 'circle',
           source: 'region-overlay-lojas',
-          paint: {
+          paint: circlePaintForStandard(activeBaseStyle, {
             'circle-radius': 7,
             'circle-color': '#0d9488',
             'circle-stroke-width': 2,
             'circle-stroke-color': '#fff',
             'circle-opacity': 0.95,
-          },
+          }),
         });
 
         const onRegionOverlayClick = (e: mapboxgl.MapLayerMouseEvent) => {
@@ -1611,7 +1755,6 @@ const MapComponent: React.FC<MapComponentProps> = ({
     const m = map.current;
     if (!m?.isStyleLoaded()) return;
     const empty: GeoJSON.FeatureCollection = { type: 'FeatureCollection', features: [] };
-    const MAX_RENDER_POINTS = 25000;
     const apply = (
       sourceId: string,
       active: boolean,
@@ -1624,10 +1767,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
         return;
       }
 
-      const boundedPoints =
-        points.length > MAX_RENDER_POINTS ? points.slice(0, MAX_RENDER_POINTS) : points;
-
-      src.setData(regionPointsToFeatureCollection(boundedPoints));
+      src.setData(regionPointsToFeatureCollection(points));
     };
     apply('region-overlay-agencias', overlayAgencias, filteredRegionAgencias);
     apply('region-overlay-supervisores', overlaySupervisores, filteredRegionSupervisores);
@@ -1663,6 +1803,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
     const m = map.current;
     if (!m?.isStyleLoaded()) return;
 
+    const stdBasemap = isStandardStyleUrl(activeBaseStyle);
     const restoreDefaultMunicipalityPaint = () => {
       if (!m.getLayer('municipalities-context-fill')) return;
       try {
@@ -1671,6 +1812,10 @@ const MapComponent: React.FC<MapComponentProps> = ({
         m.setPaintProperty('municipalities-context-line', 'line-color', '#0891b2');
         m.setPaintProperty('municipalities-context-line', 'line-width', 1.1);
         m.setPaintProperty('municipalities-context-line', 'line-opacity', 0.42);
+        if (stdBasemap) {
+          m.setPaintProperty('municipalities-context-fill', 'fill-emissive-strength', 1);
+          m.setPaintProperty('municipalities-context-line', 'line-emissive-strength', 1);
+        }
       } catch {
         /* estilo / ordem de camadas */
       }
@@ -1680,6 +1825,9 @@ const MapComponent: React.FC<MapComponentProps> = ({
       try {
         m.setPaintProperty('br-states-choropleth', 'fill-color', '#93c5fd');
         m.setPaintProperty('br-states-choropleth', 'fill-opacity', 0);
+        if (stdBasemap) {
+          m.setPaintProperty('br-states-choropleth', 'fill-emissive-strength', 1);
+        }
       } catch {
         /* ignore */
       }
@@ -1740,6 +1888,9 @@ const MapComponent: React.FC<MapComponentProps> = ({
         restoreDefaultMunicipalityPaint();
         m.setPaintProperty('br-states-choropleth', 'fill-color', fillColorExpr);
         m.setPaintProperty('br-states-choropleth', 'fill-opacity', 0.72);
+        if (stdBasemap) {
+          m.setPaintProperty('br-states-choropleth', 'fill-emissive-strength', 1);
+        }
         setChoroplethLegend({ min, max });
       } catch {
         restoreStateChoroplethPaint();
@@ -1774,6 +1925,10 @@ const MapComponent: React.FC<MapComponentProps> = ({
       m.setPaintProperty('municipalities-context-line', 'line-color', '#64748b');
       m.setPaintProperty('municipalities-context-line', 'line-width', 0.85);
       m.setPaintProperty('municipalities-context-line', 'line-opacity', 0.55);
+      if (stdBasemap) {
+        m.setPaintProperty('municipalities-context-fill', 'fill-emissive-strength', 1);
+        m.setPaintProperty('municipalities-context-line', 'line-emissive-strength', 1);
+      }
       setChoroplethLegend({ min, max });
     } catch {
       restoreDefaultMunicipalityPaint();
@@ -1788,13 +1943,29 @@ const MapComponent: React.FC<MapComponentProps> = ({
     productivityScope,
     stateNamesForTable,
     municipalitiesGeoVersion,
+    activeBaseStyle,
   ]);
+
+  useEffect(() => {
+    const m = map.current;
+    if (!m?.isStyleLoaded()) return;
+    const visibility = municipalityMeshVisible ? 'visible' : 'none';
+    for (const layerId of ['municipalities-context-fill', 'municipalities-context-line'] as const) {
+      if (!m.getLayer(layerId)) continue;
+      try {
+        m.setLayoutProperty(layerId, 'visibility', visibility);
+      } catch {
+        /* estilo recarregando */
+      }
+    }
+  }, [municipalityMeshVisible, mapReadyVersion]);
 
   /** Com coropleto ativo, o destaque do município não pode cobrir o degradê (fill transparente + contorno leve). */
   useEffect(() => {
     const m = map.current;
     if (!m?.isStyleLoaded()) return;
     if (!m.getLayer('selected-municipality-fill') || !m.getLayer('selected-municipality-line')) return;
+    const stdBasemap = isStandardStyleUrl(activeBaseStyle);
     try {
       if (municipalityChoroplethEnabled) {
         m.setPaintProperty('selected-municipality-fill', 'fill-opacity', 0);
@@ -1807,10 +1978,14 @@ const MapComponent: React.FC<MapComponentProps> = ({
         m.setPaintProperty('selected-municipality-line', 'line-opacity', 0.85);
         m.setPaintProperty('selected-municipality-line', 'line-color', '#0284c7');
       }
+      if (stdBasemap) {
+        m.setPaintProperty('selected-municipality-fill', 'fill-emissive-strength', 1);
+        m.setPaintProperty('selected-municipality-line', 'line-emissive-strength', 1);
+      }
     } catch {
       /* estilo recarregando */
     }
-  }, [municipalityChoroplethEnabled]);
+  }, [municipalityChoroplethEnabled, activeBaseStyle]);
 
   useEffect(() => {
     return () => {
@@ -1960,7 +2135,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
         </div>
       </div>
       <div
-        className={`absolute top-4 z-20 transition-[right] duration-500 ease-out ${
+        className={`absolute top-4 z-20 overflow-visible transition-[right] duration-500 ease-out ${
           hasStatePanel ? 'right-[calc(min(96vw,420px)+0.75rem)]' : 'right-4'
         }`}
       >
@@ -1975,18 +2150,73 @@ const MapComponent: React.FC<MapComponentProps> = ({
             >
               <SlidersHorizontal className="h-4 w-4" />
             </Button>
-            <Button
-              type="button"
-              size="icon"
-              onClick={() => {
-                clearSelectedState();
-                setMapStyleMode((prev) => (prev === 'default' ? 'satellite' : 'default'));
-              }}
-              aria-label="Alternar estilo do mapa"
-              className="h-10 w-10 rounded-full border border-slate-200/90 bg-white text-slate-600 shadow-sm hover:bg-slate-50 hover:text-slate-900"
-            >
-              <Layers className="h-4 w-4" />
-            </Button>
+            <div ref={mapLayoutPickerRef} className="relative z-[60] h-10 w-10 shrink-0">
+              <div
+                role="radiogroup"
+                aria-label="Estilo do mapa"
+                onMouseEnter={openLayoutFlyoutHover}
+                onMouseLeave={scheduleLayoutHoverEnd}
+                className={`absolute right-full top-1/2 z-10 mr-1.5 flex w-max -translate-y-1/2 flex-row items-center gap-0.5 rounded-2xl border border-slate-200/90 bg-white/95 p-0.5 shadow-md shadow-slate-900/10 backdrop-blur-sm transition duration-200 ease-out ${
+                  showLayoutFlyout
+                    ? 'pointer-events-auto translate-x-0 opacity-100'
+                    : 'pointer-events-none -translate-x-1 opacity-0'
+                }`}
+              >
+                {MAP_LAYOUT_OPTIONS.map((opt) => {
+                  const selected = mapStyleMode === opt.id;
+                  return (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      role="radio"
+                      aria-checked={selected}
+                      title={opt.label}
+                      onClick={() => {
+                        clearSelectedState();
+                        setMapStyleMode(opt.id);
+                        setMapLayoutMenuPinned(false);
+                        setMapLayoutFlyoutHover(false);
+                        clearLayoutHoverTimer();
+                      }}
+                      className="flex h-10 w-10 flex-col items-center justify-center gap-px rounded-md p-0 transition-colors hover:bg-slate-100/90 focus:outline-none focus-visible:bg-slate-100/90"
+                    >
+                      <span className="sr-only">{opt.label}</span>
+                      <span
+                        className={`h-6 w-6 shrink-0 rounded-full shadow-inner ${opt.previewClass} ${
+                          selected
+                            ? 'ring-2 ring-blue-600 ring-offset-1 ring-offset-white'
+                            : 'ring-1 ring-slate-200/70'
+                        }`}
+                        aria-hidden
+                      />
+                      <span className="max-w-[2.4rem] truncate text-center text-[7px] font-semibold leading-tight text-slate-600">
+                        {opt.caption}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+              <Button
+                type="button"
+                size="icon"
+                aria-haspopup="true"
+                aria-expanded={showLayoutFlyout}
+                onClick={() => setMapLayoutMenuPinned((p) => !p)}
+                onMouseEnter={openLayoutFlyoutHover}
+                onMouseLeave={scheduleLayoutHoverEnd}
+                title="Estilo do mapa — menu à esquerda deste botão; passe o mouse ou clique para fixar"
+                aria-label="Estilo do mapa: abrir opções de layout"
+                className={`h-10 w-10 rounded-full border shadow-sm hover:text-slate-900 ${
+                  mapStyleMode === 'standardWarm'
+                    ? 'border-amber-300/90 bg-amber-50 text-amber-950 hover:bg-amber-100/90'
+                    : mapStyleMode === 'satellite'
+                      ? 'border-slate-600 bg-slate-700 text-white shadow-slate-900/15 hover:bg-slate-600'
+                      : 'border-slate-200/90 bg-white text-slate-600 hover:bg-slate-50'
+                }`}
+              >
+                <Layers className="h-4 w-4" />
+              </Button>
+            </div>
             <Button
               type="button"
               size="icon"
@@ -2014,6 +2244,29 @@ const MapComponent: React.FC<MapComponentProps> = ({
               className="h-10 w-10 rounded-full border border-slate-200/90 bg-white text-slate-600 shadow-sm hover:bg-slate-50 hover:text-slate-900"
             >
               <span className="text-xl leading-none">-</span>
+            </Button>
+            <Button
+              type="button"
+              size="icon"
+              onClick={() => setMunicipalityMeshVisible((v) => !v)}
+              aria-pressed={municipalityMeshVisible}
+              title={
+                municipalityMeshVisible
+                  ? 'Ocultar malha de municípios (mantém zoom e seleção)'
+                  : 'Mostrar malha de municípios'
+              }
+              aria-label={
+                municipalityMeshVisible
+                  ? 'Ocultar malha de municípios no mapa'
+                  : 'Mostrar malha de municípios no mapa'
+              }
+              className={`h-10 w-10 rounded-full border shadow-sm hover:text-slate-900 ${
+                municipalityMeshVisible
+                  ? 'border-slate-200/90 bg-white text-slate-600 hover:bg-slate-50'
+                  : 'border-amber-200/90 bg-amber-50/95 text-amber-900 hover:bg-amber-100/95'
+              }`}
+            >
+              <LayoutGrid className="h-4 w-4" />
             </Button>
             <Button
               type="button"

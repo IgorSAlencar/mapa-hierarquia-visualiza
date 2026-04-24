@@ -114,14 +114,6 @@ const ExpressoStatePanel: React.FC<ExpressoStatePanelProps> = ({
           >
             Ver produtividade por município
           </button>
-
-          <button
-            type="button"
-            onClick={onClose}
-            className="w-full rounded-xl border border-slate-200 bg-white py-2.5 text-sm font-medium text-slate-700 shadow-sm transition-colors hover:bg-slate-50"
-          >
-            Fechar painel
-          </button>
         </div>
       </div>
     </div>

@@ -5,6 +5,8 @@ export const MAPBOX_CONFIG = {
   styles: {
     default: 'mapbox://styles/mapbox/light-v11',
     satellite: 'mapbox://styles/mapbox/satellite-streets-v12',
+    /** Mapbox Standard — tema/luz via `config.basemap` no GL JS v3+. */
+    standardWarm: 'mapbox://styles/mapbox/standard',
   },
   /** Mapa plano (Web Mercator). Estilos v11+ podem usar `globe` no JSON — isso força visão plana. */
   projection: { name: 'mercator' as const },

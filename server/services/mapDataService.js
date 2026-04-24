@@ -9,7 +9,7 @@ function validCoordinate(row) {
   return [lon, lat];
 }
 
-export async function getAgencyMapPoints({ bbox = null, limit = 8000 } = {}) {
+export async function getAgencyMapPoints({ bbox = null, limit = null } = {}) {
   const rows = await fetchAgencyCoordinates({ bbox, limit });
 
   return rows
@@ -26,7 +26,7 @@ export async function getAgencyMapPoints({ bbox = null, limit = 8000 } = {}) {
     .filter(Boolean);
 }
 
-export async function getStoreMapPoints({ bbox = null, limit = 12000 } = {}) {
+export async function getStoreMapPoints({ bbox = null, limit = null } = {}) {
   const rows = await fetchStoreCoordinates({ bbox, limit });
 
   return rows

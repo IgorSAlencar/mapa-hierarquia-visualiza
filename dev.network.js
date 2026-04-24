@@ -1,4 +1,4 @@
-const DEFAULT_DEV_BASE_URL = 'http://192.168.15.10';
+const DEFAULT_DEV_BASE_URL = 'http://192.168.15.4';
 
 function normalizeBaseUrl(value) {
   const raw = (value ?? '').trim();

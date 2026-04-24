@@ -23,6 +23,9 @@ export interface SubprodutoExpresso {
   producaoMes: number;
   /** Ex.: "Vlr. Contrato" — coluna de valor no Consignado */
   valorLegenda?: string;
+  /** Ex.: "Qtd. Contrato" / "Qtd. Averbada" */
+  quantidadeLegenda?: string;
+  quantidade?: number;
 }
 
 export interface ProdutoExpressoResumo {
@@ -137,7 +140,16 @@ function markersInState(markers: MarcadorMapa[], stateFeature: GeoJSON.Feature |
   return markers.filter((m) => pointInGeometry(m.lngLat, stateFeature.geometry as GeoJSON.Geometry));
 }
 
-const SEGUROS_SUBNOMES = ['Vida', 'Residencial', 'Acidentes pessoais'] as const;
+/** Linhas de negócio exibidas em “Detalhe — subprodutos” para Seguros. */
+const SEGUROS_SUBNOMES = [
+  'Microsseguro',
+  'Vida Viva',
+  'Seguro Residencial',
+  'Sorte Expressa',
+  'Dental',
+  'Seg. Débito',
+  'Super Protegido',
+] as const;
 
 function deriveStatusSemantico(variacaoPct: number, participacaoPct: number): ProdutoStatusSemantico {
   if (variacaoPct <= -8 || (variacaoPct <= -4 && participacaoPct >= 28)) return 'critico';
@@ -241,20 +253,26 @@ function buildProdutos(seed: string, lojas: number, producaoRegional: number): P
       const lojasB = lojasP - lojasA;
       const prodA = Math.max(0, Math.round(prodP * share));
       const prodB = prodP - prodA;
+      const qtdContrato = Math.max(0, Math.round(prodA / Math.max(250, seededRange(seed, 410, 300, 950))));
+      const qtdAverbada = Math.max(0, Math.round(prodB / Math.max(250, seededRange(seed, 420, 300, 950))));
       subprodutos = [
         {
-          id: 'consignado-priv',
-          nome: 'Consignado privado',
+          id: 'consignado-contrato',
+          nome: 'Consignado',
           lojas: lojasA,
           producaoMes: prodA,
           valorLegenda: 'Vlr. Contrato',
+          quantidadeLegenda: 'Qtd. Contrato',
+          quantidade: qtdContrato,
         },
         {
-          id: 'consignado-cartao',
-          nome: 'Cartão benefício',
+          id: 'consignado-averbado',
+          nome: 'Consignado',
           lojas: lojasB,
           producaoMes: prodB,
           valorLegenda: 'Vlr. Averbado',
+          quantidadeLegenda: 'Qtd. Averbada',
+          quantidade: qtdAverbada,
         },
       ];
     } else if (id === 'lime' || id === 'contas') {

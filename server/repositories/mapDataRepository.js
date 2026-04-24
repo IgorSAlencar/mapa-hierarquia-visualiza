@@ -12,14 +12,16 @@ function applyBboxFilter(request, bbox, lonExpr, latExpr) {
   `;
 }
 
-export async function fetchAgencyCoordinates({ bbox = null, limit = 8000 } = {}) {
+export async function fetchAgencyCoordinates({ bbox = null, limit = null } = {}) {
   const request = pool.request();
   request.input('bank', 'BANCO BRADESCO S.A.');
-  request.input('limit', limit);
+  const hasLimit = Number.isFinite(limit) && Number(limit) > 0;
+  if (hasLimit) request.input('limit', Math.round(limit));
   const bboxSql = applyBboxFilter(request, bbox, 'CAST(lon AS float)', 'CAST(lat AS float)');
+  const topSql = hasLimit ? 'TOP (@limit)' : '';
 
   const query = `
-    SELECT TOP (@limit)
+    SELECT ${topSql}
       CAST(lon AS float) AS lon,
       CAST(lat AS float) AS lat,
       BANCO AS banco
@@ -35,18 +37,20 @@ export async function fetchAgencyCoordinates({ bbox = null, limit = 8000 } = {})
   return result.recordset;
 }
 
-export async function fetchStoreCoordinates({ bbox = null, limit = 12000 } = {}) {
+export async function fetchStoreCoordinates({ bbox = null, limit = null } = {}) {
   const request = pool.request();
-  request.input('limit', limit);
+  const hasLimit = Number.isFinite(limit) && Number(limit) > 0;
+  if (hasLimit) request.input('limit', Math.round(limit));
   const bboxSql = applyBboxFilter(
     request,
     bbox,
     'CAST(geolocation_lng AS float)',
     'CAST(geolocation_lat AS float)'
   );
+  const topSql = hasLimit ? 'TOP (@limit)' : '';
 
   const query = `
-    SELECT TOP (@limit)
+    SELECT ${topSql}
       CAST(geolocation_lng AS float) AS lon,
       CAST(geolocation_lat AS float) AS lat
     FROM TESTE..COORDENADAS_LOJAS

@@ -20,14 +20,15 @@ function readBboxFromQuery(query) {
 
 function readLimitFromQuery(query, fallback, maxAllowed) {
   const parsed = parseNumber(query.limit);
-  if (parsed == null || parsed <= 0) return fallback;
+  if (parsed == null) return fallback;
+  if (parsed <= 0) return null;
   return Math.min(Math.round(parsed), maxAllowed);
 }
 
 router.get('/agencias', async (req, res) => {
   try {
     const bbox = readBboxFromQuery(req.query);
-    const limit = readLimitFromQuery(req.query, 8000, 25000);
+    const limit = readLimitFromQuery(req.query, null, 250000);
     const points = await getAgencyMapPoints({ bbox, limit });
     res.json({ points });
   } catch (error) {
@@ -39,7 +40,7 @@ router.get('/agencias', async (req, res) => {
 router.get('/lojas', async (req, res) => {
   try {
     const bbox = readBboxFromQuery(req.query);
-    const limit = readLimitFromQuery(req.query, 12000, 30000);
+    const limit = readLimitFromQuery(req.query, null, 300000);
     const points = await getStoreMapPoints({ bbox, limit });
     res.json({ points });
   } catch (error) {

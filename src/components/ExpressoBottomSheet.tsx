@@ -29,8 +29,18 @@ interface ExpressoBottomSheetProps {
 const fmtMoney = (n: number) =>
   n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL', maximumFractionDigits: 0 });
 
+const fmtQty = (n: number) =>
+  Math.round(n).toLocaleString('pt-BR', { maximumFractionDigits: 0, minimumFractionDigits: 0 });
+
 const fmtPct = (n: number) =>
   `${n >= 0 ? '+' : ''}${n.toLocaleString('pt-BR', { maximumFractionDigits: 1, minimumFractionDigits: 1 })}%`;
+
+const isCurrencyProduct = (id: ProdutoExpressoId) => id === 'consignado' || id === 'lime';
+
+const productMetricLabel = (id: ProdutoExpressoId) => (isCurrencyProduct(id) ? 'Produção (R$)' : 'Produção (QTD)');
+
+const formatProductMetric = (id: ProdutoExpressoId, value: number) =>
+  isCurrencyProduct(id) ? fmtMoney(value) : fmtQty(value);
 
 const ExpressoBottomSheet: React.FC<ExpressoBottomSheetProps> = ({
   open,
@@ -120,7 +130,7 @@ const ExpressoBottomSheet: React.FC<ExpressoBottomSheetProps> = ({
                     >
                       <p className="text-sm font-semibold text-slate-900">{p.nome}</p>
                       <p className="mt-0.5 text-[11px] text-slate-500">
-                        {fmtMoney(p.producaoMes)} · {p.lojas} lojas
+                        {formatProductMetric(p.id, p.producaoMes)} · {p.lojas} lojas
                       </p>
                       <span
                         className={`mt-1 inline-flex items-center gap-0.5 rounded-md px-2 py-0.5 text-xs font-semibold tabular-nums ${
@@ -254,7 +264,7 @@ const ExpressoBottomSheet: React.FC<ExpressoBottomSheetProps> = ({
                   <tr className="text-left text-[11px] uppercase tracking-wide text-slate-500">
                     <th className="px-2 py-2 font-semibold">{scope === 'estado' ? 'Estado' : 'Município'}</th>
                     <th className="px-2 py-2 font-semibold">Lojas</th>
-                    <th className="px-2 py-2 font-semibold">Produção</th>
+                    <th className="px-2 py-2 font-semibold">{productMetricLabel(selected.id)}</th>
                     <th className="px-2 py-2 font-semibold">Variação</th>
                   </tr>
                 </thead>
@@ -263,7 +273,9 @@ const ExpressoBottomSheet: React.FC<ExpressoBottomSheetProps> = ({
                     <tr key={`${selected.id}-${row.municipio}`} className="border-t border-slate-100">
                       <td className="px-2 py-2 font-medium text-slate-800">{row.municipio}</td>
                       <td className="px-2 py-2 text-slate-700">{row.lojas}</td>
-                      <td className="px-2 py-2 tabular-nums text-slate-700">{fmtMoney(row.producaoMes)}</td>
+                      <td className="px-2 py-2 tabular-nums text-slate-700">
+                        {formatProductMetric(selected.id, row.producaoMes)}
+                      </td>
                       <td
                         className={`px-2 py-2 tabular-nums font-semibold ${
                           row.variacaoPct >= 0 ? 'text-emerald-700' : 'text-red-700'
