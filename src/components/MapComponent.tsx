@@ -1691,17 +1691,24 @@ const MapComponent: React.FC<MapComponentProps> = ({
         m.addSource('region-overlay-supervisores', { type: 'geojson', data: emptyRegionFc });
         m.addSource('region-overlay-lojas', { type: 'geojson', data: emptyRegionFc });
 
+        try {
+          const agenciaImage = await m.loadImage('/agencia.png');
+          if (!m.hasImage('region-overlay-agencia-icon')) {
+            m.addImage('region-overlay-agencia-icon', agenciaImage.data);
+          }
+        } catch (error) {
+          console.warn('Não foi possível carregar ícone da agência:', error);
+        }
+
         m.addLayer({
           id: 'region-overlay-agencias-cir',
-          type: 'circle',
+          type: 'symbol',
           source: 'region-overlay-agencias',
-          paint: circlePaintForStandard(activeBaseStyle, {
-            'circle-radius': 7,
-            'circle-color': '#b91c1c',
-            'circle-stroke-width': 2,
-            'circle-stroke-color': '#fff',
-            'circle-opacity': 0.95,
-          }),
+          layout: {
+            'icon-image': 'region-overlay-agencia-icon',
+            'icon-size': 0.22,
+            'icon-allow-overlap': true,
+          },
         });
         m.addLayer({
           id: 'region-overlay-supervisores-cir',
