@@ -1,6 +1,7 @@
 import cors from 'cors';
 import express from 'express';
 import mapRoutes from './routes/mapRoutes.js';
+import expressoRoutes from './routes/expressoRoutes.js';
 import { poolConnect } from './db/sqlServer.js';
 import { DEV_API_PORT, DEV_API_URL, DEV_HOST } from '../dev.network.js';
 
@@ -15,6 +16,7 @@ app.get('/api/health', (_req, res) => {
 });
 
 app.use('/api/map', mapRoutes);
+app.use('/api/expresso', expressoRoutes);
 
 poolConnect
   .then(() => {

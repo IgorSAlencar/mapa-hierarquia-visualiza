@@ -38,12 +38,14 @@ INSERT INTO dbo.TB_METRICA_UF_PRODUTO_MES (
 (N'RJ', 2026, 4, N'seguros',     72000.00,  8,  6, 0.8,  16.0, N'SAUDAVEL', NULL);
 
 /* ---------- Subprodutos (detalhe cockpit) — SP abril ---------- */
-INSERT INTO dbo.TB_METRICA_UF_PRODUTO_SUB_MES (UF_SIGLA, ANO_REF, MES_REF, PRODUTO_ID, SUBPRODUTO_ID, QTD_LOJAS, PRODUCAO_VALOR) VALUES
-(N'SP', 2026, 4, N'consignado', N'consignado-priv',    20, 241000.00),
-(N'SP', 2026, 4, N'consignado', N'consignado-cartao',  18, 211000.00),
-(N'SP', 2026, 4, N'seguros',     N'seguros-sub-0',      4,  32000.00),
-(N'SP', 2026, 4, N'seguros',     N'seguros-sub-1',      4,  30000.00),
-(N'SP', 2026, 4, N'seguros',     N'seguros-sub-2',      4,  26500.00);
+INSERT INTO dbo.TB_METRICA_UF_PRODUTO_SUB_MES (
+  UF_SIGLA, ANO_REF, MES_REF, PRODUTO_ID, SUBPRODUTO_ID, QTD_LOJAS, QTD_PRODUCAO, PRODUCAO_VALOR
+) VALUES
+(N'SP', 2026, 4, N'consignado', N'consignado-priv',    20, 964, 241000.00),
+(N'SP', 2026, 4, N'consignado', N'consignado-cartao',  18, 844, 211000.00),
+(N'SP', 2026, 4, N'seguros',     N'seguros-sub-0',      4, NULL,  32000.00),
+(N'SP', 2026, 4, N'seguros',     N'seguros-sub-1',      4, NULL,  30000.00),
+(N'SP', 2026, 4, N'seguros',     N'seguros-sub-2',      4, NULL,  26500.00);
 
 /* ---------- Séries (ex.: Consignado SP — valores em R$ mil) ---------- */
 INSERT INTO dbo.TB_SERIE_PRODUTO_PERIODO (UF_SIGLA, PRODUTO_ID, PERIODO_TIPO, ORDEM, LABEL, VALOR_ATUAL_MIL, VALOR_ANTERIOR_MIL, REFERENCIA_FIM) VALUES

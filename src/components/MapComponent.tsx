@@ -21,6 +21,8 @@ import {
   buildExpressoRegionMetrics,
   buildMunicipalityProductivityRows,
   emptyProdutoExpressoResumo,
+  type ExpressoRegionMetrics,
+  type MunicipalityProductivityRow,
   type ProdutoExpressoId,
 } from '@/lib/expressoRegionMock';
 import type { MarcadorMapa } from '@/data/commercialStructureMock';
@@ -35,6 +37,7 @@ import {
   mergeChoroplethIntoFeatureCollection,
 } from '@/lib/municipalityChoropleth';
 import { fetchAgencyPoints, fetchStorePoints, type BboxQuery, type SqlMapPoint } from '@/lib/mapDataApi';
+import { fetchExpressoProductivityRows, fetchExpressoStateMetrics } from '@/lib/expressoApi';
 
 const BRAZIL_BOUNDARY_GEOJSON =
   'https://raw.githubusercontent.com/johan/world.geo.json/master/countries/BRA.geo.json';
@@ -433,6 +436,28 @@ function municipalityNameFromProperties(props?: GeoJSON.GeoJsonProperties): stri
   );
 }
 
+function resolveMunicipalityIbgeCode(props?: GeoJSON.GeoJsonProperties): number | null {
+  if (!props) return null;
+  const candidates = [
+    props.CD_MUN,
+    props.cd_mun,
+    props.COD_IBGE,
+    props.cod_ibge,
+    props.IBGE,
+    props.ibge,
+    props.id,
+    props.code,
+  ];
+  for (const raw of candidates) {
+    const digits = String(raw ?? '').replace(/\D/g, '');
+    if (digits.length >= 6) {
+      const parsed = Number.parseInt(digits.slice(0, 7), 10);
+      if (Number.isFinite(parsed)) return parsed;
+    }
+  }
+  return null;
+}
+
 function parseUfFromShortCode(shortCode: unknown): string | null {
   const raw = String(shortCode ?? '').toUpperCase();
   const m = raw.match(/^BR-([A-Z]{2})/);
@@ -582,6 +607,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
   const [selectedStateLabel, setSelectedStateLabel] = useState<string | null>(null);
   const [selectedStateFeature, setSelectedStateFeature] = useState<GeoJSON.Feature | null>(null);
   const [selectedCityLabel, setSelectedCityLabel] = useState<string | null>(null);
+  const [selectedMunicipalityIbge, setSelectedMunicipalityIbge] = useState<number | null>(null);
   const [selectedMunicipalityFeature, setSelectedMunicipalityFeature] = useState<GeoJSON.Feature | null>(
     null
   );
@@ -635,6 +661,8 @@ const MapComponent: React.FC<MapComponentProps> = ({
   const [productivitySheetOpen, setProductivitySheetOpen] = useState(false);
   const [selectedBottomProduct, setSelectedBottomProduct] = useState<ProdutoExpressoId | null>(null);
   const [productivityScope, setProductivityScope] = useState<'estado' | 'municipio'>('estado');
+  const [sqlExpressoMetrics, setSqlExpressoMetrics] = useState<ExpressoRegionMetrics | null>(null);
+  const [sqlProductivityRows, setSqlProductivityRows] = useState<MunicipalityProductivityRow[] | null>(null);
   const [municipalityChoroplethEnabled, setMunicipalityChoroplethEnabled] = useState(false);
   /** Incrementa quando o GeoJSON de municípios (UF ou Brasil) é escrito nos refs — refs sozinhos não disparam o efeito do coroplético. */
   const [municipalitiesGeoVersion, setMunicipalitiesGeoVersion] = useState(0);
@@ -663,10 +691,11 @@ const MapComponent: React.FC<MapComponentProps> = ({
     return () => document.removeEventListener('pointerdown', onPointerDown, true);
   }, [mapLayoutMenuPinned, clearLayoutHoverTimer]);
 
-  const expressoMetrics = useMemo(
+  const fallbackExpressoMetrics = useMemo(
     () => buildExpressoRegionMetrics(mapMarkers, selectedStateFeature),
     [mapMarkers, selectedStateFeature]
   );
+  const expressoMetrics = sqlExpressoMetrics ?? fallbackExpressoMetrics;
 
   const filteredRegionAgencias = useMemo(
     () => filterRegionMapPoints(sqlAgencyPoints, selectedMunicipalityFeature, selectedStateFeature),
@@ -756,11 +785,12 @@ const MapComponent: React.FC<MapComponentProps> = ({
     [stateSearchOptions]
   );
 
-  const municipalityProductivityRows = useMemo(() => {
+  const fallbackMunicipalityProductivityRows = useMemo(() => {
     if (!selectedBottomProduct) return [];
     const names = productivityScope === 'estado' ? stateNamesForTable : municipalityNamesForTable;
     return buildMunicipalityProductivityRows(selectedBottomProduct, names);
   }, [selectedBottomProduct, productivityScope, stateNamesForTable, municipalityNamesForTable]);
+  const municipalityProductivityRows = sqlProductivityRows ?? fallbackMunicipalityProductivityRows;
 
   const productsForBottomSheet = useMemo(
     () =>
@@ -781,6 +811,81 @@ const MapComponent: React.FC<MapComponentProps> = ({
     if (productivityScope === 'estado') return 'Estados (Brasil)';
     return selectedStateFeature ? 'Municípios do estado selecionado' : 'Todos os municípios (Brasil)';
   }, [municipalityChoroplethEnabled, selectedBottomProduct, productivityScope, selectedStateFeature]);
+
+  const selectedStateUf = useMemo(
+    () => resolveStateCode(selectedStateFeature?.properties),
+    [selectedStateFeature]
+  );
+
+  useEffect(() => {
+    let active = true;
+    if (!selectedStateUf) {
+      setSqlExpressoMetrics(null);
+      return () => {
+        active = false;
+      };
+    }
+
+    void fetchExpressoStateMetrics(selectedStateUf, selectedMunicipalityIbge)
+      .then((metrics) => {
+        if (!active) return;
+        if (metrics && Array.isArray(metrics.produtos) && metrics.produtos.length > 0) {
+          setSqlExpressoMetrics(metrics);
+          return;
+        }
+        setSqlExpressoMetrics(null);
+      })
+      .catch((error) => {
+        if (!active) return;
+        console.warn('Falha ao carregar métricas Expresso via SQL, usando fallback mock.', error);
+        setSqlExpressoMetrics(null);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [selectedStateUf, selectedMunicipalityIbge]);
+
+  useEffect(() => {
+    let active = true;
+    if (!selectedBottomProduct) {
+      setSqlProductivityRows(null);
+      return () => {
+        active = false;
+      };
+    }
+
+    const ufSigla = productivityScope === 'municipio' ? selectedStateUf : null;
+    if (productivityScope === 'municipio' && !ufSigla) {
+      setSqlProductivityRows(null);
+      return () => {
+        active = false;
+      };
+    }
+
+    void fetchExpressoProductivityRows({
+      produtoId: selectedBottomProduct,
+      scope: productivityScope,
+      ufSigla,
+    })
+      .then((rows) => {
+        if (!active) return;
+        if (Array.isArray(rows) && rows.length > 0) {
+          setSqlProductivityRows(rows);
+          return;
+        }
+        setSqlProductivityRows(null);
+      })
+      .catch((error) => {
+        if (!active) return;
+        console.warn('Falha ao carregar produtividade Expresso via SQL, usando fallback mock.', error);
+        setSqlProductivityRows(null);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [selectedBottomProduct, productivityScope, selectedStateUf]);
 
   const clusterClickHandlerRef = useRef<((e: mapboxgl.MapLayerMouseEvent) => void) | null>(null);
   const regionOverlayClickHandlerRef = useRef<((e: mapboxgl.MapLayerMouseEvent) => void) | null>(null);
@@ -920,6 +1025,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
     setSelectedStateLabel(null);
     setSelectedStateFeature(null);
     setSelectedCityLabel(null);
+    setSelectedMunicipalityIbge(null);
     setSelectedMunicipalityFeature(null);
     setMunicipalitySearchOptions([]);
     setSearchQuery('');
@@ -1202,6 +1308,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
             resetMunicipalityVisuals(m, municipalitiesFcRef, municipalitiesRawFcRef);
             setMunicipalitySearchOptions([]);
             setSelectedCityLabel(null);
+            setSelectedMunicipalityIbge(null);
             setSelectedMunicipalityFeature(null);
 
             const uf = resolveStateCode(f.properties);
@@ -1326,8 +1433,10 @@ const MapComponent: React.FC<MapComponentProps> = ({
             clearRegionOverlaySources(m);
             source.setData({ type: 'FeatureCollection', features: [feature] });
             const municipalityName = municipalityNameFromProperties(feature.properties) || 'Município';
+            const municipalityIbge = resolveMunicipalityIbgeCode(feature.properties);
             setSelectedMunicipalityFeature(feature);
             setSelectedCityLabel(municipalityName);
+            setSelectedMunicipalityIbge(municipalityIbge);
             setSearchQuery(municipalityName);
             setSearchOpen(false);
             const muniBounds = featureBounds(feature);
@@ -1379,6 +1488,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
             const cityName = String(city.properties?.name ?? city.properties?.name_pt ?? 'Cidade');
 
             setSelectedCityLabel(cityName);
+            setSelectedMunicipalityIbge(null);
 
             const guessedUf =
               selectedStateCodeRef.current ?? parseUfFromShortCode(city.properties?.short_code);
@@ -1857,7 +1967,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
       return;
     }
     if (productivityScope === 'estado') {
-      const rows = buildMunicipalityProductivityRows(selectedBottomProduct, stateNamesForTable);
+      const rows = municipalityProductivityRows;
       const { min, max } = computeValueRangeFromRows(rows, 'producaoMes');
       const valueMap = buildMunicipalityValueMap(rows, 'producaoMes');
       const statesMerged: GeoJSON.FeatureCollection = {
@@ -1903,10 +2013,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
       selectedStateFeature == null && allMunicipalitiesFcRef.current.features.length > 0
         ? allMunicipalitiesFcRef.current
         : raw;
-    const names = rawToUse.features
-      .map((f) => municipalityNameFromProperties(f.properties))
-      .filter((n) => n.trim().length > 0);
-    const rows = buildMunicipalityProductivityRows(selectedBottomProduct, names);
+    const rows = municipalityProductivityRows;
     const { min, max } = computeValueRangeFromRows(rows, 'producaoMes');
     const valueMap = buildMunicipalityValueMap(rows, 'producaoMes');
     const merged = mergeChoroplethIntoFeatureCollection(rawToUse, valueMap);
@@ -1938,10 +2045,11 @@ const MapComponent: React.FC<MapComponentProps> = ({
     municipalityChoroplethEnabled,
     selectedBottomProduct,
     selectedStateFeature,
+    stateSearchOptions,
     municipalitySearchOptions,
     selectedMunicipalityFeature,
     productivityScope,
-    stateNamesForTable,
+    municipalityProductivityRows,
     municipalitiesGeoVersion,
     activeBaseStyle,
   ]);
@@ -2136,7 +2244,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
       </div>
       <div
         className={`absolute top-4 z-20 overflow-visible transition-[right] duration-500 ease-out ${
-          hasStatePanel ? 'right-[calc(min(96vw,420px)+0.75rem)]' : 'right-4'
+          hasStatePanel ? 'right-[calc(min(96vw,480px)+0.75rem)]' : 'right-4'
         }`}
       >
         <div className="rounded-3xl border border-slate-200/90 bg-white/95 p-2 shadow-lg shadow-slate-900/10 backdrop-blur-sm">
@@ -2310,7 +2418,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
         />
       )}
       {(() => {
-        const productivityDockInset = hasStatePanel ? 'left-0 right-[min(96vw,420px)]' : 'left-0 right-0';
+        const productivityDockInset = hasStatePanel ? 'left-0 right-[min(96vw,480px)]' : 'left-0 right-0';
         const showChoroplethLegend =
           municipalityChoroplethEnabled && choroplethLegend != null && selectedBottomProduct != null;
 
@@ -2363,7 +2471,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
                     if (scope === 'municipio' && !selectedStateFeature) return;
                     setProductivityScope(scope);
                   }}
-                  rightInsetClass={hasStatePanel ? 'right-[min(96vw,420px)]' : 'right-0'}
+                  rightInsetClass={hasStatePanel ? 'right-[min(96vw,480px)]' : 'right-0'}
                   onClose={() => {
                     setProductivitySheetOpen(false);
                     setSelectedBottomProduct(null);
