@@ -9,18 +9,41 @@ function validCoordinate(row) {
   return [lon, lat];
 }
 
-export async function getAgencyMapPoints({ bbox = null, limit = null } = {}) {
-  const rows = await fetchAgencyCoordinates({ bbox, limit });
+function normalizeText(v) {
+  const s = String(v ?? '').trim();
+  return s.length > 0 ? s : null;
+}
+
+function formatAgencyAddress(row) {
+  const endereco = normalizeText(row.ENDERECO);
+  const bairro = normalizeText(row.BAIRRO);
+  const municipio = normalizeText(row.MUNICIPIO);
+  const uf = normalizeText(row.UF);
+  const cep = normalizeText(row.CEP);
+
+  const line1 = [endereco, bairro].filter(Boolean).join(' - ');
+  const cityUf = [municipio, uf].filter(Boolean).join('/');
+  const line2 = [cityUf, cep ? `CEP ${cep}` : null].filter(Boolean).join(' - ');
+
+  return [line1, line2].filter(Boolean).join(', ');
+}
+
+export async function getAgencyMapPoints({ bbox = null, limit = null, hierarchy = null } = {}) {
+  const rows = await fetchAgencyCoordinates({ bbox, limit, hierarchy });
 
   return rows
     .map((row, index) => {
       const lngLat = validCoordinate(row);
       if (!lngLat) return null;
+      const codAg = normalizeText(row.COD_AG);
+      const nome = normalizeText(row.NOME) ?? 'Agência Bradesco';
       return {
-        id: `sql-agencia-${index}`,
-        nome: 'Agência Bradesco',
+        id: `sql-agencia-${codAg ?? index}`,
+        nome,
         kind: 'agencia',
         lngLat,
+        codAg,
+        enderecoFormatado: formatAgencyAddress(row),
       };
     })
     .filter(Boolean);

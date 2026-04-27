@@ -49,6 +49,12 @@ export interface ExpressoRegionMetrics {
   pracasPresencas: number;
   lojas: number;
   lojasAtivas: number;
+  lojasAtivasPorGrupo?: {
+    varejo: number;
+    grandesRedes: number;
+    exclusivo: number;
+    casasBahia: number;
+  };
   produtos: ProdutoExpressoResumo[];
 }
 
@@ -356,6 +362,11 @@ export function buildExpressoRegionMetrics(
   const pracasPresencas = Math.max(0, agencias - pas);
   const lojas = agencias;
   const lojasAtivas = Math.max(0, Math.min(lojas, Math.round(lojas * (0.72 + seededRange(sigla, 2, 0, 18) / 100))));
+  const lojasAtivasVarejo = Math.round(lojasAtivas * 0.48);
+  const lojasAtivasGrandesRedes = Math.round(lojasAtivas * 0.28);
+  const lojasAtivasExclusivo = Math.round(lojasAtivas * 0.13);
+  const lojasAtivasCasasBahia =
+    lojasAtivas - lojasAtivasVarejo - lojasAtivasGrandesRedes - lojasAtivasExclusivo;
   const base = Math.max(1, agencias * 42 + inState.filter((m) => m.kind === 'pessoa').length * 18);
   const producaoRegional = base * (800 + seededRange(sigla, 1, 0, 400));
 
@@ -365,6 +376,12 @@ export function buildExpressoRegionMetrics(
     pracasPresencas,
     lojas,
     lojasAtivas,
+    lojasAtivasPorGrupo: {
+      varejo: lojasAtivasVarejo,
+      grandesRedes: lojasAtivasGrandesRedes,
+      exclusivo: lojasAtivasExclusivo,
+      casasBahia: lojasAtivasCasasBahia,
+    },
     produtos: buildProdutos(sigla, lojas, producaoRegional),
   };
 }

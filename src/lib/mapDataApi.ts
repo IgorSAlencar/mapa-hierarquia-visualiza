@@ -1,10 +1,13 @@
 export type SqlMapPointKind = 'agencia' | 'loja';
+import type { SqlHierarchyFilter } from '@/data/commercialStructureMock';
 
 export interface SqlMapPoint {
   id: string;
   nome: string;
   kind: SqlMapPointKind;
   lngLat: [number, number];
+  codAg?: string | null;
+  enderecoFormatado?: string | null;
 }
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? '';
@@ -19,6 +22,7 @@ export interface BboxQuery {
 interface FetchPointsOptions {
   bbox?: BboxQuery | null;
   limit?: number;
+  hierarchy?: SqlHierarchyFilter | null;
 }
 
 function buildQueryParams(options: FetchPointsOptions = {}) {
@@ -32,6 +36,21 @@ function buildQueryParams(options: FetchPointsOptions = {}) {
   if (options.limit && Number.isFinite(options.limit)) {
     params.set('limit', String(Math.max(1, Math.round(options.limit))));
   }
+  if (options.hierarchy) {
+    const entries: Array<[keyof SqlHierarchyFilter, string]> = [
+      ['direReg', 'direReg'],
+      ['codGerReg', 'codGerReg'],
+      ['codGerArea', 'codGerArea'],
+      ['codCoord', 'codCoord'],
+      ['codSupervisao', 'codSupervisao'],
+      ['codAg', 'codAg'],
+    ];
+    for (const [key, paramName] of entries) {
+      const value = options.hierarchy[key];
+      if (value == null || !Number.isFinite(value)) continue;
+      params.set(paramName, String(Math.round(value)));
+    }
+  }
   const serialized = params.toString();
   return serialized ? `?${serialized}` : '';
 }
@@ -42,9 +61,9 @@ async function fetchPoints(path: string, options: FetchPointsOptions = {}): Prom
   try {
     response = await fetch(url);
   } catch (error) {
+    const detail = error instanceof Error ? ` Detalhe: ${error.message}` : '';
     throw new Error(
-      `Não foi possível conectar à API (${url}). Verifique se o backend está rodando em "npm run dev:api".`,
-      { cause: error }
+      `Não foi possível conectar à API (${url}). Verifique se o backend está rodando em "npm run dev:api".${detail}`
     );
   }
 

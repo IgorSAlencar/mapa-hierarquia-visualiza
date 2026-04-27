@@ -113,6 +113,12 @@ export async function getExpressoStateMetrics({ ufSigla, codIbge = null }) {
     pracasPresencas: Number(summary.pracasPresencas) || 0,
     lojas: Number(summary.lojas) || 0,
     lojasAtivas: Number(summary.lojasAtivas) || 0,
+    lojasAtivasPorGrupo: {
+      varejo: Number(summary.lojasAtivasVarejo) || 0,
+      grandesRedes: Number(summary.lojasAtivasGrandesRedes) || 0,
+      exclusivo: Number(summary.lojasAtivasExclusivo) || 0,
+      casasBahia: Number(summary.lojasAtivasCasasBahia) || 0,
+    },
     produtos: normalizedProducts,
   };
 }

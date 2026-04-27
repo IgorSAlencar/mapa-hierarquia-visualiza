@@ -13,6 +13,8 @@ export interface RegionMapPoint {
   /** Apenas legível / debug */
   uf?: string;
   kind: RegionMapPointKind;
+  codAg?: string;
+  enderecoFormatado?: string;
 }
 
 type GeoJSONPosition = [number, number];
@@ -79,6 +81,8 @@ export function regionPointsToFeatureCollection(
         id: p.id,
         nome: p.nome,
         kind: p.kind,
+        cod_ag: p.codAg ?? '',
+        endereco_formatado: p.enderecoFormatado ?? '',
         subtitulo:
           p.kind === 'agencia'
             ? 'Agência'

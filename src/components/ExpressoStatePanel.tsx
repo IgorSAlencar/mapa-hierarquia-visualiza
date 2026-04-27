@@ -19,7 +19,7 @@ const ExpressoStatePanel: React.FC<ExpressoStatePanelProps> = ({
   onOpenProductivitySheet,
 }) => {
   const [animateIn, setAnimateIn] = useState(false);
-  const lojasBreakdown = buildLojasBreakdown(metrics.lojas, metrics.lojasAtivas);
+  const lojasBreakdown = buildLojasBreakdown(metrics.lojas, metrics.lojasAtivas, metrics.lojasAtivasPorGrupo);
   /** Com município selecionado: destaque no município; estado no chip. Só estado: título é o estado. */
   const headerTitle = cityFocus?.trim() ? cityFocus.trim() : regionName;
   const stateContextLabel = cityFocus?.trim() && regionName?.trim() ? regionName.trim() : null;
@@ -123,7 +123,16 @@ const ExpressoStatePanel: React.FC<ExpressoStatePanelProps> = ({
   );
 };
 
-function buildLojasBreakdown(lojas: number, lojasAtivas: number) {
+function buildLojasBreakdown(
+  lojas: number,
+  lojasAtivas: number,
+  lojasAtivasPorGrupo?: {
+    varejo: number;
+    grandesRedes: number;
+    exclusivo: number;
+    casasBahia: number;
+  }
+) {
   const groups = [
     { id: 'varejo', label: 'Varejo', ratio: 0.49, activeRatio: 0.48, color: 'text-sky-600', iconTone: 'bg-sky-50' },
     {
@@ -164,7 +173,14 @@ function buildLojasBreakdown(lojas: number, lojasAtivas: number) {
   };
 
   const totalSplit = split(lojas, 'ratio');
-  const activeSplit = split(lojasAtivas, 'activeRatio');
+  const activeSplit = lojasAtivasPorGrupo
+    ? [
+        Math.max(0, Math.round(lojasAtivasPorGrupo.varejo)),
+        Math.max(0, Math.round(lojasAtivasPorGrupo.grandesRedes)),
+        Math.max(0, Math.round(lojasAtivasPorGrupo.exclusivo)),
+        Math.max(0, Math.round(lojasAtivasPorGrupo.casasBahia)),
+      ]
+    : split(lojasAtivas, 'activeRatio');
 
   return groups.map((group, index) => ({
     ...group,

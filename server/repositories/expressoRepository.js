@@ -25,7 +25,11 @@ async function fetchStateSummary(ufSigla, anoRef, mesRef) {
       QTD_PAS AS pas,
       QTD_PRACAS_PRESENCAS AS pracasPresencas,
       QTD_LOJAS AS lojas,
-      QTD_LOJAS_ATIVAS AS lojasAtivas
+      QTD_LOJAS_ATIVAS AS lojasAtivas,
+      QTD_LOJAS_ATIVAS_VAREJO AS lojasAtivasVarejo,
+      QTD_LOJAS_ATIVAS_GRANDES_REDES AS lojasAtivasGrandesRedes,
+      QTD_LOJAS_ATIVAS_EXCLUSIVO AS lojasAtivasExclusivo,
+      QTD_LOJAS_ATIVAS_CASAS_BAHIA AS lojasAtivasCasasBahia
     FROM dbo.TB_METRICA_UF_RESUMO_MES
     WHERE UF_SIGLA = @ufSigla
       AND ANO_REF = @anoRef
@@ -71,7 +75,11 @@ async function fetchMunicipalitySummary(codIbge, anoRef, mesRef) {
       QTD_PAS AS pas,
       QTD_PRACAS_PRESENCAS AS pracasPresencas,
       QTD_LOJAS AS lojas,
-      QTD_LOJAS_ATIVAS AS lojasAtivas
+      QTD_LOJAS_ATIVAS AS lojasAtivas,
+      QTD_LOJAS_ATIVAS_VAREJO AS lojasAtivasVarejo,
+      QTD_LOJAS_ATIVAS_GRANDES_REDES AS lojasAtivasGrandesRedes,
+      QTD_LOJAS_ATIVAS_EXCLUSIVO AS lojasAtivasExclusivo,
+      QTD_LOJAS_ATIVAS_CASAS_BAHIA AS lojasAtivasCasasBahia
     FROM dbo.TB_METRICA_MUNICIPIO_RESUMO_MES
     WHERE COD_IBGE = @codIbge
       AND ANO_REF = @anoRef

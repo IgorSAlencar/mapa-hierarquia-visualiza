@@ -25,11 +25,30 @@ function readLimitFromQuery(query, fallback, maxAllowed) {
   return Math.min(Math.round(parsed), maxAllowed);
 }
 
+function readHierarchyFromQuery(query) {
+  const parseIntField = (name) => {
+    const n = parseNumber(query[name]);
+    if (n == null) return null;
+    return n > 0 ? Math.round(n) : null;
+  };
+  const hierarchy = {
+    direReg: parseIntField('direReg'),
+    codGerReg: parseIntField('codGerReg'),
+    codGerArea: parseIntField('codGerArea'),
+    codCoord: parseIntField('codCoord'),
+    codSupervisao: parseIntField('codSupervisao'),
+    codAg: parseIntField('codAg'),
+  };
+  const hasAny = Object.values(hierarchy).some((v) => v != null);
+  return hasAny ? hierarchy : null;
+}
+
 router.get('/agencias', async (req, res) => {
   try {
     const bbox = readBboxFromQuery(req.query);
     const limit = readLimitFromQuery(req.query, null, 250000);
-    const points = await getAgencyMapPoints({ bbox, limit });
+    const hierarchy = readHierarchyFromQuery(req.query);
+    const points = await getAgencyMapPoints({ bbox, limit, hierarchy });
     res.json({ points });
   } catch (error) {
     console.error('Erro ao buscar agências:', error);

@@ -3,6 +3,7 @@ import MapComponent from '@/components/MapComponent';
 import CommercialStructureFilters from '@/components/CommercialStructureFilters';
 import {
   FILTROS_INICIAIS,
+  buildSqlHierarchyFilterFromUi,
   type FiltrosEstrutura,
   getMarcadoresParaFiltros,
 } from '@/data/commercialStructureMock';
@@ -46,6 +47,7 @@ const Index = () => {
       <main className="relative h-[calc(100vh-81px)] overflow-hidden">
         <MapComponent
           mapMarkers={mapMarkers}
+          hierarchyFilter={buildSqlHierarchyFilterFromUi(filters)}
           filtersPanelOpen={filtersPanelOpen}
           onOpenFilters={() => setFiltersPanelOpen(true)}
         />

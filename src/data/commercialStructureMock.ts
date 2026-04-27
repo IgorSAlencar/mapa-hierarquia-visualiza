@@ -212,6 +212,15 @@ export interface FiltrosEstrutura {
   supervisorId: string;
 }
 
+export interface SqlHierarchyFilter {
+  direReg?: number;
+  codGerReg?: number;
+  codGerArea?: number;
+  codCoord?: number;
+  codSupervisao?: number;
+  codAg?: number;
+}
+
 const empty = '';
 
 export const FILTROS_INICIAIS: FiltrosEstrutura = {
@@ -437,4 +446,47 @@ export function listarAgenciasFiltradas(f: FiltrosEstrutura): AgenciaEntidade[] 
     return AGENCIAS.filter((a) => ids.has(a.parentId));
   }
   return [...AGENCIAS];
+}
+
+const UI_TO_SQL_HIERARCHY: Record<string, SqlHierarchyFilter> = {
+  'dr-se': { direReg: 1001 },
+  'dr-ne': { direReg: 1002 },
+  'gr-sp': { codGerReg: 2001 },
+  'gr-rj': { codGerReg: 2002 },
+  'gr-ba': { codGerReg: 2003 },
+  'ga-sp-centro': { codGerArea: 3001 },
+  'ga-sp-oeste': { codGerArea: 3002 },
+  'ga-rj': { codGerArea: 3003 },
+  'coord-rio': { codCoord: 4001 },
+  'coord-lapa': { codCoord: 4002 },
+  'coord-pinheiros': { codCoord: 4003 },
+  'coord-campinas': { codCoord: 4004 },
+  'sup-alice': { codSupervisao: 5001 },
+  'sup-bruno': { codSupervisao: 5002 },
+  'sup-camila': { codSupervisao: 5003 },
+  'sup-daniel': { codSupervisao: 5004 },
+  'sup-elisa': { codSupervisao: 5005 },
+  'ag-101': { codAg: 910101 },
+  'ag-102': { codAg: 910102 },
+  'ag-103': { codAg: 910103 },
+  'ag-104': { codAg: 910104 },
+  'ag-105': { codAg: 910105 },
+  'ag-106': { codAg: 910106 },
+};
+
+export function buildSqlHierarchyFilterFromUi(filters: FiltrosEstrutura): SqlHierarchyFilter | null {
+  const steps = [
+    filters.agenciaId,
+    filters.supervisorId,
+    filters.coordenadorId,
+    filters.gerenteAreaId,
+    filters.gerenteRegionalId,
+    filters.diretoriaRegionalId,
+  ];
+  for (const id of steps) {
+    if (!id) continue;
+    const mapped = UI_TO_SQL_HIERARCHY[id];
+    if (mapped) return mapped;
+  }
+  return null;
 }

@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import ExpressoBottomSheet from '@/components/ExpressoBottomSheet';
 import ExpressoStatePanel from '@/components/ExpressoStatePanel';
+import { buildAgencyPopupHtml, readAgencyPopupInfoFromProperties } from '@/components/AgencyInfoPopup';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { useToast } from '@/hooks/use-toast';
@@ -25,7 +26,7 @@ import {
   type MunicipalityProductivityRow,
   type ProdutoExpressoId,
 } from '@/lib/expressoRegionMock';
-import type { MarcadorMapa } from '@/data/commercialStructureMock';
+import type { MarcadorMapa, SqlHierarchyFilter } from '@/data/commercialStructureMock';
 import {
   filterRegionMapPoints,
   MOCK_REGION_SUPERVISORES,
@@ -567,12 +568,14 @@ function buildMunicipalitySearchOptions(
 
 interface MapComponentProps {
   mapMarkers: MarcadorMapa[];
+  hierarchyFilter?: SqlHierarchyFilter | null;
   filtersPanelOpen?: boolean;
   onOpenFilters?: () => void;
 }
 
 const MapComponent: React.FC<MapComponentProps> = ({
   mapMarkers,
+  hierarchyFilter = null,
   filtersPanelOpen = false,
   onOpenFilters,
 }) => {
@@ -730,7 +733,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
     if (overlayAgencias && !loadingAgencyPoints) {
       setLoadingAgencyPoints(true);
       try {
-        const points = await fetchAgencyPoints({ bbox });
+        const points = await fetchAgencyPoints({ bbox, hierarchy: hierarchyFilter });
         setSqlAgencyPoints(points);
       } catch (error) {
         console.error('Falha ao carregar agências SQL:', error);
@@ -889,6 +892,9 @@ const MapComponent: React.FC<MapComponentProps> = ({
 
   const clusterClickHandlerRef = useRef<((e: mapboxgl.MapLayerMouseEvent) => void) | null>(null);
   const regionOverlayClickHandlerRef = useRef<((e: mapboxgl.MapLayerMouseEvent) => void) | null>(null);
+  const agencyHoverEnterHandlerRef = useRef<((e: mapboxgl.MapLayerMouseEvent) => void) | null>(null);
+  const agencyHoverLeaveHandlerRef = useRef<((e: mapboxgl.MapLayerMouseEvent) => void) | null>(null);
+  const agencyHoverPopupRef = useRef<mapboxgl.Popup | null>(null);
 
   const handleSearchSelect = (option: SearchOption) => {
     if (option.kind === 'estado') {
@@ -944,7 +950,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
     const bbox = getCurrentMapBbox();
     setLoadingAgencyPoints(true);
     try {
-      const points = await fetchAgencyPoints({ bbox });
+      const points = await fetchAgencyPoints({ bbox, hierarchy: hierarchyFilter });
       setSqlAgencyPoints(points);
       setOverlayAgencias(true);
     } catch (error) {
@@ -1461,6 +1467,17 @@ const MapComponent: React.FC<MapComponentProps> = ({
               if (topId.startsWith('region-overlay-')) return;
             }
 
+            // Evita "vazar" clique de agência para seleção de cidade quando o usuário clica perto do círculo.
+            const agencyHitLayers = ['structure-agencies-point', 'region-overlay-agencias-cir'];
+            const agencyHitBox: [mapboxgl.PointLike, mapboxgl.PointLike] = [
+              [e.point.x - 14, e.point.y - 14],
+              [e.point.x + 14, e.point.y + 14],
+            ];
+            const nearAgencyHit = m.queryRenderedFeatures(agencyHitBox, {
+              layers: agencyHitLayers.filter((layerId) => m.getLayer(layerId)),
+            });
+            if (nearAgencyHit.length > 0) return;
+
             const muniByPoly = findMunicipalityFeatureContainingLngLat(municipalitiesFcRef.current, e.lngLat);
             if (muniByPoly) {
               selectMunicipalityFeature(muniByPoly);
@@ -1470,8 +1487,8 @@ const MapComponent: React.FC<MapComponentProps> = ({
             const labelLayers = cityLabelLayerIds(m);
             if (labelLayers.length === 0) return;
             const clickBox: [mapboxgl.PointLike, mapboxgl.PointLike] = [
-              [e.point.x - 10, e.point.y - 10],
-              [e.point.x + 10, e.point.y + 10],
+              [e.point.x - 5, e.point.y - 5],
+              [e.point.x + 5, e.point.y + 5],
             ];
             const features = m.queryRenderedFeatures(clickBox, { layers: labelLayers });
             const city = features.find((feature) => {
@@ -1691,24 +1708,17 @@ const MapComponent: React.FC<MapComponentProps> = ({
         m.addSource('region-overlay-supervisores', { type: 'geojson', data: emptyRegionFc });
         m.addSource('region-overlay-lojas', { type: 'geojson', data: emptyRegionFc });
 
-        try {
-          const agenciaImage = await m.loadImage('/agencia.png');
-          if (!m.hasImage('region-overlay-agencia-icon')) {
-            m.addImage('region-overlay-agencia-icon', agenciaImage.data);
-          }
-        } catch (error) {
-          console.warn('Não foi possível carregar ícone da agência:', error);
-        }
-
         m.addLayer({
           id: 'region-overlay-agencias-cir',
-          type: 'symbol',
+          type: 'circle',
           source: 'region-overlay-agencias',
-          layout: {
-            'icon-image': 'region-overlay-agencia-icon',
-            'icon-size': 0.22,
-            'icon-allow-overlap': true,
-          },
+          paint: circlePaintForStandard(activeBaseStyle, {
+            'circle-radius': 7,
+            'circle-color': '#b91c1c',
+            'circle-stroke-width': 2,
+            'circle-stroke-color': '#fff',
+            'circle-opacity': 0.95,
+          }),
         });
         m.addLayer({
           id: 'region-overlay-supervisores-cir',
@@ -1738,13 +1748,10 @@ const MapComponent: React.FC<MapComponentProps> = ({
         const onRegionOverlayClick = (e: mapboxgl.MapLayerMouseEvent) => {
           const f = e.features?.[0];
           if (!f || !f.properties || !map.current) return;
-          const nome = String(f.properties.nome ?? '');
-          const sub = String(f.properties.subtitulo ?? '');
+          const info = readAgencyPopupInfoFromProperties(f.properties);
           new mapboxgl.Popup({ maxWidth: '280px' })
             .setLngLat(e.lngLat)
-            .setHTML(
-              `<div class="text-sm"><strong>${escapeHtml(nome)}</strong><br/><span class="text-gray-600">${escapeHtml(sub)}</span></div>`
-            )
+            .setHTML(buildAgencyPopupHtml(info))
             .addTo(map.current);
         };
         regionOverlayClickHandlerRef.current = onRegionOverlayClick;
@@ -1759,6 +1766,42 @@ const MapComponent: React.FC<MapComponentProps> = ({
           m.on('click', layerId, onRegionOverlayClick);
           m.on('mouseenter', layerId, setStructPointer);
           m.on('mouseleave', layerId, clearStructPointer);
+        }
+
+        const hoverPopup = new mapboxgl.Popup({
+          closeButton: false,
+          closeOnClick: false,
+          offset: 12,
+          maxWidth: '320px',
+        });
+        agencyHoverPopupRef.current = hoverPopup;
+
+        const onAgencyHoverEnter = (e: mapboxgl.MapLayerMouseEvent) => {
+          const f = e.features?.[0];
+          if (!f?.properties || !map.current || !f.geometry || f.geometry.type !== 'Point') return;
+          const coordinates = [...(f.geometry.coordinates as [number, number])] as [number, number];
+          const info = readAgencyPopupInfoFromProperties(f.properties);
+
+          map.current.getCanvas().style.cursor = 'pointer';
+          hoverPopup
+            .setLngLat(coordinates)
+            .setHTML(buildAgencyPopupHtml(info))
+            .addTo(map.current);
+        };
+
+        const onAgencyHoverLeave = () => {
+          if (!map.current) return;
+          map.current.getCanvas().style.cursor = '';
+          hoverPopup.remove();
+        };
+
+        agencyHoverEnterHandlerRef.current = onAgencyHoverEnter;
+        agencyHoverLeaveHandlerRef.current = onAgencyHoverLeave;
+
+        for (const layerId of ['structure-agencies-point', 'region-overlay-agencias-cir'] as const) {
+          if (!m.getLayer(layerId)) continue;
+          m.on('mouseenter', layerId, onAgencyHoverEnter);
+          m.on('mouseleave', layerId, onAgencyHoverLeave);
         }
 
         setAgencyLayersVisibility(m, mapMarkersRef.current.some((x) => x.kind === 'agencia'));
@@ -1866,7 +1909,12 @@ const MapComponent: React.FC<MapComponentProps> = ({
         refreshTimerRef.current = null;
       }
     };
-  }, [overlayAgencias, overlayLojas, mapReadyVersion]);
+  }, [overlayAgencias, overlayLojas, mapReadyVersion, hierarchyFilter]);
+
+  useEffect(() => {
+    if (!overlayAgencias) return;
+    void refreshOverlayDataForViewport();
+  }, [overlayAgencias, hierarchyFilter]);
 
   useEffect(() => {
     const m = map.current;
@@ -2134,6 +2182,16 @@ const MapComponent: React.FC<MapComponentProps> = ({
           m.off('click', id, h);
         }
       }
+      if (m && agencyHoverEnterHandlerRef.current && agencyHoverLeaveHandlerRef.current) {
+        for (const id of ['structure-agencies-point', 'region-overlay-agencias-cir'] as const) {
+          if (m.getLayer(id)) {
+            m.off('mouseenter', id, agencyHoverEnterHandlerRef.current);
+            m.off('mouseleave', id, agencyHoverLeaveHandlerRef.current);
+          }
+        }
+      }
+      agencyHoverPopupRef.current?.remove();
+      agencyHoverPopupRef.current = null;
       map.current?.remove();
       map.current = null;
       if (mapTransitionTimerRef.current != null) {

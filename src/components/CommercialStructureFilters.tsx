@@ -1,23 +1,15 @@
-import React from 'react';
-import { Building2 } from 'lucide-react';
+import React, { useMemo, useState } from 'react';
+import { Building2, Check, ChevronsUpDown } from 'lucide-react';
 import { Label } from '@/components/ui/label';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { Command, CommandEmpty, CommandInput, CommandItem, CommandList } from '@/components/ui/command';
 import { Button } from '@/components/ui/button';
+import { cn } from '@/lib/utils';
 import {
+  AGENCIAS,
   FILTROS_INICIAIS,
+  PESSOAS,
   type FiltrosEstrutura,
-  listarAgenciasFiltradas,
-  listarCoordenadores,
-  listarDiretorias,
-  listarGerentesArea,
-  listarGerentesRegionais,
-  listarSupervisores,
 } from '@/data/commercialStructureMock';
 
 const ALL = 'all';
@@ -31,12 +23,27 @@ const CommercialStructureFilters: React.FC<CommercialStructureFiltersProps> = ({
   filters,
   onFiltersChange,
 }) => {
-  const diretorias = listarDiretorias();
-  const gerentesRegionais = listarGerentesRegionais(filters.diretoriaRegionalId);
-  const gerentesArea = listarGerentesArea(filters.gerenteRegionalId);
-  const coordenadores = listarCoordenadores(filters.gerenteAreaId);
-  const supervisores = listarSupervisores(filters.coordenadorId);
-  const agencias = listarAgenciasFiltradas(filters);
+  const diretorias = useMemo(
+    () => PESSOAS.filter((p) => p.cargo === 'diretoria_regional'),
+    []
+  );
+  const gerentesRegionais = useMemo(
+    () => PESSOAS.filter((p) => p.cargo === 'gerente_regional'),
+    []
+  );
+  const gerentesArea = useMemo(
+    () => PESSOAS.filter((p) => p.cargo === 'gerente_area'),
+    []
+  );
+  const coordenadores = useMemo(
+    () => PESSOAS.filter((p) => p.cargo === 'coordenador'),
+    []
+  );
+  const supervisores = useMemo(
+    () => PESSOAS.filter((p) => p.cargo === 'supervisor'),
+    []
+  );
+  const agencias = useMemo(() => [...AGENCIAS], []);
 
   return (
     <div className="space-y-4">
@@ -57,7 +64,7 @@ const CommercialStructureFilters: React.FC<CommercialStructureFiltersProps> = ({
           value={filters.diretoriaRegionalId || ALL}
           onChange={(v) =>
             onFiltersChange({
-              ...FILTROS_INICIAIS,
+              ...filters,
               diretoriaRegionalId: v === ALL ? '' : v,
             })
           }
@@ -71,14 +78,9 @@ const CommercialStructureFilters: React.FC<CommercialStructureFiltersProps> = ({
             onFiltersChange({
               ...filters,
               gerenteRegionalId: v === ALL ? '' : v,
-              gerenteAreaId: '',
-              coordenadorId: '',
-              supervisorId: '',
-              agenciaId: '',
             })
           }
           options={gerentesRegionais.map((p) => ({ value: p.id, label: p.nome }))}
-          disabled={!filters.diretoriaRegionalId}
         />
 
         <Field
@@ -88,13 +90,9 @@ const CommercialStructureFilters: React.FC<CommercialStructureFiltersProps> = ({
             onFiltersChange({
               ...filters,
               gerenteAreaId: v === ALL ? '' : v,
-              coordenadorId: '',
-              supervisorId: '',
-              agenciaId: '',
             })
           }
           options={gerentesArea.map((p) => ({ value: p.id, label: p.nome }))}
-          disabled={!filters.gerenteRegionalId}
         />
 
         <Field
@@ -104,12 +102,9 @@ const CommercialStructureFilters: React.FC<CommercialStructureFiltersProps> = ({
             onFiltersChange({
               ...filters,
               coordenadorId: v === ALL ? '' : v,
-              supervisorId: '',
-              agenciaId: '',
             })
           }
           options={coordenadores.map((p) => ({ value: p.id, label: p.nome }))}
-          disabled={!filters.gerenteAreaId}
         />
 
         <Field
@@ -119,11 +114,9 @@ const CommercialStructureFilters: React.FC<CommercialStructureFiltersProps> = ({
             onFiltersChange({
               ...filters,
               supervisorId: v === ALL ? '' : v,
-              agenciaId: '',
             })
           }
           options={supervisores.map((p) => ({ value: p.id, label: p.nome }))}
-          disabled={!filters.coordenadorId}
         />
 
         <Field
@@ -139,7 +132,6 @@ const CommercialStructureFilters: React.FC<CommercialStructureFiltersProps> = ({
             value: a.id,
             label: `${a.codigo} — ${a.nome}`,
           }))}
-          disabled={agencias.length === 0}
         />
       </div>
 
@@ -172,20 +164,76 @@ function Field({
   return (
     <div className="space-y-1.5">
       <Label className="text-xs font-medium text-muted-foreground">{label}</Label>
-      <Select value={value} onValueChange={onChange} disabled={disabled}>
-        <SelectTrigger className="h-9 text-sm">
-          <SelectValue placeholder="Todos" />
-        </SelectTrigger>
-        <SelectContent>
-          <SelectItem value={ALL}>Todos</SelectItem>
-          {options.map((o) => (
-            <SelectItem key={o.value} value={o.value}>
-              {o.label}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
+      <SearchableSelect
+        value={value}
+        onChange={onChange}
+        options={options}
+        disabled={disabled}
+      />
     </div>
+  );
+}
+
+function SearchableSelect({
+  value,
+  onChange,
+  options,
+  disabled,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  options: { value: string; label: string }[];
+  disabled?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const currentLabel = options.find((option) => option.value === value)?.label ?? 'Todos';
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          variant="outline"
+          role="combobox"
+          aria-expanded={open}
+          disabled={disabled}
+          className="h-9 w-full justify-between text-sm font-normal"
+        >
+          <span className="truncate">{currentLabel}</span>
+          <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent className="w-[--radix-popover-trigger-width] p-0" align="start">
+        <Command>
+          <CommandInput placeholder="Digite para buscar..." />
+          <CommandList>
+            <CommandEmpty>Nenhuma opção encontrada.</CommandEmpty>
+            <CommandItem
+              value="Todos"
+              onSelect={() => {
+                onChange(ALL);
+                setOpen(false);
+              }}
+            >
+              <Check className={cn('mr-2 h-4 w-4', value === ALL ? 'opacity-100' : 'opacity-0')} />
+              Todos
+            </CommandItem>
+            {options.map((option) => (
+              <CommandItem
+                key={option.value}
+                value={option.label}
+                onSelect={() => {
+                  onChange(option.value);
+                  setOpen(false);
+                }}
+              >
+                <Check className={cn('mr-2 h-4 w-4', value === option.value ? 'opacity-100' : 'opacity-0')} />
+                {option.label}
+              </CommandItem>
+            ))}
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
   );
 }
 
