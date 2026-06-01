@@ -1,6 +1,4 @@
 import type { MarcadorMapa } from '@/data/commercialStructureMock';
-import { format, subDays, subMonths } from 'date-fns';
-import { ptBR } from 'date-fns/locale/pt-BR';
 
 type GeoJSONPosition = [number, number];
 
@@ -8,7 +6,7 @@ export type ProdutoExpressoId = 'consignado' | 'lime' | 'contas' | 'seguros';
 
 export type ProdutoStatusSemantico = 'critico' | 'atencao' | 'saudavel';
 
-export type PeriodoEvolucaoId = '7d' | '30d' | '3m' | '12m';
+export type PeriodoEvolucaoId = 'mom' | 'yoy';
 
 export interface EvolucaoChartPoint {
   label: string;
@@ -79,10 +77,8 @@ export function emptyProdutoExpressoResumo(id: ProdutoExpressoId, nome: string):
     statusSemantico: 'saudavel',
     insightDestaque: 'Selecione um estado no mapa para carregar o desempenho por produto.',
     evolucaoPorPeriodo: {
-      '7d': zeroEvolucaoSeries(7),
-      '30d': zeroEvolucaoSeries(6),
-      '3m': zeroEvolucaoSeries(6),
-      '12m': zeroEvolucaoSeries(6),
+      mom: zeroEvolucaoSeries(6).map((row, index) => ({ ...row, label: String(index + 1) })),
+      yoy: zeroEvolucaoSeries(6).map((row, index) => ({ ...row, label: String(index + 1) })),
     },
     subprodutos: [],
   };
@@ -214,13 +210,9 @@ function buildEvolucaoPorPeriodo(
     return out;
   };
 
-  const ref = new Date();
-
   return {
-    '7d': mk(7, (i) => format(subDays(ref, 6 - i), 'dd/MMM', { locale: ptBR })),
-    '30d': mk(6, (i) => format(subDays(ref, 30 - i * 6), 'dd/MMM', { locale: ptBR })),
-    '3m': mk(6, (i) => format(subDays(ref, 90 - i * 18), 'dd/MMM', { locale: ptBR })),
-    '12m': mk(6, (i) => format(subMonths(ref, (5 - i) * 2), "MMM ''yy", { locale: ptBR })),
+    mom: mk(6, (i) => String(i + 1)),
+    yoy: mk(6, (i) => String(i + 1)),
   };
 }
 

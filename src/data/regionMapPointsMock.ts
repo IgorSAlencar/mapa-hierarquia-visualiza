@@ -4,6 +4,13 @@
  */
 
 export type RegionMapPointKind = 'agencia' | 'supervisor' | 'loja';
+export type CommercialTeamLevel = 'supervisor' | 'coordenador' | 'gerente_area';
+
+export const COMMERCIAL_TEAM_LEVEL_LABEL: Record<CommercialTeamLevel, string> = {
+  supervisor: 'Gerente Comercial',
+  coordenador: 'Gerente Comercial III',
+  gerente_area: 'Gerente de Gestão',
+};
 
 export interface RegionMapPoint {
   id: string;
@@ -13,8 +20,12 @@ export interface RegionMapPoint {
   /** Apenas legível / debug */
   uf?: string;
   kind: RegionMapPointKind;
+  commercialLevel?: CommercialTeamLevel;
   codAg?: string;
   enderecoFormatado?: string;
+  chaveGerenciaArea?: number | null;
+  chaveEntidade?: number | null;
+  seatColor?: string | null;
 }
 
 type GeoJSONPosition = [number, number];
@@ -81,14 +92,21 @@ export function regionPointsToFeatureCollection(
         id: p.id,
         nome: p.nome,
         kind: p.kind,
-        cod_ag: p.codAg ?? '',
+        cod_ag: p.codAg != null && String(p.codAg).trim() !== '' ? String(p.codAg).trim() : '',
         endereco_formatado: p.enderecoFormatado ?? '',
         subtitulo:
           p.kind === 'agencia'
             ? 'Agência'
             : p.kind === 'supervisor'
-              ? 'Supervisor'
+              ? p.commercialLevel
+                ? COMMERCIAL_TEAM_LEVEL_LABEL[p.commercialLevel]
+                : 'Supervisor'
               : 'Loja',
+        commercial_level: p.commercialLevel ?? '',
+        chave_gerencia_area:
+          Number.isFinite(Number(p.chaveGerenciaArea)) ? Math.trunc(Number(p.chaveGerenciaArea)) : null,
+        chave_entidade: Number.isFinite(Number(p.chaveEntidade)) ? Math.trunc(Number(p.chaveEntidade)) : null,
+        seat_color: p.seatColor ?? '',
       },
       geometry: {
         type: 'Point' as const,
@@ -112,14 +130,70 @@ export const MOCK_REGION_AGENCIAS: RegionMapPoint[] = [
 ];
 
 export const MOCK_REGION_SUPERVISORES: RegionMapPoint[] = [
-  { id: 'rs-sp-1', nome: 'Supervisão — Centro SP', kind: 'supervisor', uf: 'SP', lngLat: [-46.641, -23.548] },
-  { id: 'rs-sp-2', nome: 'Supervisão — Zona Sul SP', kind: 'supervisor', uf: 'SP', lngLat: [-46.672, -23.62] },
-  { id: 'rs-sp-3', nome: 'Supervisão — Campinas', kind: 'supervisor', uf: 'SP', lngLat: [-47.058, -22.89] },
-  { id: 'rs-rj-1', nome: 'Supervisão — Zona Norte RJ', kind: 'supervisor', uf: 'RJ', lngLat: [-43.25, -22.87] },
-  { id: 'rs-rj-2', nome: 'Supervisão — Baixada', kind: 'supervisor', uf: 'RJ', lngLat: [-43.1, -22.82] },
-  { id: 'rs-ba-1', nome: 'Supervisão — Salvador', kind: 'supervisor', uf: 'BA', lngLat: [-38.49, -12.99] },
-  { id: 'rs-ba-2', nome: 'Supervisão — Camaçari', kind: 'supervisor', uf: 'BA', lngLat: [-38.324, -12.698] },
-  { id: 'rs-mg-1', nome: 'Supervisão — BH Centro', kind: 'supervisor', uf: 'MG', lngLat: [-43.938, -19.92] },
+  {
+    id: 'rct-sp-gc-1',
+    nome: 'Equipe Comercial — Centro SP',
+    kind: 'supervisor',
+    commercialLevel: 'supervisor',
+    uf: 'SP',
+    lngLat: [-46.641, -23.548],
+  },
+  {
+    id: 'rct-sp-gc3-1',
+    nome: 'Equipe Comercial — Zona Sul SP',
+    kind: 'supervisor',
+    commercialLevel: 'coordenador',
+    uf: 'SP',
+    lngLat: [-46.672, -23.62],
+  },
+  {
+    id: 'rct-sp-gg-1',
+    nome: 'Equipe Comercial — Campinas',
+    kind: 'supervisor',
+    commercialLevel: 'gerente_area',
+    uf: 'SP',
+    lngLat: [-47.058, -22.89],
+  },
+  {
+    id: 'rct-rj-gc-1',
+    nome: 'Equipe Comercial — Zona Norte RJ',
+    kind: 'supervisor',
+    commercialLevel: 'supervisor',
+    uf: 'RJ',
+    lngLat: [-43.25, -22.87],
+  },
+  {
+    id: 'rct-rj-gc3-1',
+    nome: 'Equipe Comercial — Baixada',
+    kind: 'supervisor',
+    commercialLevel: 'coordenador',
+    uf: 'RJ',
+    lngLat: [-43.1, -22.82],
+  },
+  {
+    id: 'rct-ba-gg-1',
+    nome: 'Equipe Comercial — Salvador',
+    kind: 'supervisor',
+    commercialLevel: 'gerente_area',
+    uf: 'BA',
+    lngLat: [-38.49, -12.99],
+  },
+  {
+    id: 'rct-ba-gc-1',
+    nome: 'Equipe Comercial — Camaçari',
+    kind: 'supervisor',
+    commercialLevel: 'supervisor',
+    uf: 'BA',
+    lngLat: [-38.324, -12.698],
+  },
+  {
+    id: 'rct-mg-gc3-1',
+    nome: 'Equipe Comercial — BH Centro',
+    kind: 'supervisor',
+    commercialLevel: 'coordenador',
+    uf: 'MG',
+    lngLat: [-43.938, -19.92],
+  },
 ];
 
 export const MOCK_REGION_LOJAS: RegionMapPoint[] = [

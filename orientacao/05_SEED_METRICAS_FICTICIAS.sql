@@ -3,7 +3,7 @@
   Execute após 02–04. Competência principal: ANO_REF=2026, MES_REF=4 (abril).
   Competência adicional: MES_REF=3 (março) apenas em TB_METRICA_UF_RESUMO_MES e alguns fatos para simular série.
 
-  Tipos de período em TB_SERIE_PRODUTO_PERIODO: 7D (7 pontos), 30D / 3M / 12M (6 pontos cada).
+  Tipos de período em TB_SERIE_PRODUTO_PERIODO: MOM e YOY (6 pontos cada).
 */
 
 -- USE [TESTE];
@@ -52,40 +52,33 @@ INSERT INTO dbo.TB_METRICA_UF_PRODUTO_SUB_MES (
 
 /* ---------- Séries (ex.: Consignado SP — valores em R$ mil) ---------- */
 INSERT INTO dbo.TB_SERIE_PRODUTO_PERIODO (UF_SIGLA, PRODUTO_ID, PERIODO_TIPO, ORDEM, LABEL, VALOR_ATUAL_MIL, VALOR_ANTERIOR_MIL, REFERENCIA_FIM) VALUES
-(N'SP', N'consignado', N'7D',  1, N'24/abr', 410.2, 398.0, @FIM),
-(N'SP', N'consignado', N'7D',  2, N'25/abr', 412.8, 399.5, @FIM),
-(N'SP', N'consignado', N'7D',  3, N'26/abr', 415.0, 401.2, @FIM),
-(N'SP', N'consignado', N'7D',  4, N'27/abr', 418.4, 403.0, @FIM),
-(N'SP', N'consignado', N'7D',  5, N'28/abr', 420.1, 404.8, @FIM),
-(N'SP', N'consignado', N'7D',  6, N'29/abr', 422.0, 406.2, @FIM),
-(N'SP', N'consignado', N'7D',  7, N'30/abr', 452.0, 408.0, @FIM),
-(N'SP', N'consignado', N'30D', 1, N'01/abr', 380.0, 370.0, @FIM),
-(N'SP', N'consignado', N'30D', 2, N'07/abr', 395.0, 382.0, @FIM),
-(N'SP', N'consignado', N'30D', 3, N'13/abr', 408.0, 391.0, @FIM),
-(N'SP', N'consignado', N'30D', 4, N'19/abr', 418.0, 398.0, @FIM),
-(N'SP', N'consignado', N'30D', 5, N'25/abr', 428.0, 402.0, @FIM),
-(N'SP', N'consignado', N'30D', 6, N'30/abr', 452.0, 408.0, @FIM),
-(N'SP', N'consignado', N'3M',  1, N'01/fev', 360.0, 350.0, @FIM),
-(N'SP', N'consignado', N'3M',  2, N'19/mar', 390.0, 372.0, @FIM),
-(N'SP', N'consignado', N'3M',  3, N'06/abr', 410.0, 388.0, @FIM),
-(N'SP', N'consignado', N'3M',  4, N'13/abr', 425.0, 395.0, @FIM),
-(N'SP', N'consignado', N'3M',  5, N'20/abr', 438.0, 400.0, @FIM),
-(N'SP', N'consignado', N'3M',  6, N'30/abr', 452.0, 408.0, @FIM),
-(N'SP', N'consignado', N'12M', 1, N'jun''25', 310.0, 300.0, @FIM),
-(N'SP', N'consignado', N'12M', 2, N'ago''25', 335.0, 318.0, @FIM),
-(N'SP', N'consignado', N'12M', 3, N'out''25', 360.0, 335.0, @FIM),
-(N'SP', N'consignado', N'12M', 4, N'dez''25', 385.0, 352.0, @FIM),
-(N'SP', N'consignado', N'12M', 5, N'fev''26', 410.0, 375.0, @FIM),
-(N'SP', N'consignado', N'12M', 6, N'abr''26', 452.0, 408.0, @FIM);
+(N'SP', N'consignado', N'MOM', 1, N'1', 380.0, 370.0, @FIM),
+(N'SP', N'consignado', N'MOM', 2, N'2', 395.0, 382.0, @FIM),
+(N'SP', N'consignado', N'MOM', 3, N'3', 408.0, 391.0, @FIM),
+(N'SP', N'consignado', N'MOM', 4, N'4', 418.0, 398.0, @FIM),
+(N'SP', N'consignado', N'MOM', 5, N'5', 428.0, 402.0, @FIM),
+(N'SP', N'consignado', N'MOM', 6, N'6', 452.0, 408.0, @FIM),
+(N'SP', N'consignado', N'YOY', 1, N'1', 310.0, 300.0, @FIM),
+(N'SP', N'consignado', N'YOY', 2, N'2', 335.0, 318.0, @FIM),
+(N'SP', N'consignado', N'YOY', 3, N'3', 360.0, 335.0, @FIM),
+(N'SP', N'consignado', N'YOY', 4, N'4', 385.0, 352.0, @FIM),
+(N'SP', N'consignado', N'YOY', 5, N'5', 410.0, 375.0, @FIM),
+(N'SP', N'consignado', N'YOY', 6, N'6', 452.0, 408.0, @FIM);
 
-/* Lime SP — série 30D resumida */
+/* Lime SP — séries MOM e YOY */
 INSERT INTO dbo.TB_SERIE_PRODUTO_PERIODO (UF_SIGLA, PRODUTO_ID, PERIODO_TIPO, ORDEM, LABEL, VALOR_ATUAL_MIL, VALOR_ANTERIOR_MIL, REFERENCIA_FIM) VALUES
-(N'SP', N'lime', N'30D', 1, N'01/abr', 195.0, 200.0, @FIM),
-(N'SP', N'lime', N'30D', 2, N'07/abr', 200.0, 202.0, @FIM),
-(N'SP', N'lime', N'30D', 3, N'13/abr', 205.0, 204.0, @FIM),
-(N'SP', N'lime', N'30D', 4, N'19/abr', 210.0, 208.0, @FIM),
-(N'SP', N'lime', N'30D', 5, N'25/abr', 214.0, 210.0, @FIM),
-(N'SP', N'lime', N'30D', 6, N'30/abr', 218.0, 212.0, @FIM);
+(N'SP', N'lime', N'MOM', 1, N'1', 195.0, 200.0, @FIM),
+(N'SP', N'lime', N'MOM', 2, N'2', 200.0, 202.0, @FIM),
+(N'SP', N'lime', N'MOM', 3, N'3', 205.0, 204.0, @FIM),
+(N'SP', N'lime', N'MOM', 4, N'4', 210.0, 208.0, @FIM),
+(N'SP', N'lime', N'MOM', 5, N'5', 214.0, 210.0, @FIM),
+(N'SP', N'lime', N'MOM', 6, N'6', 218.0, 212.0, @FIM),
+(N'SP', N'lime', N'YOY', 1, N'1', 182.0, 188.0, @FIM),
+(N'SP', N'lime', N'YOY', 2, N'2', 189.0, 194.0, @FIM),
+(N'SP', N'lime', N'YOY', 3, N'3', 197.0, 199.0, @FIM),
+(N'SP', N'lime', N'YOY', 4, N'4', 205.0, 203.0, @FIM),
+(N'SP', N'lime', N'YOY', 5, N'5', 212.0, 208.0, @FIM),
+(N'SP', N'lime', N'YOY', 6, N'6', 218.0, 212.0, @FIM);
 
 /* ---------- GEO produto/mês (município + UF para coropleto / tabela bottom sheet) ---------- */
 /* Municípios — NOME_MATCH alinhado a nomes usados no GeoJSON típico */

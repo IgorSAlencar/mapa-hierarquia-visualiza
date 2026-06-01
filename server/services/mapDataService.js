@@ -1,4 +1,8 @@
-import { fetchAgencyCoordinates, fetchStoreCoordinates } from '../repositories/mapDataRepository.js';
+import {
+  fetchAgencyCoordinates,
+  fetchCommercialSeatCoordinates,
+  fetchStoreCoordinates,
+} from '../repositories/mapDataRepository.js';
 
 function validCoordinate(row) {
   const lon = Number(row.lon);
@@ -12,6 +16,14 @@ function validCoordinate(row) {
 function normalizeText(v) {
   const s = String(v ?? '').trim();
   return s.length > 0 ? s : null;
+}
+
+function normalizeCodAg(v) {
+  const s = normalizeText(v);
+  if (!s) return null;
+  const n = Number(s.replace(',', '.'));
+  if (Number.isFinite(n)) return String(Math.trunc(n));
+  return s;
 }
 
 function formatAgencyAddress(row) {
@@ -35,7 +47,7 @@ export async function getAgencyMapPoints({ bbox = null, limit = null, hierarchy 
     .map((row, index) => {
       const lngLat = validCoordinate(row);
       if (!lngLat) return null;
-      const codAg = normalizeText(row.COD_AG);
+      const codAg = normalizeCodAg(row.COD_AG);
       const nome = normalizeText(row.NOME) ?? 'Agência Bradesco';
       return {
         id: `sql-agencia-${codAg ?? index}`,
@@ -49,18 +61,57 @@ export async function getAgencyMapPoints({ bbox = null, limit = null, hierarchy 
     .filter(Boolean);
 }
 
-export async function getStoreMapPoints({ bbox = null, limit = null } = {}) {
-  const rows = await fetchStoreCoordinates({ bbox, limit });
+export async function getStoreMapPoints({ bbox = null, limit = null, codAg = null, hierarchy = null } = {}) {
+  const targetCodAg = normalizeCodAg(codAg);
+  const rows = await fetchStoreCoordinates({
+    bbox: targetCodAg ? null : bbox,
+    limit,
+    codAg: targetCodAg,
+    hierarchy,
+  });
+
+  const scopedRows = targetCodAg
+    ? rows.filter((row) => normalizeCodAg(row.COD_AG) === targetCodAg)
+    : rows;
+
+  return scopedRows
+    .map((row, index) => {
+      const lngLat = validCoordinate(row);
+      if (!lngLat) return null;
+      const rowCodAg = normalizeCodAg(row.COD_AG);
+      return {
+        id: `sql-loja-${rowCodAg ?? 'x'}-${index}`,
+        nome: 'Loja',
+        kind: 'loja',
+        lngLat,
+        codAg: rowCodAg,
+      };
+    })
+    .filter(Boolean);
+}
+
+export async function getCommercialSeatMapPoints({ hierarchy = null } = {}) {
+  const rows = await fetchCommercialSeatCoordinates({ hierarchy });
 
   return rows
     .map((row, index) => {
       const lngLat = validCoordinate(row);
       if (!lngLat) return null;
+      const codAg = normalizeCodAg(row.COD_AG);
+      const nome = normalizeText(row.entidadeNome) ?? 'Estrutura comercial';
+      const commercialLevel = normalizeText(row.commercialLevel) ?? 'supervisor';
+      const entidadeChave = Number(row.entidadeChave);
+      const chaveGerenciaArea = Number(row.CHAVE_GERENCIA_AREA);
+      const safeKey = Number.isFinite(entidadeChave) ? String(Math.trunc(entidadeChave)) : String(index);
       return {
-        id: `sql-loja-${index}`,
-        nome: 'Loja',
-        kind: 'loja',
+        id: `sql-sede-${commercialLevel}-${safeKey}`,
+        nome,
+        kind: 'supervisor',
+        commercialLevel,
         lngLat,
+        codAg,
+        chaveGerenciaArea: Number.isFinite(chaveGerenciaArea) ? Math.trunc(chaveGerenciaArea) : null,
+        chaveEntidade: Number.isFinite(entidadeChave) ? Math.trunc(entidadeChave) : null,
       };
     })
     .filter(Boolean);

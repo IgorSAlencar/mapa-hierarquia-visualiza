@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { getAgencyMapPoints, getStoreMapPoints } from '../services/mapDataService.js';
+import { getAgencyMapPoints, getCommercialSeatMapPoints, getStoreMapPoints } from '../services/mapDataService.js';
 
 const router = Router();
 
@@ -32,8 +32,10 @@ function readHierarchyFromQuery(query) {
     return n > 0 ? Math.round(n) : null;
   };
   const hierarchy = {
-    direReg: parseIntField('direReg'),
-    codGerReg: parseIntField('codGerReg'),
+    chaveGerenciaArea: parseIntField('chaveGerenciaArea'),
+    chaveCoordenacao: parseIntField('chaveCoordenacao'),
+    chaveSupervisao: parseIntField('chaveSupervisao'),
+    // Compatibilidade temporária.
     codGerArea: parseIntField('codGerArea'),
     codCoord: parseIntField('codCoord'),
     codSupervisao: parseIntField('codSupervisao'),
@@ -56,15 +58,33 @@ router.get('/agencias', async (req, res) => {
   }
 });
 
+function readCodAgFromQuery(query) {
+  const codAg = String(query.codAg ?? '').trim();
+  return codAg.length > 0 ? codAg : null;
+}
+
 router.get('/lojas', async (req, res) => {
   try {
     const bbox = readBboxFromQuery(req.query);
     const limit = readLimitFromQuery(req.query, null, 300000);
-    const points = await getStoreMapPoints({ bbox, limit });
+    const codAg = readCodAgFromQuery(req.query);
+    const hierarchy = readHierarchyFromQuery(req.query);
+    const points = await getStoreMapPoints({ bbox, limit, codAg, hierarchy });
     res.json({ points });
   } catch (error) {
     console.error('Erro ao buscar lojas:', error);
     res.status(500).json({ message: 'Erro ao buscar lojas no SQL Server.' });
+  }
+});
+
+router.get('/sedes', async (req, res) => {
+  try {
+    const hierarchy = readHierarchyFromQuery(req.query);
+    const points = await getCommercialSeatMapPoints({ hierarchy });
+    res.json({ points });
+  } catch (error) {
+    console.error('Erro ao buscar sedes da estrutura:', error);
+    res.status(500).json({ message: 'Erro ao buscar sedes da estrutura comercial no SQL Server.' });
   }
 });
 

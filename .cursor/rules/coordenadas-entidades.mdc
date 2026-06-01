@@ -1,0 +1,54 @@
+---
+description: Tabelas com as agências-sede das entidades comerciais
+globs:
+
+* "**/*.sql"
+* "**/*.py"
+* "**/*.js"
+* "**/*.ts"
+* "**/*.tsx"
+  alwaysApply: true
+---
+
+# Agências-sede das entidades
+
+As tabelas abaixo armazenam uma agência-sede para cada nível da hierarquia comercial:
+
+| Tabela                        | Entidade representada | Quantidade esperada |
+| ----------------------------- | --------------------- | ------------------: |
+| `TESTE..TB_COORD_GA`          | Gerência de área      |                   6 |
+| `TESTE..TB_COORD_COORDENADOR` | Coordenação           |                  11 |
+| `TESTE..TB_COORD_SUP`         | Supervisão            |                 132 |
+
+Cada registro possui:
+
+```text
+CHAVE DA ENTIDADE
+DESCRIÇÃO DA ENTIDADE
+COD_AG
+NOME_AG
+LAT
+LON
+```
+
+A agência-sede foi escolhida aleatoriamente entre as agências vinculadas à entidade na tabela:
+
+```sql
+MESU..CONS_DISTRIBUICAO_ENTIDADES
+```
+
+Utilizar essas tabelas quando for necessário posicionar gerências, coordenações ou supervisões no mapa.
+
+Exemplo de consulta:
+
+```sql
+SELECT *
+FROM TESTE..TB_COORD_SUP;
+```
+
+Regras importantes:
+
+* Cada tabela possui somente uma linha por entidade.
+* `LAT` e `LON` representam a localização da agência-sede.
+* Uma agência pode representar entidades de níveis diferentes.
+* Para consultar todas as agências vinculadas a uma entidade, utilizar `MESU..CONS_DISTRIBUICAO_ENTIDADES`, e não as tabelas de sede.

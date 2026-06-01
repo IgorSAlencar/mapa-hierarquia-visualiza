@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Building2, Check, ChevronsUpDown } from 'lucide-react';
 import { Label } from '@/components/ui/label';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
@@ -11,6 +11,12 @@ import {
   PESSOAS,
   type FiltrosEstrutura,
 } from '@/data/commercialStructureMock';
+import {
+  fetchCoordenacoes,
+  fetchGerenciasArea,
+  fetchSupervisoes,
+  type CommercialStructureItem,
+} from '@/lib/commercialStructureApi';
 
 const ALL = 'all';
 
@@ -23,6 +29,13 @@ const CommercialStructureFilters: React.FC<CommercialStructureFiltersProps> = ({
   filters,
   onFiltersChange,
 }) => {
+  const [gerenciasAreaSql, setGerenciasAreaSql] = useState<CommercialStructureItem[]>([]);
+  const [coordenacoesSql, setCoordenacoesSql] = useState<CommercialStructureItem[]>([]);
+  const [supervisoesSql, setSupervisoesSql] = useState<CommercialStructureItem[]>([]);
+  const [loadingGerencias, setLoadingGerencias] = useState(false);
+  const [loadingCoordenacoes, setLoadingCoordenacoes] = useState(false);
+  const [loadingSupervisoes, setLoadingSupervisoes] = useState(false);
+
   const diretorias = useMemo(
     () => PESSOAS.filter((p) => p.cargo === 'diretoria_regional'),
     []
@@ -31,19 +44,80 @@ const CommercialStructureFilters: React.FC<CommercialStructureFiltersProps> = ({
     () => PESSOAS.filter((p) => p.cargo === 'gerente_regional'),
     []
   );
-  const gerentesArea = useMemo(
-    () => PESSOAS.filter((p) => p.cargo === 'gerente_area'),
-    []
-  );
-  const coordenadores = useMemo(
-    () => PESSOAS.filter((p) => p.cargo === 'coordenador'),
-    []
-  );
-  const supervisores = useMemo(
-    () => PESSOAS.filter((p) => p.cargo === 'supervisor'),
-    []
-  );
   const agencias = useMemo(() => [...AGENCIAS], []);
+
+  useEffect(() => {
+    let active = true;
+    setLoadingGerencias(true);
+    void fetchGerenciasArea()
+      .then((items) => {
+        if (!active) return;
+        setGerenciasAreaSql(items);
+      })
+      .catch((error) => {
+        console.warn('Falha ao carregar gerências de área da API.', error);
+        if (!active) return;
+        setGerenciasAreaSql([]);
+      })
+      .finally(() => {
+        if (active) setLoadingGerencias(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    const chaveGerenciaArea = Number(filters.chaveGerenciaArea);
+    if (!Number.isFinite(chaveGerenciaArea) || chaveGerenciaArea <= 0) {
+      setCoordenacoesSql([]);
+      return;
+    }
+    let active = true;
+    setLoadingCoordenacoes(true);
+    void fetchCoordenacoes(chaveGerenciaArea)
+      .then((items) => {
+        if (!active) return;
+        setCoordenacoesSql(items);
+      })
+      .catch((error) => {
+        console.warn('Falha ao carregar coordenações da API.', error);
+        if (!active) return;
+        setCoordenacoesSql([]);
+      })
+      .finally(() => {
+        if (active) setLoadingCoordenacoes(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [filters.chaveGerenciaArea]);
+
+  useEffect(() => {
+    const chaveCoordenacao = Number(filters.chaveCoordenacao);
+    if (!Number.isFinite(chaveCoordenacao) || chaveCoordenacao <= 0) {
+      setSupervisoesSql([]);
+      return;
+    }
+    let active = true;
+    setLoadingSupervisoes(true);
+    void fetchSupervisoes(chaveCoordenacao)
+      .then((items) => {
+        if (!active) return;
+        setSupervisoesSql(items);
+      })
+      .catch((error) => {
+        console.warn('Falha ao carregar supervisões da API.', error);
+        if (!active) return;
+        setSupervisoesSql([]);
+      })
+      .finally(() => {
+        if (active) setLoadingSupervisoes(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [filters.chaveCoordenacao]);
 
   return (
     <div className="space-y-4">
@@ -85,38 +159,53 @@ const CommercialStructureFilters: React.FC<CommercialStructureFiltersProps> = ({
 
         <Field
           label="Gerente de Área"
-          value={filters.gerenteAreaId || ALL}
+          value={filters.chaveGerenciaArea || ALL}
           onChange={(v) =>
             onFiltersChange({
               ...filters,
-              gerenteAreaId: v === ALL ? '' : v,
+              chaveGerenciaArea: v === ALL ? '' : v,
+              chaveCoordenacao: '',
+              chaveSupervisao: '',
             })
           }
-          options={gerentesArea.map((p) => ({ value: p.id, label: p.nome }))}
+          options={gerenciasAreaSql.map((item) => ({
+            value: String(item.chave),
+            label: `${item.chave} - ${item.descricao}`,
+          }))}
+          disabled={loadingGerencias}
         />
 
         <Field
           label="Coordenador"
-          value={filters.coordenadorId || ALL}
+          value={filters.chaveCoordenacao || ALL}
           onChange={(v) =>
             onFiltersChange({
               ...filters,
-              coordenadorId: v === ALL ? '' : v,
+              chaveCoordenacao: v === ALL ? '' : v,
+              chaveSupervisao: '',
             })
           }
-          options={coordenadores.map((p) => ({ value: p.id, label: p.nome }))}
+          options={coordenacoesSql.map((item) => ({
+            value: String(item.chave),
+            label: `${item.chave} - ${item.descricao}`,
+          }))}
+          disabled={loadingCoordenacoes || !filters.chaveGerenciaArea}
         />
 
         <Field
           label="Supervisor"
-          value={filters.supervisorId || ALL}
+          value={filters.chaveSupervisao || ALL}
           onChange={(v) =>
             onFiltersChange({
               ...filters,
-              supervisorId: v === ALL ? '' : v,
+              chaveSupervisao: v === ALL ? '' : v,
             })
           }
-          options={supervisores.map((p) => ({ value: p.id, label: p.nome }))}
+          options={supervisoesSql.map((item) => ({
+            value: String(item.chave),
+            label: `${item.chave} - ${item.descricao}`,
+          }))}
+          disabled={loadingSupervisoes || !filters.chaveCoordenacao}
         />
 
         <Field

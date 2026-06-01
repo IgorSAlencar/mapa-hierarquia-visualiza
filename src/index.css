@@ -114,3 +114,123 @@
     @apply bg-background text-foreground;
   }
 }
+
+/* Créditos/logo padrão do Mapbox (attributionControl já está desligado no mapa) */
+.mapboxgl-ctrl-attrib,
+.mapboxgl-ctrl-logo {
+  display: none !important;
+}
+
+/* Popover de agência no mapa (Mapbox GL) */
+.agency-map-popup.mapboxgl-popup {
+  z-index: 30;
+}
+
+.agency-map-popup .mapboxgl-popup-content {
+  padding: 0;
+  background: transparent;
+  box-shadow: none;
+  border-radius: 12px;
+}
+
+.agency-map-popup .mapboxgl-popup-tip {
+  border-top-color: hsl(var(--card));
+  filter: drop-shadow(0 2px 4px rgb(15 23 42 / 0.08));
+}
+
+.agency-map-popup .mapboxgl-popup-close-button {
+  top: 8px;
+  right: 8px;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  font-size: 20px;
+  line-height: 28px;
+  border-radius: 7px;
+  color: hsl(var(--muted-foreground));
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.agency-map-popup .mapboxgl-popup-close-button:hover {
+  background-color: hsl(var(--muted));
+  color: hsl(var(--foreground));
+}
+
+.agency-popup-card {
+  min-width: 200px;
+  max-width: 260px;
+  padding: 12px 38px 12px 12px;
+  border-radius: 12px;
+  border: 1px solid hsl(var(--border));
+  background: hsl(var(--card));
+  color: hsl(var(--card-foreground));
+  box-shadow:
+    0 4px 6px -2px rgb(15 23 42 / 0.06),
+    0 16px 40px -12px rgb(15 23 42 / 0.18);
+  font-family: inherit;
+}
+
+.agency-popup-card--compact {
+  padding: 11px 12px;
+}
+
+.agency-popup-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.agency-popup-code {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  font-variant-numeric: tabular-nums;
+  color: hsl(200 95% 32%);
+  background: hsl(200 95% 47% / 0.12);
+}
+
+.agency-popup-label {
+  font-size: 11px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: hsl(var(--muted-foreground));
+}
+
+.agency-popup-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.35;
+  letter-spacing: -0.01em;
+  color: hsl(var(--foreground));
+}
+
+.agency-popup-address-wrap {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid hsl(var(--border));
+}
+
+.agency-popup-address-label {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: hsl(var(--muted-foreground));
+}
+
+.agency-popup-address {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.45;
+  color: hsl(var(--muted-foreground));
+}

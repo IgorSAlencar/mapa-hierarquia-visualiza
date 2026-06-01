@@ -1,0 +1,104 @@
+---
+description: Estrutura da hierarquia comercial em MESU..CONS_DISTRIBUICAO_ENTIDADES
+globs:
+  - "**/*.sql"
+  - "**/*.py"
+  - "**/*.js"
+  - "**/*.ts"
+  - "**/*.tsx"
+alwaysApply: true
+---
+
+# Hierarquia comercial
+
+Utilizar a tabela:
+
+```sql
+MESU..CONS_DISTRIBUICAO_ENTIDADES
+
+Cada linha representa uma única agência.
+
+## Estrutura
+
+| Campo                 | Descrição                         |
+| --------------------- | --------------------------------- |
+| `CHAVE_GERENCIA_AREA` | Identificador da gerência de área |
+| `DESC_GERENCIA_AREA`  | Nome da gerência de área          |
+| `CHAVE_COORDENACAO`   | Identificador da coordenação      |
+| `DESC_COORDENACAO`    | Nome da coordenação               |
+| `CHAVE_SUPERVISAO`    | Identificador da supervisão       |
+| `DESC_SUPERVISAO`     | Nome da supervisão                |
+| `COD_AG`              | Código único da agência           |
+| `NOME_AG`             | Nome da agência                   |
+
+## Relação hierárquica
+
+```text
+GERÊNCIA DE ÁREA
+  → COORDENAÇÃO
+    → SUPERVISÃO
+      → AGÊNCIA
+```
+
+Cada agência pertence a uma única supervisão.
+Cada supervisão pertence a uma única coordenação.
+Cada coordenação pertence a uma única gerência de área.
+
+## Faixas das chaves
+
+As chaves não podem se repetir entre níveis:
+
+| Entidade         | Faixa               |
+| ---------------- | ------------------- |
+| Gerência de área | `100001` a `100006` |
+| Coordenação      | `200001` a `200011` |
+| Supervisão       | `300001` a `300132` |
+
+## Regras importantes
+
+* Utilizar `COD_AG` para joins com outras tabelas de agência.
+* Utilizar `DISTINCT` ao listar gerências, coordenações ou supervisões.
+* Utilizar `COUNT(DISTINCT ...)` para contabilizar entidades acima do nível de agência.
+* Não utilizar `COUNT(*)` para contar supervisões, coordenações ou gerências.
+* Ao alterar um filtro superior na interface, limpar os filtros inferiores.
+
+## Exemplos
+
+Listar coordenações de uma gerência:
+
+```sql
+SELECT DISTINCT
+    CHAVE_COORDENACAO,
+    DESC_COORDENACAO
+FROM MESU..CONS_DISTRIBUICAO_ENTIDADES
+WHERE CHAVE_GERENCIA_AREA = @CHAVE_GERENCIA_AREA;
+```
+
+Listar supervisões de uma coordenação:
+
+```sql
+SELECT DISTINCT
+    CHAVE_SUPERVISAO,
+    DESC_SUPERVISAO
+FROM MESU..CONS_DISTRIBUICAO_ENTIDADES
+WHERE CHAVE_COORDENACAO = @CHAVE_COORDENACAO;
+```
+
+Listar agências de uma supervisão:
+
+```sql
+SELECT
+    COD_AG,
+    NOME_AG
+FROM MESU..CONS_DISTRIBUICAO_ENTIDADES
+WHERE CHAVE_SUPERVISAO = @CHAVE_SUPERVISAO;
+```
+
+```
+Essa versão mantém apenas o necessário para o Cursor compreender a tabela e gerar consultas coerentes.
+```
+
+
+Gerente Comercial -> DESC_SUPERVISAO/CHAVE_SUPERVISAO
+Gerente Comercial III -> DESC_COORDENACAO/CHAVE_COORDENACAO
+Gerente de Gestão -> DESC_GERENCIA_AREA/CHAVE_GERENCIA_AREA

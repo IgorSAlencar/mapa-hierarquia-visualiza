@@ -27,10 +27,8 @@ import type {
 } from '@/lib/expressoRegionMock';
 
 const PERIODOS: { id: PeriodoEvolucaoId; label: string }[] = [
-  { id: '7d', label: '7D' },
-  { id: '30d', label: '30D' },
-  { id: '3m', label: '3M' },
-  { id: '12m', label: '12M' },
+  { id: 'mom', label: 'MoM' },
+  { id: 'yoy', label: 'YoY' },
 ];
 
 const STATUS_LABEL: Record<ProdutoStatusSemantico, string> = {
@@ -69,6 +67,18 @@ function chartYDomain(rows: { atualMil: number; anteriorMil: number }[]): [numbe
 
 const fmtMoney = (n: number) =>
   n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL', maximumFractionDigits: 0 });
+
+function fmtBusinessDayShort(label: string): string {
+  const n = Number.parseInt(String(label), 10);
+  if (Number.isFinite(n) && n > 0) return `${n}° DU`;
+  return label;
+}
+
+function fmtBusinessDayTooltip(label: string): string {
+  const n = Number.parseInt(String(label), 10);
+  if (Number.isFinite(n) && n > 0) return `${n}° dia util`;
+  return label;
+}
 
 /** Reais em algarismos com separador de milhar pt-BR (ex.: 1000 → 1.000). */
 function fmtContabilReais(reais: number): string {
@@ -139,7 +149,7 @@ const ExpressoProductCockpit: React.FC<ExpressoProductCockpitProps> = ({
   onVerAnaliseCompleta,
 }) => {
   const [index, setIndex] = useState(0);
-  const [periodo, setPeriodo] = useState<PeriodoEvolucaoId>('30d');
+  const [periodo, setPeriodo] = useState<PeriodoEvolucaoId>('mom');
 
   useEffect(() => {
     setIndex(0);
@@ -287,15 +297,23 @@ const ExpressoProductCockpit: React.FC<ExpressoProductCockpitProps> = ({
         </div>
         <div className="h-[200px] w-full min-w-0">
           <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={chartData} margin={{ top: 4, right: 4, left: -18, bottom: 0 }}>
+            <LineChart data={chartData} margin={{ top: 4, right: 20, left: -20, bottom: 0 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" vertical={false} />
-              <XAxis dataKey="label" tick={{ fontSize: 10, fill: '#64748b' }} axisLine={false} tickLine={false} />
+              <XAxis
+                dataKey="label"
+                tick={{ fontSize: 10, fill: '#64748b' }}
+                tickFormatter={fmtBusinessDayShort}
+                padding={{ left: 8, right: 4 }}
+                axisLine={false}
+                tickLine={false}
+              />
               <YAxis
                 domain={yDomain}
                 tick={{ fontSize: 10, fill: '#64748b' }}
                 axisLine={false}
                 tickLine={false}
-                width={36}
+                width={44}
+                tickMargin={4}
                 tickFormatter={(v: number) =>
                   Number.isInteger(v) ? String(v) : v.toLocaleString('pt-BR', { maximumFractionDigits: 1 })
                 }
@@ -304,10 +322,14 @@ const ExpressoProductCockpit: React.FC<ExpressoProductCockpitProps> = ({
                 formatter={(value: number) =>
                   `${value.toLocaleString('pt-BR', { maximumFractionDigits: 1 })} mil`
                 }
-                labelFormatter={(l) => l}
+                labelFormatter={(l) => fmtBusinessDayTooltip(String(l))}
                 contentStyle={{ fontSize: 12, borderRadius: 8 }}
               />
-              <Legend wrapperStyle={{ fontSize: 11, paddingTop: 8 }} />
+              <Legend
+                align="center"
+                verticalAlign="bottom"
+                wrapperStyle={{ fontSize: 11, paddingTop: 8, left: 0, right: 0, textAlign: 'center' }}
+              />
               <Line
                 type="monotone"
                 dataKey="atualMil"

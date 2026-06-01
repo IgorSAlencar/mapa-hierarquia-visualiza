@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Building2, Crown, MapPin, ShoppingCart, Store, X } from 'lucide-react';
+import { Building2, ChevronLeft, Crown, MapPin, Minus, ShoppingCart, Store, X } from 'lucide-react';
 import ExpressoProductCockpit from '@/components/ExpressoProductCockpit';
 import type { ExpressoRegionMetrics } from '@/lib/expressoRegionMock';
 
@@ -9,6 +9,10 @@ interface ExpressoStatePanelProps {
   metrics: ExpressoRegionMetrics;
   onClose: () => void;
   onOpenProductivitySheet: () => void;
+  /** Painel recolhido: mantém a seleção (e a malha de municípios) sem ocupar a tela. */
+  minimized?: boolean;
+  onMinimize?: () => void;
+  onRestore?: () => void;
 }
 
 const ExpressoStatePanel: React.FC<ExpressoStatePanelProps> = ({
@@ -17,6 +21,9 @@ const ExpressoStatePanel: React.FC<ExpressoStatePanelProps> = ({
   metrics,
   onClose,
   onOpenProductivitySheet,
+  minimized = false,
+  onMinimize,
+  onRestore,
 }) => {
   const [animateIn, setAnimateIn] = useState(false);
   const lojasBreakdown = buildLojasBreakdown(metrics.lojas, metrics.lojasAtivas, metrics.lojasAtivasPorGrupo);
@@ -30,6 +37,21 @@ const ExpressoStatePanel: React.FC<ExpressoStatePanelProps> = ({
     return () => window.clearTimeout(timer);
   }, [regionName, cityFocus]);
 
+  if (minimized) {
+    return (
+      <button
+        type="button"
+        onClick={onRestore}
+        className="pointer-events-auto absolute right-0 top-[68%] z-20 flex -translate-y-1/2 items-center gap-2 rounded-l-xl border border-r-0 border-slate-200/90 bg-white/95 py-3 pl-3 pr-2.5 text-slate-700 shadow-lg shadow-slate-900/10 backdrop-blur-sm transition-colors hover:bg-slate-50"
+        aria-label={`Reabrir painel de ${headerTitle}`}
+        title="Reabrir painel"
+      >
+        <ChevronLeft className="h-4 w-4 shrink-0 text-teal-600" aria-hidden />
+        <span className="max-w-[140px] truncate text-sm font-semibold leading-tight text-slate-900">{headerTitle}</span>
+      </button>
+    );
+  }
+
   return (
     <div
       className={`absolute inset-y-0 right-0 z-20 w-[min(96vw,480px)] transform transition-all duration-500 ease-out pointer-events-auto ${
@@ -39,34 +61,52 @@ const ExpressoStatePanel: React.FC<ExpressoStatePanelProps> = ({
       aria-labelledby="expresso-panel-title"
     >
       <div className="flex h-full max-h-full flex-col overflow-hidden rounded-l-2xl border border-slate-200/90 bg-slate-50/98 shadow-2xl backdrop-blur-md">
-        <header className="shrink-0 border-b border-slate-200 bg-gradient-to-br from-slate-700 to-slate-600 px-4 py-4 text-white">
+        <header className="shrink-0 border-b border-slate-200 bg-white/95 px-4 py-4">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0 flex-1">
-
-              <h2 id="expresso-panel-title" className="mt-1 truncate text-lg font-semibold leading-tight">
+              <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-600">
+         
+         
+                Performance comercial
+              </p>
+              <h2 id="expresso-panel-title" className="mt-1 truncate text-lg font-semibold leading-tight text-slate-900">
                 {headerTitle}
               </h2>
-              <p className="mt-1 text-xs leading-snug text-slate-200/90">
+              <p className="mt-1 text-xs leading-snug text-slate-500">
                 {stateContextLabel
-                  ? `Performance comercial · ${stateContextLabel}`
-                  : 'Performance comercial na região'}
+                  ? `Região · ${stateContextLabel}`
+                  : 'Visão geral da região'}
               </p>
             </div>
             <div className="flex shrink-0 flex-col items-end gap-2">
-              <button
-                type="button"
-                onClick={onClose}
-                className="rounded-lg p-2 text-white/90 transition-colors hover:bg-white/10"
-                aria-label="Fechar painel"
-              >
-                <X className="h-4 w-4" />
-              </button>
+              <div className="flex items-center gap-1">
+                {onMinimize && (
+                  <button
+                    type="button"
+                    onClick={onMinimize}
+                    className="rounded-lg p-2 text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-700"
+                    aria-label="Minimizar painel (mantém a malha de municípios)"
+                    title="Minimizar painel"
+                  >
+                    <Minus className="h-4 w-4" />
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={onClose}
+                  className="rounded-lg p-2 text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-700"
+                  aria-label="Fechar painel e limpar seleção"
+                  title="Fechar e limpar seleção"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
               {stateContextLabel && (
                 <p
-                  className="inline-flex max-w-[180px] items-center gap-1.5 rounded-md border border-white/20 bg-white/10 px-2.5 py-1 text-[11px] font-medium text-white/95"
+                  className="inline-flex max-w-[180px] items-center gap-1.5 rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-medium text-slate-600"
                   title={`Estado: ${stateContextLabel}`}
                 >
-                  <MapPin className="h-3.5 w-3.5 shrink-0 opacity-90" aria-hidden />
+                  <MapPin className="h-3.5 w-3.5 shrink-0 text-teal-600" aria-hidden />
                   <span className="truncate">{stateContextLabel}</span>
                 </p>
               )}

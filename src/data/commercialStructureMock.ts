@@ -210,9 +210,17 @@ export interface FiltrosEstrutura {
   gerenteAreaId: string;
   coordenadorId: string;
   supervisorId: string;
+  chaveGerenciaArea: string;
+  chaveCoordenacao: string;
+  chaveSupervisao: string;
 }
 
 export interface SqlHierarchyFilter {
+  // Novos campos oficiais.
+  chaveGerenciaArea?: number;
+  chaveCoordenacao?: number;
+  chaveSupervisao?: number;
+  // Compatibilidade legado.
   direReg?: number;
   codGerReg?: number;
   codGerArea?: number;
@@ -230,6 +238,9 @@ export const FILTROS_INICIAIS: FiltrosEstrutura = {
   gerenteAreaId: empty,
   coordenadorId: empty,
   supervisorId: empty,
+  chaveGerenciaArea: empty,
+  chaveCoordenacao: empty,
+  chaveSupervisao: empty,
 };
 
 function filhosPessoa(id: string): string[] {
@@ -475,6 +486,21 @@ const UI_TO_SQL_HIERARCHY: Record<string, SqlHierarchyFilter> = {
 };
 
 export function buildSqlHierarchyFilterFromUi(filters: FiltrosEstrutura): SqlHierarchyFilter | null {
+  const parseChave = (value: string) => {
+    const n = Number(value);
+    return Number.isFinite(n) && n > 0 ? Math.round(n) : null;
+  };
+  const chaveGerenciaArea = parseChave(filters.chaveGerenciaArea);
+  const chaveCoordenacao = parseChave(filters.chaveCoordenacao);
+  const chaveSupervisao = parseChave(filters.chaveSupervisao);
+  if (chaveGerenciaArea || chaveCoordenacao || chaveSupervisao) {
+    return {
+      chaveGerenciaArea: chaveGerenciaArea ?? undefined,
+      chaveCoordenacao: chaveCoordenacao ?? undefined,
+      chaveSupervisao: chaveSupervisao ?? undefined,
+    };
+  }
+
   const steps = [
     filters.agenciaId,
     filters.supervisorId,

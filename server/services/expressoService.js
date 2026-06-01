@@ -13,10 +13,8 @@ import {
 
 const PRODUCT_ORDER = ['consignado', 'lime', 'contas', 'seguros'];
 const EMPTY_SERIES = {
-  '7d': [],
-  '30d': [],
-  '3m': [],
-  '12m': [],
+  mom: [],
+  yoy: [],
 };
 
 function normalizeStatus(value) {
@@ -27,7 +25,7 @@ function normalizeStatus(value) {
 function normalizePeriodId(value) {
   if (!value) return null;
   const raw = String(value).toLowerCase();
-  if (raw === '7d' || raw === '30d' || raw === '3m' || raw === '12m') return raw;
+  if (raw === 'mom' || raw === 'yoy') return raw;
   return null;
 }
 
@@ -75,10 +73,8 @@ export async function getExpressoStateMetrics({ ufSigla, codIbge = null }) {
     const periodId = normalizePeriodId(row.periodoTipo);
     if (!periodId) continue;
     const productSeries = seriesByProduct.get(row.produtoId) ?? {
-      '7d': [],
-      '30d': [],
-      '3m': [],
-      '12m': [],
+      mom: [],
+      yoy: [],
     };
     productSeries[periodId].push({
       label: row.label,

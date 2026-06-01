@@ -10,14 +10,33 @@ import {
   SlidersHorizontal,
   Store,
   User,
+  X,
 } from 'lucide-react';
 import ExpressoBottomSheet from '@/components/ExpressoBottomSheet';
 import ExpressoStatePanel from '@/components/ExpressoStatePanel';
-import { buildAgencyPopupHtml, readAgencyPopupInfoFromProperties } from '@/components/AgencyInfoPopup';
+import MapOverlayMarkerInfoPanel from '@/components/MapOverlayMarkerInfoPanel';
+import {
+  agencyMapPopupHoverOptions,
+  buildAgencyPopupHtml,
+  readAgencyPopupInfoFromProperties,
+  type AgencyPopupInfo,
+} from '@/components/AgencyInfoPopup';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { useToast } from '@/hooks/use-toast';
+import { buildOutsideBrazilMaskFeature } from '@/lib/brazilOutsideMask';
+import { attachMapPointerGestureGuard } from '@/lib/mapPointerGestures';
 import { MAPBOX_CONFIG } from '@/lib/mapbox-config';
+import {
+  animateToFlatView,
+  animateToPointFocus,
+  captureMapCamera,
+  fitMapToBrazilOverview,
+  attachMapPanCenterLimit,
+  applyMapScrollZoomSettings,
+  getPointCoordinates,
+  type SavedMapCamera,
+} from '@/lib/mapCameraFocus';
 import {
   buildExpressoRegionMetrics,
   buildMunicipalityProductivityRows,
@@ -29,19 +48,26 @@ import {
 import type { MarcadorMapa, SqlHierarchyFilter } from '@/data/commercialStructureMock';
 import {
   filterRegionMapPoints,
-  MOCK_REGION_SUPERVISORES,
+  COMMERCIAL_TEAM_LEVEL_LABEL,
   regionPointsToFeatureCollection,
+  type CommercialTeamLevel,
 } from '@/data/regionMapPointsMock';
 import {
   buildMunicipalityValueMap,
   computeValueRangeFromRows,
   mergeChoroplethIntoFeatureCollection,
 } from '@/lib/municipalityChoropleth';
-import { fetchAgencyPoints, fetchStorePoints, type BboxQuery, type SqlMapPoint } from '@/lib/mapDataApi';
+import {
+  fetchAgencyPoints,
+  fetchCommercialSeatPoints,
+  fetchStorePoints,
+  type BboxQuery,
+  type SqlMapPoint,
+} from '@/lib/mapDataApi';
 import { fetchExpressoProductivityRows, fetchExpressoStateMetrics } from '@/lib/expressoApi';
 
-const BRAZIL_BOUNDARY_GEOJSON =
-  'https://raw.githubusercontent.com/johan/world.geo.json/master/countries/BRA.geo.json';
+/** Malha nacional IBGE (serviço de malhas → arquivo em `public/geo`). */
+const BRAZIL_BOUNDARY_GEOJSON = '/geo/brasil-limite-ibge.geojson';
 const BRAZIL_STATES_GEOJSON =
   'https://raw.githubusercontent.com/codeforamerica/click_that_hood/master/public/data/brazil-states.geojson';
 const GEODATA_BR_BASE =
@@ -79,33 +105,36 @@ const UF_TO_IBGE_CODE: Record<string, string> = {
 type GeoJSONPosition = [number, number];
 type Bounds = [[number, number], [number, number]];
 
-function buildOutsideBrazilMaskFeature(
+let cachedBrazilBoundaryFeature: GeoJSON.Feature | null = null;
+
+/** Contorno nacional exatamente como em `BRAZIL_BOUNDARY_GEOJSON` (lon/lat, sem simplificar). */
+async function loadBrazilBoundaryFeature(): Promise<GeoJSON.Feature> {
+  if (cachedBrazilBoundaryFeature) return cachedBrazilBoundaryFeature;
+
+  const res = await fetch(BRAZIL_BOUNDARY_GEOJSON);
+  if (!res.ok) throw new Error(`GeoJSON Brasil: ${res.status}`);
+  const fc = (await res.json()) as GeoJSON.FeatureCollection;
+  const br =
+    fc.features.find((f) => String(f.properties?.codarea ?? '').toUpperCase() === 'BR') ??
+    fc.features[0];
+  if (!br?.geometry) throw new Error('Brasil não encontrado no GeoJSON');
+  cachedBrazilBoundaryFeature = br;
+  return br;
+}
+
+function brazilBoundaryFeatureCollection(
   brazil: GeoJSON.Feature
-): GeoJSON.Feature<GeoJSON.Polygon> {
-  const worldRing: GeoJSONPosition[] = [
-    [-180, -85],
-    [180, -85],
-    [180, 85],
-    [-180, 85],
-    [-180, -85],
-  ];
-  const { geometry } = brazil;
-  const holeRings: GeoJSONPosition[][] = [];
-  if (geometry.type === 'Polygon') {
-    holeRings.push(geometry.coordinates[0] as GeoJSONPosition[]);
-  } else if (geometry.type === 'MultiPolygon') {
-    for (const poly of geometry.coordinates) {
-      holeRings.push(poly[0] as GeoJSONPosition[]);
-    }
+): GeoJSON.FeatureCollection {
+  return { type: 'FeatureCollection', features: [brazil] };
+}
+
+function paintColorToCss(c: unknown): string | null {
+  if (typeof c === 'string') return c;
+  if (Array.isArray(c) && c[0] === 'rgba' && c.length >= 5) {
+    const [, r, g, b, a] = c as [string, number, number, number, number];
+    return `rgba(${r},${g},${b},${a})`;
   }
-  return {
-    type: 'Feature',
-    properties: {},
-    geometry: {
-      type: 'Polygon',
-      coordinates: [worldRing, ...holeRings],
-    },
-  };
+  return null;
 }
 
 function resolveLandMatchMaskColor(m: mapboxgl.Map): string {
@@ -113,17 +142,255 @@ function resolveLandMatchMaskColor(m: mapboxgl.Map): string {
   for (const id of tryIds) {
     if (!m.getLayer(id)) continue;
     try {
-      const c = m.getPaintProperty(id, 'fill-color');
-      if (typeof c === 'string') return c;
-      if (Array.isArray(c) && c[0] === 'rgba' && c.length >= 5) {
-        const [, r, g, b, a] = c as [string, number, number, number, number];
-        return `rgba(${r},${g},${b},${a})`;
-      }
+      const parsed = paintColorToCss(m.getPaintProperty(id, 'fill-color'));
+      if (parsed) return parsed;
     } catch {
       /* skip */
     }
   }
   return MAPBOX_CONFIG.outsideBrazilMaskColor;
+}
+
+/** Cor sólida da máscara “fora do Brasil”, alinhada ao fundo de cada layout. */
+function resolveOutsideBrazilMaskColor(m: mapboxgl.Map, styleUrl: string): string {
+  if (styleUrl.includes('satellite')) {
+    try {
+      if (m.getLayer('background')) {
+        const bg = paintColorToCss(m.getPaintProperty('background', 'background-color'));
+        if (bg) return bg;
+      }
+    } catch {
+      /* skip */
+    }
+    return '#0c1018';
+  }
+
+  if (isStandardStyleUrl(styleUrl)) {
+    try {
+      const theme = m.getConfigProperty('basemap', 'theme');
+      if (theme === 'cool') return '#9ecae8';
+    } catch {
+      /* skip */
+    }
+    return '#98d5f5';
+  }
+
+  return resolveLandMatchMaskColor(m);
+}
+
+const BRAZIL_OUTLINE_LINE = '#7b8590';
+const BRAZIL_OUTLINE_HALO = '#ffffff';
+
+function ensureBrazilBoundaryOutlineLayers(
+  m: mapboxgl.Map,
+  styleUrl: string,
+  beforeId?: string
+): void {
+  const haloPaint = linePaintForStandard(styleUrl, {
+    'line-color': BRAZIL_OUTLINE_HALO,
+    'line-width': 5,
+    'line-opacity': 0.92,
+    'line-blur': 0.35,
+  });
+  const linePaint = linePaintForStandard(styleUrl, {
+    'line-color': BRAZIL_OUTLINE_LINE,
+    'line-width': 2,
+    'line-opacity': 1,
+  });
+
+  if (!m.getLayer('brazil-boundary-halo')) {
+    m.addLayer(
+      {
+        id: 'brazil-boundary-halo',
+        type: 'line',
+        source: 'brazil-boundary',
+        paint: haloPaint,
+      },
+      beforeId
+    );
+  } else {
+    try {
+      m.setPaintProperty('brazil-boundary-halo', 'line-color', BRAZIL_OUTLINE_HALO);
+      m.setPaintProperty('brazil-boundary-halo', 'line-width', 5);
+      if (isStandardStyleUrl(styleUrl)) {
+        m.setPaintProperty('brazil-boundary-halo', 'line-emissive-strength', 1);
+      }
+    } catch {
+      /* estilo recarregando */
+    }
+  }
+
+  if (!m.getLayer('brazil-boundary-line')) {
+    m.addLayer(
+      {
+        id: 'brazil-boundary-line',
+        type: 'line',
+        source: 'brazil-boundary',
+        paint: linePaint,
+      },
+      beforeId
+    );
+  } else {
+    try {
+      m.setPaintProperty('brazil-boundary-line', 'line-color', BRAZIL_OUTLINE_LINE);
+      m.setPaintProperty('brazil-boundary-line', 'line-width', 2);
+      if (isStandardStyleUrl(styleUrl)) {
+        m.setPaintProperty('brazil-boundary-line', 'line-emissive-strength', 1);
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+function findMaskInsertBeforeLayerId(m: mapboxgl.Map): string | undefined {
+  const layers = m.getStyle().layers ?? [];
+  const symbol = layers.find((l) => l.type === 'symbol');
+  if (symbol) return symbol.id;
+
+  const labelLike = layers.find((l) => {
+    const id = l.id.toLowerCase();
+    return (
+      id.includes('place') ||
+      id.includes('label') ||
+      id.includes('settlement') ||
+      id.includes('road-name') ||
+      id.includes('poi')
+    );
+  });
+  return labelLike?.id;
+}
+
+const BRAZIL_CUTOUT_LAYER_IDS = [
+  'brazil-outside-clip',
+  'brazil-outside-mask-fill',
+  'brazil-boundary-halo',
+  'brazil-boundary-line',
+] as const;
+
+/** Primeira camada de dados do app (máscara/clip ficam logo abaixo). */
+function findFirstAppDataLayerId(m: mapboxgl.Map): string | undefined {
+  const cutout = new Set<string>(BRAZIL_CUTOUT_LAYER_IDS);
+  for (const layer of m.getStyle().layers ?? []) {
+    if (cutout.has(layer.id)) continue;
+    if (
+      layer.id.startsWith('brazil-') ||
+      layer.id.startsWith('brasil-') ||
+      layer.id.startsWith('br-states') ||
+      layer.id.startsWith('structure-') ||
+      layer.id.startsWith('br-')
+    ) {
+      return layer.id;
+    }
+  }
+  return undefined;
+}
+
+function repositionBrazilCutoutLayers(m: mapboxgl.Map): void {
+  const beforeId = findFirstAppDataLayerId(m);
+  for (const id of BRAZIL_CUTOUT_LAYER_IDS) {
+    if (!m.getLayer(id)) continue;
+    try {
+      m.moveLayer(id, beforeId);
+    } catch {
+      /* estilo recarregando */
+    }
+  }
+}
+
+function ensureBrazilOutsideClipLayer(m: mapboxgl.Map, beforeId?: string): void {
+  if (m.getLayer('brazil-outside-clip')) return;
+  try {
+    m.addLayer(
+      {
+        id: 'brazil-outside-clip',
+        type: 'clip',
+        source: 'brazil-outside-mask',
+        layout: {
+          'clip-layer-types': ['symbol', 'model'],
+        },
+      } as mapboxgl.LayerSpecification,
+      beforeId
+    );
+  } catch {
+    /* Mapbox GL sem clip layer ou estilo incompatível */
+  }
+}
+
+async function ensureBrazilOutsideMask(
+  m: mapboxgl.Map,
+  styleUrl: string,
+  _legacyBeforeId?: string
+): Promise<boolean> {
+  if (!MAPBOX_CONFIG.maskOutsideBrazil) return false;
+
+  const stackBeforeId = findFirstAppDataLayerId(m);
+
+  const maskColor = resolveOutsideBrazilMaskColor(m, styleUrl);
+  const existingMaskFill = m.getLayer('brazil-outside-mask-fill');
+
+  try {
+    const br = await loadBrazilBoundaryFeature();
+    const boundaryFc = brazilBoundaryFeatureCollection(br);
+    const mask = buildOutsideBrazilMaskFeature(br);
+
+    const boundarySrc = m.getSource('brazil-boundary') as mapboxgl.GeoJSONSource | undefined;
+    if (boundarySrc) boundarySrc.setData(boundaryFc);
+    else {
+      m.addSource('brazil-boundary', {
+        type: 'geojson',
+        data: boundaryFc,
+        tolerance: 0,
+      });
+    }
+
+    const maskSrc = m.getSource('brazil-outside-mask') as mapboxgl.GeoJSONSource | undefined;
+    if (maskSrc) maskSrc.setData(mask);
+    else {
+      m.addSource('brazil-outside-mask', {
+        type: 'geojson',
+        data: mask,
+        tolerance: 0,
+      });
+    }
+
+    ensureBrazilOutsideClipLayer(m, stackBeforeId);
+
+    if (!existingMaskFill) {
+      m.addLayer(
+        {
+          id: 'brazil-outside-mask-fill',
+          type: 'fill',
+          source: 'brazil-outside-mask',
+          paint: fillPaintForStandard(styleUrl, {
+            'fill-color': maskColor,
+            'fill-opacity': 1,
+          }),
+        },
+        stackBeforeId
+      );
+    } else {
+      try {
+        m.setPaintProperty('brazil-outside-mask-fill', 'fill-color', maskColor);
+        m.setPaintProperty('brazil-outside-mask-fill', 'fill-opacity', 1);
+        if (isStandardStyleUrl(styleUrl)) {
+          m.setPaintProperty('brazil-outside-mask-fill', 'fill-emissive-strength', 1);
+        } else {
+          m.setPaintProperty('brazil-outside-mask-fill', 'fill-emissive-strength', 0);
+        }
+      } catch {
+        /* estilo recarregando */
+      }
+    }
+
+    ensureBrazilBoundaryOutlineLayers(m, styleUrl, stackBeforeId ?? findMaskInsertBeforeLayerId(m));
+    repositionBrazilCutoutLayers(m);
+    applyBrazilBasemapLabelTweaks(m);
+    return true;
+  } catch (e) {
+    console.warn('Máscara fora do Brasil não aplicada:', e);
+    return false;
+  }
 }
 
 function keepOnlyStateAndCityLabels(m: mapboxgl.Map) {
@@ -135,12 +402,21 @@ function keepOnlyStateAndCityLabels(m: mapboxgl.Map) {
     const sourceLayer = String(
       (layer as mapboxgl.SymbolLayerSpecification)['source-layer'] ?? ''
     ).toLowerCase();
+    const hideForeign =
+      id.includes('country') ||
+      id.includes('continent') ||
+      id.includes('admin-0') ||
+      id.includes('region-label') ||
+      id.includes('marine') ||
+      id.includes('water-name') ||
+      id.includes('waterway');
     const keep =
-      id.includes('settlement') ||
-      id.includes('place-label') ||
-      id.includes('state-label') ||
-      id.includes('admin-1') ||
-      sourceLayer.includes('place_label');
+      !hideForeign &&
+      (id.includes('settlement') ||
+        id.includes('place-label') ||
+        id.includes('state-label') ||
+        id.includes('admin-1') ||
+        sourceLayer.includes('place_label'));
     try {
       m.setLayoutProperty(layer.id, 'visibility', keep ? 'visible' : 'none');
     } catch {
@@ -150,6 +426,17 @@ function keepOnlyStateAndCityLabels(m: mapboxgl.Map) {
 }
 
 const BR_ISO_FILTER: FilterSpecification = ['==', ['get', 'iso_3166_1'], 'BR'];
+/** Remove rótulos de país (ex.: "Brazil") mantendo estados e cidades. */
+const HIDE_COUNTRY_PLACE_FILTER: FilterSpecification = [
+  '!',
+  ['in', ['get', 'class'], ['literal', ['country', 'disputed_country', 'dependency']]],
+];
+const HIDE_BRAZIL_COUNTRY_NAME_FILTER: FilterSpecification = [
+  'all',
+  ['!=', ['get', 'name_en'], 'Brazil'],
+  ['!=', ['get', 'name'], 'Brazil'],
+  ['!=', ['get', 'name'], 'Brasil'],
+];
 const SYMBOL_SOURCE_LAYERS_BR_ONLY = new Set(['place_label', 'airport_label']);
 
 function restrictSymbolLayersToBrazil(m: mapboxgl.Map) {
@@ -166,8 +453,19 @@ function restrictSymbolLayersToBrazil(m: mapboxgl.Map) {
 
     const existing = (layer as mapboxgl.SymbolLayerSpecification).filter;
     const combined: FilterSpecification = existing
-      ? (['all', existing, BR_ISO_FILTER] as FilterSpecification)
-      : BR_ISO_FILTER;
+      ? ([
+          'all',
+          existing,
+          BR_ISO_FILTER,
+          HIDE_COUNTRY_PLACE_FILTER,
+          HIDE_BRAZIL_COUNTRY_NAME_FILTER,
+        ] as FilterSpecification)
+      : ([
+          'all',
+          BR_ISO_FILTER,
+          HIDE_COUNTRY_PLACE_FILTER,
+          HIDE_BRAZIL_COUNTRY_NAME_FILTER,
+        ] as FilterSpecification);
 
     try {
       m.setFilter(id, combined);
@@ -177,13 +475,42 @@ function restrictSymbolLayersToBrazil(m: mapboxgl.Map) {
   }
 }
 
+/** Camadas `place-*` do Standard podem não usar `source-layer` clássico; aplica filtro de país. */
+function hideCountryLabelsOnPlaceSymbolLayers(m: mapboxgl.Map) {
+  for (const layer of m.getStyle().layers ?? []) {
+    if (layer.type !== 'symbol') continue;
+    const id = layer.id.toLowerCase();
+    const sourceLayer = String(
+      (layer as mapboxgl.SymbolLayerSpecification)['source-layer'] ?? ''
+    ).toLowerCase();
+    if (sourceLayer.includes('place_label')) continue;
+    if (!id.includes('place')) continue;
+    if (id.startsWith('brazil-') || id.startsWith('brasil-') || id.startsWith('structure-')) continue;
+    try {
+      const existing = (layer as mapboxgl.SymbolLayerSpecification).filter;
+      const combined: FilterSpecification = existing
+        ? ([
+            'all',
+            existing,
+            HIDE_COUNTRY_PLACE_FILTER,
+            HIDE_BRAZIL_COUNTRY_NAME_FILTER,
+          ] as FilterSpecification)
+        : (['all', HIDE_COUNTRY_PLACE_FILTER, HIDE_BRAZIL_COUNTRY_NAME_FILTER] as FilterSpecification);
+      m.setFilter(layer.id, combined);
+    } catch {
+      /* skip */
+    }
+  }
+}
+
 function applyBrazilBasemapLabelTweaks(m: mapboxgl.Map) {
   keepOnlyStateAndCityLabels(m);
   restrictSymbolLayersToBrazil(m);
+  hideCountryLabelsOnPlaceSymbolLayers(m);
 }
 
 function firstSymbolLayerId(m: mapboxgl.Map): string | undefined {
-  return m.getStyle().layers?.find((l) => l.type === 'symbol')?.id;
+  return findMaskInsertBeforeLayerId(m);
 }
 
 function isStandardStyleUrl(styleUrl: string): boolean {
@@ -210,19 +537,73 @@ function circlePaintForStandard(styleUrl: string, paint: CirclePaint): CirclePai
   return { ...paint, 'circle-emissive-strength': 1 };
 }
 
-function applyStandardWarmBasemap(m: mapboxgl.Map) {
-  const tryTheme = (theme: string) => {
+function disableBasemapClouds(m: mapboxgl.Map) {
+  if (MAPBOX_CONFIG.standardBasemap.showClouds === false) {
     try {
-      m.setConfigProperty('basemap', 'theme', theme);
+      m.setConfigProperty('basemap', 'showClouds', false);
+    } catch {
+      /* GL/estilo sem showClouds */
+    }
+  }
+  for (const layer of m.getStyle().layers ?? []) {
+    if (!layer.id.toLowerCase().includes('cloud')) continue;
+    try {
+      m.setLayoutProperty(layer.id, 'visibility', 'none');
+    } catch {
+      /* skip */
+    }
+  }
+}
+
+function applyStandardThemeBasemap(m: mapboxgl.Map, theme: 'warm' | 'cool') {
+  const tryTheme = (t: string) => {
+    try {
+      m.setConfigProperty('basemap', 'theme', t);
       return true;
     } catch {
       return false;
     }
   };
-  if (!tryTheme('warm')) tryTheme('default');
+  if (!tryTheme(theme)) tryTheme('default');
   try {
-    m.setConfigProperty('basemap', 'show3dObjects', false);
+    m.setConfigProperty('basemap', 'show3dObjects', true);
     m.setConfigProperty('basemap', 'lightPreset', 'day');
+    disableBasemapClouds(m);
+  } catch {
+    /* ignore */
+  }
+  applyBrazilBasemapLabelTweaks(m);
+  repositionBrazilCutoutLayers(m);
+}
+
+function syncMapTerrain(m: mapboxgl.Map) {
+  const { terrainEnabled, terrainDemSourceId, terrainExaggeration } = MAPBOX_CONFIG.interactive3d;
+  try {
+    if (!terrainEnabled) {
+      m.setTerrain(null);
+      return;
+    }
+    if (!m.getSource(terrainDemSourceId)) {
+      m.addSource(terrainDemSourceId, {
+        type: 'raster-dem',
+        url: 'mapbox://mapbox.mapbox-terrain-dem-v1',
+        tileSize: 512,
+        maxzoom: 14,
+      });
+    }
+    m.setTerrain({ source: terrainDemSourceId, exaggeration: terrainExaggeration });
+  } catch {
+    /* estilo sem suporte a terrain */
+  }
+}
+
+function enableMapPitchAndRotation(m: mapboxgl.Map) {
+  const maxPitch = MAPBOX_CONFIG.interactive3d.maxPitch;
+  try {
+    m.setMaxPitch(maxPitch);
+    m.setMinPitch(0);
+    m.dragRotate.enable();
+    m.touchZoomRotate.enableRotation();
   } catch {
     /* ignore */
   }
@@ -387,6 +768,44 @@ function resetMunicipalityVisuals(
   if (rawFcRef) rawFcRef.current = empty;
 }
 
+function clearSelectedMunicipalityVisual(m: mapboxgl.Map) {
+  const empty: GeoJSON.FeatureCollection = { type: 'FeatureCollection', features: [] };
+  const selectedSource = m.getSource('selected-municipality') as mapboxgl.GeoJSONSource | undefined;
+  selectedSource?.setData(empty);
+}
+
+function applySelectionLayerTransitions(m: mapboxgl.Map) {
+  const transition = { duration: 260, delay: 0 };
+  const setPaintTransition = (
+    layerId: string,
+    property:
+      | 'fill-color-transition'
+      | 'fill-opacity-transition'
+      | 'line-color-transition'
+      | 'line-opacity-transition'
+      | 'line-width-transition'
+  ) => {
+    if (!m.getLayer(layerId)) return;
+    try {
+      m.setPaintProperty(layerId, property, transition);
+    } catch {
+      /* camada pode não suportar a propriedade */
+    }
+  };
+
+  setPaintTransition('br-states-selected', 'fill-opacity-transition');
+  setPaintTransition('br-states-selected', 'fill-color-transition');
+  setPaintTransition('br-states-dim', 'fill-opacity-transition');
+  setPaintTransition('br-states-dim', 'fill-color-transition');
+  setPaintTransition('br-states-choropleth', 'fill-opacity-transition');
+  setPaintTransition('br-states-choropleth', 'fill-color-transition');
+
+  setPaintTransition('selected-municipality-fill', 'fill-opacity-transition');
+  setPaintTransition('selected-municipality-line', 'line-opacity-transition');
+  setPaintTransition('selected-municipality-line', 'line-color-transition');
+  setPaintTransition('selected-municipality-line', 'line-width-transition');
+}
+
 function clearRegionOverlaySources(m: mapboxgl.Map) {
   const empty: GeoJSON.FeatureCollection = { type: 'FeatureCollection', features: [] };
   for (const sourceId of [
@@ -397,6 +816,88 @@ function clearRegionOverlaySources(m: mapboxgl.Map) {
     const source = m.getSource(sourceId) as mapboxgl.GeoJSONSource | undefined;
     source?.setData(empty);
   }
+}
+
+const AGENCY_CLICK_LAYER_IDS = ['region-overlay-agencias-cir', 'structure-agencies-point'] as const;
+const LOJA_CLICK_LAYER_IDS = ['region-overlay-lojas-cir'] as const;
+
+/** Bolinha de agência no overlay regional (sempre maior que loja no mesmo zoom). */
+const OVERLAY_AGENCIA_CIRCLE_RADIUS: mapboxgl.ExpressionSpecification = [
+  'interpolate',
+  ['linear'],
+  ['zoom'],
+  3,
+  6,
+  7,
+  8,
+  11,
+  10,
+  14,
+  13,
+];
+
+/** Bolinha de loja — ~70% do raio da agência em cada nível de zoom. */
+const OVERLAY_LOJA_CIRCLE_RADIUS: mapboxgl.ExpressionSpecification = [
+  'interpolate',
+  ['linear'],
+  ['zoom'],
+  3,
+  4,
+  7,
+  5.5,
+  11,
+  7,
+  14,
+  9,
+];
+
+const OVERLAY_AGENCIA_CIRCLE_RADIUS_HIGHLIGHT = 15;
+const OVERLAY_LOJA_CIRCLE_RADIUS_HIGHLIGHT = 10;
+
+function normalizeCodAgKey(value: string | null | undefined): string {
+  const raw = String(value ?? '').trim();
+  if (!raw) return '';
+  const n = Number(raw.replace(',', '.'));
+  if (Number.isFinite(n)) return String(Math.trunc(n));
+  return raw;
+}
+
+/** Raio de toque em px — maior com zoom distante (bolinha pequena na tela). */
+function agencyClickPaddingPx(zoom: number): number {
+  return Math.min(44, Math.max(18, 56 - zoom * 2.4));
+}
+
+function pickAgencyFeatureAtPoint(m: mapboxgl.Map, point: mapboxgl.Point): GeoJSON.Feature | null {
+  const pad = agencyClickPaddingPx(m.getZoom());
+  const box: [mapboxgl.PointLike, mapboxgl.PointLike] = [
+    [point.x - pad, point.y - pad],
+    [point.x + pad, point.y + pad],
+  ];
+  const layers = AGENCY_CLICK_LAYER_IDS.filter((id) => m.getLayer(id));
+  if (layers.length === 0) return null;
+
+  const hits = m.queryRenderedFeatures(box, { layers: [...layers] });
+  if (hits.length === 0) return null;
+
+  const sqlAgency = hits.find((f) => String(f.properties?.kind ?? '') === 'agencia');
+  if (sqlAgency) return sqlAgency as GeoJSON.Feature;
+
+  const structureAgency = hits.find((f) => f.layer?.id === 'structure-agencies-point');
+  return (structureAgency ?? hits[0]) as GeoJSON.Feature;
+}
+
+function pickLojaFeatureAtPoint(m: mapboxgl.Map, point: mapboxgl.Point): GeoJSON.Feature | null {
+  const pad = agencyClickPaddingPx(m.getZoom());
+  const box: [mapboxgl.PointLike, mapboxgl.PointLike] = [
+    [point.x - pad, point.y - pad],
+    [point.x + pad, point.y + pad],
+  ];
+  const layers = LOJA_CLICK_LAYER_IDS.filter((id) => m.getLayer(id));
+  if (layers.length === 0) return null;
+  const hits = m.queryRenderedFeatures(box, { layers: [...layers] });
+  if (hits.length === 0) return null;
+  const loja = hits.find((f) => String(f.properties?.kind ?? '') === 'loja');
+  return (loja ?? hits[0]) as GeoJSON.Feature;
 }
 
 function resolveStateId(props?: GeoJSON.GeoJsonProperties): string {
@@ -491,31 +992,75 @@ function cityLabelLayerIds(m: mapboxgl.Map): string[] {
     .map((layer) => layer.id);
 }
 
-type MapStyleMode = 'default' | 'satellite' | 'standardWarm';
+type MapStyleMode = 'default' | 'satellite' | 'dark' | 'standardWarm' | 'standardCool';
+
+const MAP_STYLE_URL: Record<MapStyleMode, string> = {
+  default: MAPBOX_CONFIG.styles.default,
+  satellite: MAPBOX_CONFIG.styles.satellite,
+  dark: MAPBOX_CONFIG.styles.dark,
+  standardWarm: MAPBOX_CONFIG.styles.standardWarm,
+  standardCool: MAPBOX_CONFIG.styles.standardCool,
+};
+
+/**
+ * Centro/zoom da pré-visualização — área natural de litoral (Lençóis Maranhenses).
+ * Sem cidades/rodovias → o estilo não renderiza rótulos, mas mantém contraste terra/água.
+ */
+const STYLE_PREVIEW_VIEW = { lon: -42.78, lat: -2.55, zoom: 10.5 } as const;
+
+/** Miniatura real do estilo via Mapbox Static Images API (usa o token já configurado). */
+function buildStylePreviewUrl(styleUrl: string): string {
+  const styleId = styleUrl.replace('mapbox://styles/', '');
+  const { lon, lat, zoom } = STYLE_PREVIEW_VIEW;
+  const params = new URLSearchParams({
+    access_token: MAPBOX_CONFIG.accessToken,
+    attribution: 'false',
+    logo: 'false',
+  });
+  // 64px @2x = imagem leve e nítida em telas retina.
+  return `https://api.mapbox.com/styles/v1/${styleId}/static/${lon},${lat},${zoom},0/64x64@2x?${params.toString()}`;
+}
 
 const MAP_LAYOUT_OPTIONS: {
   id: MapStyleMode;
   label: string;
   caption: string;
-  previewClass: string;
+  previewImage: string;
+  /** Leve matiz sobre a miniatura para distinguir warm/cool (mesmo style URL Standard). */
+  tintClass?: string;
 }[] = [
   {
     id: 'default',
     label: 'Mapa claro (Light)',
     caption: 'Claro',
-    previewClass: 'bg-gradient-to-br from-white via-slate-100 to-slate-300 ring-1 ring-inset ring-slate-300/80',
+    previewImage: buildStylePreviewUrl(MAPBOX_CONFIG.styles.default),
+  },
+  {
+    id: 'dark',
+    label: 'Mapa escuro (Dark)',
+    caption: 'Dark',
+    previewImage: buildStylePreviewUrl(MAPBOX_CONFIG.styles.dark),
   },
   {
     id: 'satellite',
     label: 'Satélite com ruas',
     caption: 'Sat.',
-    previewClass: 'bg-gradient-to-br from-emerald-950 via-slate-900 to-slate-950 ring-1 ring-inset ring-slate-700',
+    previewImage: buildStylePreviewUrl(MAPBOX_CONFIG.styles.satellite),
   },
   {
     id: 'standardWarm',
     label: 'Mapbox Standard (tema warm)',
     caption: 'Warm',
-    previewClass: 'bg-gradient-to-br from-amber-50 via-orange-100 to-amber-200 ring-1 ring-inset ring-amber-400/90',
+    // A Static Images API não suporta o estilo `mapbox/standard`; usa um clássico + matiz.
+    previewImage: buildStylePreviewUrl('mapbox://styles/mapbox/streets-v12'),
+    tintClass: 'bg-amber-400/25',
+  },
+  {
+    id: 'standardCool',
+    label: 'Mapbox Standard (tema cool)',
+    caption: 'Cool',
+    previewImage: buildStylePreviewUrl('mapbox://styles/mapbox/streets-v12'),
+    tintClass: 'bg-sky-400/25',
   },
 ];
 
@@ -573,6 +1118,71 @@ interface MapComponentProps {
   onOpenFilters?: () => void;
 }
 
+const COMMERCIAL_TEAM_LEVEL_OPTIONS: Array<{ id: CommercialTeamLevel; label: string }> = [
+  { id: 'supervisor', label: COMMERCIAL_TEAM_LEVEL_LABEL.supervisor },
+  { id: 'coordenador', label: COMMERCIAL_TEAM_LEVEL_LABEL.coordenador },
+  { id: 'gerente_area', label: COMMERCIAL_TEAM_LEVEL_LABEL.gerente_area },
+];
+
+type StoreSegmentKey = 'varejo' | 'grandes_redes' | 'exclusivo' | 'casas_bahia';
+
+const STORE_SEGMENT_OPTIONS: Array<{ id: StoreSegmentKey; label: string }> = [
+  { id: 'varejo', label: 'Varejo' },
+  { id: 'grandes_redes', label: 'Grandes Redes' },
+  { id: 'exclusivo', label: 'Exclusivo' },
+  { id: 'casas_bahia', label: 'Casas Bahia' },
+];
+
+function seatBaseHue(chaveGerenciaArea: number | null | undefined): number {
+  if (!Number.isFinite(Number(chaveGerenciaArea))) return 220;
+  return (Math.abs(Number(chaveGerenciaArea)) * 47) % 360;
+}
+
+function hslToHex(h: number, s: number, l: number): string {
+  const sat = Math.max(0, Math.min(100, s)) / 100;
+  const light = Math.max(0, Math.min(100, l)) / 100;
+  const c = (1 - Math.abs(2 * light - 1)) * sat;
+  const hh = ((h % 360) + 360) % 360 / 60;
+  const x = c * (1 - Math.abs((hh % 2) - 1));
+  let r = 0;
+  let g = 0;
+  let b = 0;
+  if (hh >= 0 && hh < 1) [r, g, b] = [c, x, 0];
+  else if (hh < 2) [r, g, b] = [x, c, 0];
+  else if (hh < 3) [r, g, b] = [0, c, x];
+  else if (hh < 4) [r, g, b] = [0, x, c];
+  else if (hh < 5) [r, g, b] = [x, 0, c];
+  else [r, g, b] = [c, 0, x];
+  const m = light - c / 2;
+  const toHex = (v: number) => Math.round((v + m) * 255).toString(16).padStart(2, '0');
+  return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
+}
+
+function seatColorByLevel(
+  chaveGerenciaArea: number | null | undefined,
+  level: CommercialTeamLevel | string | null | undefined
+): string {
+  const hue = seatBaseHue(chaveGerenciaArea);
+  const sat = 72;
+  const light =
+    level === 'gerente_area' ? 44 : level === 'coordenador' ? 56 : level === 'supervisor' ? 68 : 60;
+  return hslToHex(hue, sat, light);
+}
+
+function resolveStoreSegment(point: SqlMapPoint): StoreSegmentKey {
+  const cod = String(point.codAg ?? '').trim();
+  const id = point.id.trim().toLowerCase();
+  const nome = point.nome.trim().toLowerCase();
+  if (nome.includes('bahia') || id.includes('bahia')) return 'casas_bahia';
+  const seedRaw = cod || id || nome || '0';
+  let hash = 0;
+  for (let i = 0; i < seedRaw.length; i += 1) {
+    hash = (hash * 31 + seedRaw.charCodeAt(i)) % 9973;
+  }
+  const bucket = Math.abs(hash) % 4;
+  return STORE_SEGMENT_OPTIONS[bucket].id;
+}
+
 const MapComponent: React.FC<MapComponentProps> = ({
   mapMarkers,
   hierarchyFilter = null,
@@ -581,6 +1191,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
 }) => {
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<mapboxgl.Map | null>(null);
+  const panCenterLimitCleanupRef = useRef<(() => void) | null>(null);
   const mapMarkersRef = useRef(mapMarkers);
   mapMarkersRef.current = mapMarkers;
   const { toast } = useToast();
@@ -616,12 +1227,40 @@ const MapComponent: React.FC<MapComponentProps> = ({
   );
   const [overlayAgencias, setOverlayAgencias] = useState(false);
   const [overlaySupervisores, setOverlaySupervisores] = useState(false);
+  const [commercialTeamMenuOpen, setCommercialTeamMenuOpen] = useState(false);
+  const [commercialTeamLevelVisibility, setCommercialTeamLevelVisibility] = useState<
+    Record<CommercialTeamLevel, boolean>
+  >({
+    supervisor: true,
+    coordenador: true,
+    gerente_area: true,
+  });
   const [overlayLojas, setOverlayLojas] = useState(false);
+  const [storeSegmentMenuOpen, setStoreSegmentMenuOpen] = useState(false);
+  const [storeSegmentVisibility, setStoreSegmentVisibility] = useState<Record<StoreSegmentKey, boolean>>({
+    varejo: true,
+    grandes_redes: true,
+    exclusivo: true,
+    casas_bahia: true,
+  });
   const [sqlAgencyPoints, setSqlAgencyPoints] = useState<SqlMapPoint[]>([]);
+  const [sqlSeatPoints, setSqlSeatPoints] = useState<SqlMapPoint[]>([]);
   const [sqlStorePoints, setSqlStorePoints] = useState<SqlMapPoint[]>([]);
   const [loadingAgencyPoints, setLoadingAgencyPoints] = useState(false);
+  const [loadingSeatPoints, setLoadingSeatPoints] = useState(false);
   const [loadingStorePoints, setLoadingStorePoints] = useState(false);
+  /** Quando definido, o overlay de lojas mostra só lojas com este COD_AG. */
+  const [storeFilterCodAg, setStoreFilterCodAg] = useState<string | null>(null);
+  const [storeFilterAgencyName, setStoreFilterAgencyName] = useState<string | null>(null);
+  const [pinnedAgencyPoint, setPinnedAgencyPoint] = useState<SqlMapPoint | null>(null);
+  /** Detalhe do marcador clicado (barra inferior); hover continua no popup do mapa. */
+  const [overlayMarkerSelection, setOverlayMarkerSelection] = useState<AgencyPopupInfo | null>(null);
+  const storeFilterCodAgRef = useRef<string | null>(null);
+  const selectAgencyForStoresRef = useRef<
+    (codAg: string, agencyName?: string | null, agencyPoint?: SqlMapPoint | null) => Promise<void>
+  >(async () => {});
   const refreshTimerRef = useRef<number | null>(null);
+  const lastViewportOverlayBboxKeyRef = useRef<string | null>(null);
   const mapTransitionTimerRef = useRef<number | null>(null);
   const mapTransitionStartRef = useRef<number>(Date.now());
   const [mapReadyVersion, setMapReadyVersion] = useState(0);
@@ -637,6 +1276,20 @@ const MapComponent: React.FC<MapComponentProps> = ({
   const [mapLayoutFlyoutHover, setMapLayoutFlyoutHover] = useState(false);
   const layoutFlyoutHoverTimerRef = useRef<number | null>(null);
   const mapLayoutPickerRef = useRef<HTMLDivElement>(null);
+  const commercialTeamPickerRef = useRef<HTMLDivElement>(null);
+  const storeSegmentPickerRef = useRef<HTMLDivElement>(null);
+
+  const selectedCommercialTeamLevels = useMemo(
+    () =>
+      COMMERCIAL_TEAM_LEVEL_OPTIONS.filter((option) => commercialTeamLevelVisibility[option.id]).map(
+        (option) => option.id
+      ),
+    [commercialTeamLevelVisibility]
+  );
+  const selectedStoreSegments = useMemo(
+    () => STORE_SEGMENT_OPTIONS.filter((option) => storeSegmentVisibility[option.id]).map((option) => option.id),
+    [storeSegmentVisibility]
+  );
 
   const clearLayoutHoverTimer = useCallback(() => {
     if (layoutFlyoutHoverTimerRef.current != null) {
@@ -672,13 +1325,11 @@ const MapComponent: React.FC<MapComponentProps> = ({
   const [choroplethLegend, setChoroplethLegend] = useState<{ min: number; max: number } | null>(null);
   /** Malha municipal (preenchimento + contornos do contexto); não afeta zoom nem contorno do município selecionado. */
   const [municipalityMeshVisible, setMunicipalityMeshVisible] = useState(true);
+  const municipalityMeshVisibleRef = useRef(municipalityMeshVisible);
   const [outsideMaskColor, setOutsideMaskColor] = useState<string>(MAPBOX_CONFIG.outsideBrazilMaskColor);
-  const activeBaseStyle =
-    mapStyleMode === 'satellite'
-      ? MAPBOX_CONFIG.styles.satellite
-      : mapStyleMode === 'standardWarm'
-        ? MAPBOX_CONFIG.styles.standardWarm
-        : MAPBOX_CONFIG.styles.default;
+  const activeBaseStyle = MAP_STYLE_URL[mapStyleMode];
+  const activeStandardTheme: 'warm' | 'cool' | null =
+    mapStyleMode === 'standardCool' ? 'cool' : mapStyleMode === 'standardWarm' ? 'warm' : null;
 
   useEffect(() => {
     if (!mapLayoutMenuPinned) return;
@@ -694,25 +1345,106 @@ const MapComponent: React.FC<MapComponentProps> = ({
     return () => document.removeEventListener('pointerdown', onPointerDown, true);
   }, [mapLayoutMenuPinned, clearLayoutHoverTimer]);
 
+  useEffect(() => {
+    if (!commercialTeamMenuOpen) return;
+    const onPointerDown = (e: PointerEvent) => {
+      const root = commercialTeamPickerRef.current;
+      if (root && !root.contains(e.target as Node)) {
+        setCommercialTeamMenuOpen(false);
+      }
+    };
+    document.addEventListener('pointerdown', onPointerDown, true);
+    return () => document.removeEventListener('pointerdown', onPointerDown, true);
+  }, [commercialTeamMenuOpen]);
+
+  useEffect(() => {
+    if (!storeSegmentMenuOpen) return;
+    const onPointerDown = (e: PointerEvent) => {
+      const root = storeSegmentPickerRef.current;
+      if (root && !root.contains(e.target as Node)) {
+        setStoreSegmentMenuOpen(false);
+      }
+    };
+    document.addEventListener('pointerdown', onPointerDown, true);
+    return () => document.removeEventListener('pointerdown', onPointerDown, true);
+  }, [storeSegmentMenuOpen]);
+
   const fallbackExpressoMetrics = useMemo(
     () => buildExpressoRegionMetrics(mapMarkers, selectedStateFeature),
     [mapMarkers, selectedStateFeature]
   );
   const expressoMetrics = sqlExpressoMetrics ?? fallbackExpressoMetrics;
 
-  const filteredRegionAgencias = useMemo(
-    () => filterRegionMapPoints(sqlAgencyPoints, selectedMunicipalityFeature, selectedStateFeature),
-    [sqlAgencyPoints, selectedMunicipalityFeature, selectedStateFeature]
-  );
+  const filteredRegionAgencias = useMemo(() => {
+    if (storeFilterCodAg) {
+      if (pinnedAgencyPoint) return [pinnedAgencyPoint];
+      const key = normalizeCodAgKey(storeFilterCodAg);
+      return sqlAgencyPoints.filter((p) => normalizeCodAgKey(p.codAg) === key);
+    }
+    return filterRegionMapPoints(sqlAgencyPoints, selectedMunicipalityFeature, selectedStateFeature);
+  }, [
+    sqlAgencyPoints,
+    storeFilterCodAg,
+    pinnedAgencyPoint,
+    selectedMunicipalityFeature,
+    selectedStateFeature,
+  ]);
   const filteredRegionSupervisores = useMemo(
-    () =>
-      filterRegionMapPoints(MOCK_REGION_SUPERVISORES, selectedMunicipalityFeature, selectedStateFeature),
-    [selectedMunicipalityFeature, selectedStateFeature]
+    () => {
+      const visibleLevels = new Set(selectedCommercialTeamLevels);
+      const filteredByLevel = sqlSeatPoints
+        .filter((point) => !point.commercialLevel || visibleLevels.has(point.commercialLevel))
+        .map((point) => ({
+          ...point,
+          seatColor: seatColorByLevel(point.chaveGerenciaArea, point.commercialLevel),
+        }));
+      return filterRegionMapPoints(filteredByLevel, selectedMunicipalityFeature, selectedStateFeature);
+    },
+    [sqlSeatPoints, selectedMunicipalityFeature, selectedStateFeature, selectedCommercialTeamLevels]
   );
-  const filteredRegionLojas = useMemo(
-    () => filterRegionMapPoints(sqlStorePoints, selectedMunicipalityFeature, selectedStateFeature),
-    [sqlStorePoints, selectedMunicipalityFeature, selectedStateFeature]
-  );
+  const seatLegendEntries = useMemo(() => {
+    const map = new Map<number, { ga: string; gaNome: string; gerente: string; coord: string; sup: string }>();
+    for (const point of sqlSeatPoints) {
+      const ga = Number(point.chaveGerenciaArea);
+      if (!Number.isFinite(ga)) continue;
+      if (map.has(ga)) continue;
+      const gaNome =
+        point.commercialLevel === 'gerente_area'
+          ? String(point.nome ?? '').trim()
+          : `Gerência de Área ${ga}`;
+      map.set(ga, {
+        ga: String(ga),
+        gaNome,
+        gerente: seatColorByLevel(ga, 'gerente_area'),
+        coord: seatColorByLevel(ga, 'coordenador'),
+        sup: seatColorByLevel(ga, 'supervisor'),
+      });
+    }
+    return [...map.values()].sort((a, b) => Number(a.ga) - Number(b.ga)).slice(0, 8);
+  }, [sqlSeatPoints]);
+  const filteredRegionLojas = useMemo(() => {
+    const visibleSegments = new Set(selectedStoreSegments);
+    const applySegmentFilter = (points: SqlMapPoint[]) =>
+      points.filter((point) => visibleSegments.has(resolveStoreSegment(point)));
+
+    if (storeFilterCodAg) {
+      if (loadingStorePoints) return [];
+      return applySegmentFilter(sqlStorePoints);
+    }
+    const visibleByArea = filterRegionMapPoints(
+      sqlStorePoints,
+      selectedMunicipalityFeature,
+      selectedStateFeature
+    );
+    return applySegmentFilter(visibleByArea);
+  }, [
+    sqlStorePoints,
+    storeFilterCodAg,
+    loadingStorePoints,
+    selectedMunicipalityFeature,
+    selectedStateFeature,
+    selectedStoreSegments,
+  ]);
 
   const getCurrentMapBbox = (): BboxQuery | null => {
     const m = map.current;
@@ -726,41 +1458,171 @@ const MapComponent: React.FC<MapComponentProps> = ({
     };
   };
 
-  const refreshOverlayDataForViewport = async () => {
+  const bboxQueryKey = (bbox: BboxQuery, decimals = 3) => {
+    const f = (n: number) => n.toFixed(decimals);
+    return `${f(bbox.minLng)}:${f(bbox.minLat)}:${f(bbox.maxLng)}:${f(bbox.maxLat)}`;
+  };
+
+  const fitMapToLngLatPoints = (points: Array<{ lngLat: [number, number] }>) => {
+    const m = map.current;
+    if (!m || points.length === 0) return;
+    const lngs = points.map((p) => p.lngLat[0]);
+    const lats = points.map((p) => p.lngLat[1]);
+    const bounds: mapboxgl.LngLatBoundsLike = [
+      [Math.min(...lngs), Math.min(...lats)],
+      [Math.max(...lngs), Math.max(...lats)],
+    ];
+    try {
+      m.fitBounds(bounds, {
+        padding: 72,
+        maxZoom: points.length === 1 ? 14 : 12,
+        duration: 650,
+      });
+    } catch {
+      /* ignore */
+    }
+  };
+
+  const loadStoreOverlayPoints = useCallback(
+    async (options?: { codAg?: string | null; bbox?: BboxQuery | null; silent?: boolean }) => {
+      const codAg =
+        options?.codAg !== undefined ? options.codAg : storeFilterCodAgRef.current;
+      const bbox =
+        options?.bbox !== undefined ? options.bbox : codAg ? null : getCurrentMapBbox();
+      const silent = options?.silent === true;
+
+      if (!silent) {
+        setLoadingStorePoints(true);
+        if (codAg) setSqlStorePoints([]);
+      }
+      try {
+        const points = await fetchStorePoints(
+          codAg ? { codAg, hierarchy: null } : bbox ? { bbox, hierarchy: null } : { hierarchy: null }
+        );
+        setSqlStorePoints(points);
+        return points;
+      } finally {
+        if (!silent) setLoadingStorePoints(false);
+      }
+    },
+    []
+  );
+
+  const resetAgencyStoreFilterSync = useCallback(() => {
+    storeFilterCodAgRef.current = null;
+    setStoreFilterCodAg(null);
+    setStoreFilterAgencyName(null);
+    setPinnedAgencyPoint(null);
+    setSqlStorePoints([]);
+    setOverlayMarkerSelection(null);
+  }, []);
+
+  const resetAgencyStoreFilterSyncRef = useRef(resetAgencyStoreFilterSync);
+  useEffect(() => {
+    resetAgencyStoreFilterSyncRef.current = resetAgencyStoreFilterSync;
+  }, [resetAgencyStoreFilterSync]);
+
+  const clearStoreAgencyFilter = useCallback(async () => {
+    resetAgencyStoreFilterSync();
+    if (!overlayLojas) {
+      return;
+    }
+    await loadStoreOverlayPoints({ codAg: null, bbox: getCurrentMapBbox() });
+  }, [loadStoreOverlayPoints, overlayLojas, resetAgencyStoreFilterSync]);
+
+  const selectAgencyForStores = useCallback(
+    async (codAg: string, agencyName?: string | null, agencyPoint?: SqlMapPoint | null) => {
+      const raw = codAg.trim();
+      if (!raw) return;
+      const asNum = Number(raw.replace(',', '.'));
+      const normalized = Number.isFinite(asNum) ? String(Math.trunc(asNum)) : raw;
+      const agencyLabel = agencyName?.trim() || 'Agência';
+      const pinned =
+        agencyPoint ??
+        sqlAgencyPoints.find((p) => normalizeCodAgKey(p.codAg) === normalized) ??
+        null;
+
+      storeFilterCodAgRef.current = normalized;
+      setStoreFilterCodAg(normalized);
+      setStoreFilterAgencyName(agencyLabel);
+      setPinnedAgencyPoint(pinned);
+      setOverlayLojas(true);
+      setSqlStorePoints([]);
+
+      try {
+        const points = await loadStoreOverlayPoints({ codAg: normalized });
+        if (points.length === 0) {
+          setSqlStorePoints([]);
+          toast({
+            title: 'Nenhuma loja vinculada',
+            description: `Não há lojas vinculadas à agência ${normalized} - ${agencyLabel}.`,
+          });
+          return;
+        }
+      } catch (error) {
+        console.error('Falha ao carregar lojas da agência:', error);
+        toast({
+          title: 'Falha ao carregar lojas',
+          description:
+            error instanceof Error ? error.message : 'Não foi possível buscar lojas vinculadas.',
+          variant: 'destructive',
+        });
+      }
+    },
+    [loadStoreOverlayPoints, sqlAgencyPoints, toast]
+  );
+
+  useEffect(() => {
+    selectAgencyForStoresRef.current = selectAgencyForStores;
+  }, [selectAgencyForStores]);
+
+  const refreshOverlayDataForViewport = async (options?: { silent?: boolean }) => {
     const bbox = getCurrentMapBbox();
-    if (!bbox) return;
+    const codAgFilter = storeFilterCodAgRef.current;
+    if (!bbox && !codAgFilter) return;
+
+    const silent = options?.silent === true;
+    if (bbox) {
+      const key = bboxQueryKey(bbox);
+      if (key === lastViewportOverlayBboxKeyRef.current) return;
+      lastViewportOverlayBboxKeyRef.current = key;
+    }
 
     if (overlayAgencias && !loadingAgencyPoints) {
-      setLoadingAgencyPoints(true);
+      if (!silent) setLoadingAgencyPoints(true);
       try {
         const points = await fetchAgencyPoints({ bbox, hierarchy: hierarchyFilter });
         setSqlAgencyPoints(points);
       } catch (error) {
         console.error('Falha ao carregar agências SQL:', error);
-        toast({
-          title: 'Falha ao carregar agências',
-          description: 'Não foi possível buscar agências no SQL Server.',
-          variant: 'destructive',
-        });
+        if (!silent) {
+          toast({
+            title: 'Falha ao carregar agências',
+            description: 'Não foi possível buscar agências no SQL Server.',
+            variant: 'destructive',
+          });
+        }
       } finally {
-        setLoadingAgencyPoints(false);
+        if (!silent) setLoadingAgencyPoints(false);
       }
     }
 
-    if (overlayLojas && !loadingStorePoints) {
-      setLoadingStorePoints(true);
+    if (overlayLojas && (silent || !loadingStorePoints) && !codAgFilter) {
       try {
-        const points = await fetchStorePoints({ bbox });
-        setSqlStorePoints(points);
+        await loadStoreOverlayPoints({
+          codAg: null,
+          bbox,
+          silent,
+        });
       } catch (error) {
         console.error('Falha ao carregar lojas SQL:', error);
-        toast({
-          title: 'Falha ao carregar lojas',
-          description: 'Não foi possível buscar lojas no SQL Server.',
-          variant: 'destructive',
-        });
-      } finally {
-        setLoadingStorePoints(false);
+        if (!silent) {
+          toast({
+            title: 'Falha ao carregar lojas',
+            description: 'Não foi possível buscar lojas no SQL Server.',
+            variant: 'destructive',
+          });
+        }
       }
     }
   };
@@ -806,6 +1668,22 @@ const MapComponent: React.FC<MapComponentProps> = ({
     [expressoMetrics]
   );
   const hasStatePanel = Boolean(selectedStateLabel && expressoMetrics);
+  const [statePanelMinimized, setStatePanelMinimized] = useState(false);
+  /** Painel ocupando a tela (expandido). Minimizado mantém a seleção mas libera o layout. */
+  const statePanelExpanded = hasStatePanel && !statePanelMinimized;
+
+  /** Toda nova seleção de estado/município reabre o painel (cancela o estado minimizado). */
+  useEffect(() => {
+    setStatePanelMinimized(false);
+  }, [selectedStateLabel, selectedCityLabel]);
+
+  const dismissMapMarkerDock = () => {
+    if (storeFilterCodAg) {
+      void clearStoreAgencyFilter();
+      return;
+    }
+    setOverlayMarkerSelection(null);
+  };
   const hasMapSelection = Boolean(
     selectedStateFeature || selectedMunicipalityFeature || selectedCityLabel
   );
@@ -892,11 +1770,40 @@ const MapComponent: React.FC<MapComponentProps> = ({
 
   const clusterClickHandlerRef = useRef<((e: mapboxgl.MapLayerMouseEvent) => void) | null>(null);
   const regionOverlayClickHandlerRef = useRef<((e: mapboxgl.MapLayerMouseEvent) => void) | null>(null);
+  const regionOverlayAgencyClickHandlerRef = useRef<
+    ((e: mapboxgl.MapLayerMouseEvent) => void) | null
+  >(null);
+
+  useEffect(() => {
+    municipalityMeshVisibleRef.current = municipalityMeshVisible;
+  }, [municipalityMeshVisible]);
+
+  useEffect(() => {
+    storeFilterCodAgRef.current = storeFilterCodAg;
+  }, [storeFilterCodAg]);
+
+  const meshSelectionEnabled = () => municipalityMeshVisibleRef.current;
   const agencyHoverEnterHandlerRef = useRef<((e: mapboxgl.MapLayerMouseEvent) => void) | null>(null);
   const agencyHoverLeaveHandlerRef = useRef<((e: mapboxgl.MapLayerMouseEvent) => void) | null>(null);
   const agencyHoverPopupRef = useRef<mapboxgl.Popup | null>(null);
+  const overlayMarkerHoverLayersRef = useRef<string[]>([]);
+  const pointFocusCameraActiveRef = useRef(false);
+  const preFocusCameraRef = useRef<SavedMapCamera | null>(null);
+  /** Evita seleção de UF/município no mesmo clique que saiu do foco 3D. */
+  const suppressMeshSelectionClickRef = useRef(false);
+  const mapPointerGestureGuardRef = useRef<ReturnType<typeof attachMapPointerGestureGuard> | null>(
+    null
+  );
 
   const handleSearchSelect = (option: SearchOption) => {
+    if (!meshSelectionEnabled()) {
+      toast({
+        title: 'Malha desligada',
+        description:
+          'Ative a malha de municípios no mapa para selecionar estado ou município.',
+      });
+      return;
+    }
     if (option.kind === 'estado') {
       selectStateFeatureRef.current?.(option.feature);
       return;
@@ -924,6 +1831,15 @@ const MapComponent: React.FC<MapComponentProps> = ({
     }
   };
 
+  const handleResetMapView2d = () => {
+    const m = map.current;
+    if (!m) return;
+    const restore = preFocusCameraRef.current;
+    preFocusCameraRef.current = null;
+    pointFocusCameraActiveRef.current = false;
+    animateToFlatView(m, restore);
+  };
+
   const startMapTransitionLoading = () => {
     mapTransitionStartRef.current = Date.now();
     setIsMapTransitionLoading(true);
@@ -949,45 +1865,106 @@ const MapComponent: React.FC<MapComponentProps> = ({
 
     const bbox = getCurrentMapBbox();
     setLoadingAgencyPoints(true);
+    setOverlayAgencias(true);
     try {
       const points = await fetchAgencyPoints({ bbox, hierarchy: hierarchyFilter });
       setSqlAgencyPoints(points);
-      setOverlayAgencias(true);
-    } catch (error) {
-        console.error('Falha ao carregar agências SQL:', error);
+      if (points.length === 0) {
         toast({
-          title: 'Falha ao carregar agências',
-          description: 'Não foi possível buscar agências no SQL Server.',
-          variant: 'destructive',
+          title: 'Nenhuma agência nesta área',
+          description: hierarchyFilter
+            ? 'A API respondeu, mas o filtro da escada comercial não encontrou agências com COD_AG compatível. Limpe os filtros ou ajuste o vínculo COD_AG no SQL.'
+            : 'Verifique o zoom do mapa ou se há agências com coordenadas na região.',
         });
-      return;
+      }
+    } catch (error) {
+      console.error('Falha ao carregar agências SQL:', error);
+      setOverlayAgencias(false);
+      toast({
+        title: 'Falha ao carregar agências',
+        description:
+          error instanceof Error
+            ? error.message
+            : 'Não foi possível buscar agências. Confira se a API está rodando (npm run dev:api).',
+        variant: 'destructive',
+      });
     } finally {
       setLoadingAgencyPoints(false);
     }
   };
 
+  const handleToggleCommercialTeamOverlay = () => {
+    if (overlaySupervisores) {
+      setOverlaySupervisores(false);
+      setCommercialTeamMenuOpen(false);
+      return;
+    }
+    setOverlaySupervisores(true);
+    setCommercialTeamMenuOpen(true);
+    setLoadingSeatPoints(true);
+    void fetchCommercialSeatPoints({ hierarchy: hierarchyFilter })
+      .then((points) => {
+        setSqlSeatPoints(points);
+      })
+      .catch((error) => {
+        console.error('Falha ao carregar sedes da estrutura:', error);
+        setOverlaySupervisores(false);
+        setCommercialTeamMenuOpen(false);
+        toast({
+          title: 'Falha ao carregar estrutura comercial',
+          description: 'Não foi possível buscar os pontos de sede da estrutura comercial.',
+          variant: 'destructive',
+        });
+      })
+      .finally(() => {
+        setLoadingSeatPoints(false);
+      });
+  };
+
+  const handleToggleCommercialLevel = (level: CommercialTeamLevel) => {
+    setCommercialTeamLevelVisibility((prev) => {
+      const next = { ...prev, [level]: !prev[level] };
+      const hasAnySelected = Object.values(next).some(Boolean);
+      if (!hasAnySelected) return prev;
+      return next;
+    });
+  };
+
+  const handleToggleStoreSegment = (segment: StoreSegmentKey) => {
+    setStoreSegmentVisibility((prev) => {
+      const next = { ...prev, [segment]: !prev[segment] };
+      const hasAnySelected = Object.values(next).some(Boolean);
+      if (!hasAnySelected) return prev;
+      return next;
+    });
+  };
+
   const handleToggleLojas = async () => {
     if (overlayLojas) {
+      storeFilterCodAgRef.current = null;
+      setStoreFilterCodAg(null);
+      setStoreFilterAgencyName(null);
+      setPinnedAgencyPoint(null);
       setOverlayLojas(false);
+      setStoreSegmentMenuOpen(false);
+      setSqlStorePoints([]);
       return;
     }
 
-    const bbox = getCurrentMapBbox();
-    setLoadingStorePoints(true);
+    setStoreFilterCodAg(null);
+    setOverlayLojas(true);
+    setStoreSegmentMenuOpen(true);
     try {
-      const points = await fetchStorePoints({ bbox });
-      setSqlStorePoints(points);
-      setOverlayLojas(true);
+      await loadStoreOverlayPoints({ codAg: null, bbox: getCurrentMapBbox() });
     } catch (error) {
-        console.error('Falha ao carregar lojas SQL:', error);
-        toast({
-          title: 'Falha ao carregar lojas',
-          description: 'Não foi possível buscar lojas no SQL Server.',
-          variant: 'destructive',
-        });
-      return;
-    } finally {
-      setLoadingStorePoints(false);
+      console.error('Falha ao carregar lojas SQL:', error);
+      setOverlayLojas(false);
+      setStoreSegmentMenuOpen(false);
+      toast({
+        title: 'Falha ao carregar lojas',
+        description: 'Não foi possível buscar lojas no SQL Server.',
+        variant: 'destructive',
+      });
     }
   };
 
@@ -1000,6 +1977,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
   };
 
   const clearSelectedState = () => {
+    resetAgencyStoreFilterSync();
     const m = map.current;
     if (m?.getLayer('br-states-selected')) {
       m.setFilter('br-states-selected', ['==', ['get', 'sigla'], '__none__']);
@@ -1020,7 +1998,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
     }
     if (m?.getLayer('br-states-choropleth')) {
       try {
-        m.setPaintProperty('br-states-choropleth', 'fill-color', '#93c5fd');
+        m.setPaintProperty('br-states-choropleth', 'fill-color', '#bfdbfe');
         m.setPaintProperty('br-states-choropleth', 'fill-opacity', 0);
       } catch {
         /* ignore */
@@ -1041,17 +2019,10 @@ const MapComponent: React.FC<MapComponentProps> = ({
     setProductivityScope('estado');
     setMunicipalityChoroplethEnabled(false);
     setChoroplethLegend(null);
+    setStatePanelMinimized(false);
     selectedStateCodeRef.current = null;
     if (m?.isStyleLoaded()) {
-      try {
-        m.fitBounds(MAPBOX_CONFIG.bounds.brazil, {
-          padding: 56,
-          maxZoom: 4.75,
-          duration: 650,
-        });
-      } catch {
-        /* ignore */
-      }
+      fitMapToBrazilOverview(m, { duration: 650 });
     }
   };
 
@@ -1066,62 +2037,214 @@ const MapComponent: React.FC<MapComponentProps> = ({
       } = {
         container: mapContainer.current,
         style: activeBaseStyle,
+        // Suaviza zoom/pan: evita fade de tiles que gera sensação de "piscar".
+        fadeDuration: 0,
+        // Evita refresh automático de tiles expirados durante interação.
+        refreshExpiredTiles: false,
+        renderWorldCopies: false,
         projection: MAPBOX_CONFIG.projection,
-        bounds: MAPBOX_CONFIG.bounds.brazil,
-        fitBoundsOptions: {
-          padding: 56,
-          maxZoom: 4.75,
-          duration: 0,
-        },
+        center: MAPBOX_CONFIG.initialBrazilView.center,
+        zoom: MAPBOX_CONFIG.initialBrazilView.zoom,
         pitch: 0,
         bearing: 0,
         minPitch: 0,
-        maxPitch: 0,
-        dragRotate: false,
-        touchPitch: false,
+        maxPitch: MAPBOX_CONFIG.interactive3d.maxPitch,
+        dragRotate: true,
+        touchPitch: true,
         minZoom: MAPBOX_CONFIG.zoom.min,
         maxZoom: MAPBOX_CONFIG.zoom.max,
-        maxBounds: MAPBOX_CONFIG.bounds.panLimit,
+        scrollZoom: true,
+        attributionControl: false,
       };
-      if (isStandardStyleUrl(activeBaseStyle)) {
+      if (activeStandardTheme) {
         mapInit.config = {
           basemap: {
-            theme: 'warm',
-            show3dObjects: false,
+            theme: activeStandardTheme,
+            show3dObjects: true,
             lightPreset: 'day',
+            showClouds: MAPBOX_CONFIG.standardBasemap.showClouds,
           },
         };
       }
 
       map.current = new mapboxgl.Map(mapInit);
+      applyMapScrollZoomSettings(map.current);
+      panCenterLimitCleanupRef.current?.();
+      panCenterLimitCleanupRef.current = attachMapPanCenterLimit(map.current);
+      mapPointerGestureGuardRef.current?.detach();
+      mapPointerGestureGuardRef.current = attachMapPointerGestureGuard(map.current);
 
       map.current.on('load', async () => {
         setMapReadyVersion((v) => v + 1);
 
         const m = map.current!;
-        if (isStandardStyleUrl(activeBaseStyle)) {
-          applyStandardWarmBasemap(m);
+        if (activeStandardTheme) {
+          applyStandardThemeBasemap(m, activeStandardTheme);
         }
         try {
           m.setProjection(MAPBOX_CONFIG.projection);
         } catch {
           /* estilo antigo sem API de projeção */
         }
-        try {
-          m.setTerrain(null);
-        } catch {
-          /* estilo sem terrain ou API não disponível */
-        }
-        m.dragRotate.disable();
-        m.touchZoomRotate.disableRotation();
+        syncMapTerrain(m);
+        enableMapPitchAndRotation(m);
         const sym = firstSymbolLayerId(m);
+
+        const beginPointFocusCamera = (coords: [number, number]) => {
+          if (!pointFocusCameraActiveRef.current) {
+            preFocusCameraRef.current = captureMapCamera(m);
+          }
+          animateToPointFocus(m, coords);
+          pointFocusCameraActiveRef.current = true;
+        };
+
+        const dismissPointFocusCamera = () => {
+          if (!pointFocusCameraActiveRef.current) return;
+          const restore = preFocusCameraRef.current;
+          preFocusCameraRef.current = null;
+          pointFocusCameraActiveRef.current = false;
+          suppressMeshSelectionClickRef.current = true;
+          window.setTimeout(() => {
+            suppressMeshSelectionClickRef.current = false;
+          }, 0);
+          animateToFlatView(m, restore);
+        };
+
+        const isMeshSelectionClick = (e: { point: { x: number; y: number } }) => {
+          if (suppressMeshSelectionClickRef.current) return false;
+          const guard = mapPointerGestureGuardRef.current;
+          if (!guard?.isSelectionClick(e)) return false;
+          return true;
+        };
+
+        const pinOverlayMarkerSelection = (feature: GeoJSON.Feature) => {
+          agencyHoverPopupRef.current?.remove();
+          setOverlayMarkerSelection(readAgencyPopupInfoFromProperties(feature.properties));
+        };
+
+        const handleLojaFeatureClick = (feature: GeoJSON.Feature, lngLat: mapboxgl.LngLatLike) => {
+          if (!map.current) return;
+          const coords =
+            getPointCoordinates(feature) ?? getPointCoordinates(lngLat);
+          if (coords) {
+            beginPointFocusCamera(coords);
+          }
+          pinOverlayMarkerSelection(feature);
+        };
+
+        const handleAgencyFeatureClick = (feature: GeoJSON.Feature, lngLat: mapboxgl.LngLatLike) => {
+          if (!map.current) return;
+          const coords =
+            getPointCoordinates(feature) ?? getPointCoordinates(lngLat);
+          if (coords) {
+            beginPointFocusCamera(coords);
+          }
+          const info = readAgencyPopupInfoFromProperties(feature.properties);
+          pinOverlayMarkerSelection(feature);
+          if (info.kind === 'agencia' && info.codAg) {
+            let agencyPoint: SqlMapPoint | null = null;
+            if (feature.geometry?.type === 'Point') {
+              const [lng, lat] = feature.geometry.coordinates as [number, number];
+              agencyPoint = {
+                id: String(feature.properties?.id ?? `sql-agencia-${info.codAg}`),
+                nome: info.nome || 'Agência',
+                kind: 'agencia',
+                lngLat: [lng, lat],
+                codAg: info.codAg,
+                enderecoFormatado: info.enderecoFormatado || null,
+              };
+            }
+            void selectAgencyForStoresRef.current(info.codAg, info.nome, agencyPoint);
+          }
+        };
+
+        const readHierarchyFilterFromSeatFeature = (feature: GeoJSON.Feature): SqlHierarchyFilter | null => {
+          const props = (feature.properties ?? {}) as Record<string, unknown>;
+          const level = String(props.commercial_level ?? '').trim().toLowerCase();
+          const chaveEntidade = Number(props.chave_entidade);
+          if (!Number.isFinite(chaveEntidade) || chaveEntidade <= 0) return null;
+          if (level === 'supervisor') return { chaveSupervisao: Math.trunc(chaveEntidade) };
+          if (level === 'coordenador') return { chaveCoordenacao: Math.trunc(chaveEntidade) };
+          if (level === 'gerente_area') return { chaveGerenciaArea: Math.trunc(chaveEntidade) };
+          return null;
+        };
+
+        const handleCommercialSeatClick = async (feature: GeoJSON.Feature, lngLat: mapboxgl.LngLatLike) => {
+          if (!map.current) return;
+          pinOverlayMarkerSelection(feature);
+          const hierarchy = readHierarchyFilterFromSeatFeature(feature);
+          if (!hierarchy) {
+            const coords = getPointCoordinates(feature) ?? getPointCoordinates(lngLat);
+            if (coords) beginPointFocusCamera(coords);
+            return;
+          }
+
+          setOverlayAgencias(true);
+          setOverlayLojas(true);
+          setStoreFilterCodAg(null);
+          setStoreFilterAgencyName(null);
+          setPinnedAgencyPoint(null);
+          storeFilterCodAgRef.current = null;
+
+          setLoadingAgencyPoints(true);
+          setLoadingStorePoints(true);
+          try {
+            const [agencias, lojas] = await Promise.all([
+              fetchAgencyPoints({ hierarchy }),
+              fetchStorePoints({ hierarchy }),
+            ]);
+            setSqlAgencyPoints(agencias);
+            setSqlStorePoints(lojas);
+            if (agencias.length > 0) {
+              fitMapToLngLatPoints(agencias);
+            } else {
+              const coords = getPointCoordinates(feature) ?? getPointCoordinates(lngLat);
+              if (coords) beginPointFocusCamera(coords);
+            }
+          } catch (error) {
+            console.error('Falha ao filtrar estrutura comercial:', error);
+            toast({
+              title: 'Falha ao filtrar supervisão',
+              description: 'Não foi possível carregar agências e lojas vinculadas ao ponto selecionado.',
+              variant: 'destructive',
+            });
+          } finally {
+            setLoadingAgencyPoints(false);
+            setLoadingStorePoints(false);
+          }
+        };
+
+        const tryOverlayMarkerClickFirst = (point: mapboxgl.Point, lngLat: mapboxgl.LngLatLike): boolean => {
+          const agencyFeature = pickAgencyFeatureAtPoint(m, point);
+          if (agencyFeature) {
+            handleAgencyFeatureClick(agencyFeature, lngLat);
+            return true;
+          }
+
+          const lojaFeature = pickLojaFeatureAtPoint(m, point);
+          if (lojaFeature) {
+            handleLojaFeatureClick(lojaFeature, lngLat);
+            return true;
+          }
+
+          const seatHits = m.queryRenderedFeatures(
+            [
+              [point.x - 6, point.y - 6],
+              [point.x + 6, point.y + 6],
+            ],
+            { layers: ['region-overlay-supervisores-cir'] }
+          );
+          const seatFeature = seatHits[0] as GeoJSON.Feature | undefined;
+          if (seatFeature?.properties) {
+            void handleCommercialSeatClick(seatFeature, lngLat);
+            return true;
+          }
+          return false;
+        };
 
         /** GeoJSON no Mapbox pode não estar “pronto” no mesmo tick do setData; re-dispara o coroplético no próximo task. */
         const scheduleMunicipalitiesChoroplethReapply = () => {
           setMunicipalitiesGeoVersion((v) => v + 1);
-          window.setTimeout(() => {
-            setMunicipalitiesGeoVersion((v) => v + 1);
-          }, 0);
         };
 
         const loadMunicipiosByUf = async (uf: string): Promise<GeoJSON.FeatureCollection | null> => {
@@ -1175,17 +2298,17 @@ const MapComponent: React.FC<MapComponentProps> = ({
           .catch((err) => console.warn('Catálogo de estados não carregado para busca:', err));
 
         try {
-          m.addSource('brasil-context', {
-            type: 'vector',
-            url: 'mapbox://mapbox.country-boundaries-v1',
+          const br = await loadBrazilBoundaryFeature();
+          m.addSource('brazil-boundary', {
+            type: 'geojson',
+            data: brazilBoundaryFeatureCollection(br),
+            tolerance: 0,
           });
           m.addLayer(
             {
               id: 'brasil-context-fill',
               type: 'fill',
-              source: 'brasil-context',
-              'source-layer': 'country_boundaries',
-              filter: ['==', ['get', 'iso_3166_1'], 'BR'],
+              source: 'brazil-boundary',
               paint: fillPaintForStandard(activeBaseStyle, {
                 'fill-color': '#94a3b8',
                 'fill-opacity': 0.12,
@@ -1197,38 +2320,31 @@ const MapComponent: React.FC<MapComponentProps> = ({
           console.warn('Camada de contexto Brasil:', e);
         }
 
-        if (MAPBOX_CONFIG.maskOutsideBrazil && sym) {
-          try {
-            const res = await fetch(BRAZIL_BOUNDARY_GEOJSON);
-            if (!res.ok) throw new Error(`GeoJSON: ${res.status}`);
-            const fc = (await res.json()) as GeoJSON.FeatureCollection;
-            const br = fc.features[0];
-            if (!br) throw new Error('Brasil não encontrado no GeoJSON');
-            const mask = buildOutsideBrazilMaskFeature(br);
-            m.addSource('brazil-outside-mask', { type: 'geojson', data: mask });
-            const maskColor = resolveLandMatchMaskColor(m);
-            setOutsideMaskColor(maskColor);
-            m.addLayer(
-              {
-                id: 'brazil-outside-mask-fill',
-                type: 'fill',
-                source: 'brazil-outside-mask',
-                paint: fillPaintForStandard(activeBaseStyle, {
-                  'fill-color': maskColor,
-                  'fill-opacity': 1,
-                }),
-              },
-              sym
-            );
-            applyBrazilBasemapLabelTweaks(m);
-            m.once('idle', () => {
-              if (!map.current) return;
-              applyBrazilBasemapLabelTweaks(map.current);
-            });
-          } catch (e) {
-            console.warn('Máscara fora do Brasil não aplicada:', e);
-          }
-        }
+        const syncOutsideMaskColorState = () => {
+          if (!map.current?.getLayer('brazil-outside-mask-fill')) return;
+          const maskColor = resolveOutsideBrazilMaskColor(map.current, activeBaseStyle);
+          setOutsideMaskColor(maskColor);
+        };
+
+        const tryApplyOutsideBrazilMask = async () => {
+          const applied = await ensureBrazilOutsideMask(m, activeBaseStyle, sym);
+          if (applied) syncOutsideMaskColorState();
+          return applied;
+        };
+
+        void tryApplyOutsideBrazilMask();
+        m.once('idle', () => {
+          if (!map.current) return;
+          void (async () => {
+            const applied = await ensureBrazilOutsideMask(map.current!, activeBaseStyle);
+            if (applied) {
+              syncOutsideMaskColorState();
+              disableBasemapClouds(map.current!);
+              applyBrazilBasemapLabelTweaks(map.current!);
+              repositionBrazilCutoutLayers(map.current!);
+            }
+          })();
+        });
 
         finishMapTransitionLoading();
 
@@ -1268,8 +2384,8 @@ const MapComponent: React.FC<MapComponentProps> = ({
             source: 'br-states',
             filter: ['==', ['get', 'sigla'], '__none__'],
             paint: fillPaintForStandard(activeBaseStyle, {
-              'fill-color': '#93c5fd',
-              'fill-opacity': 0.09,
+              'fill-color': '#bfdbfe',
+              'fill-opacity': 0.05,
             }),
           });
           m.addLayer({
@@ -1277,7 +2393,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
             type: 'fill',
             source: 'br-states',
             paint: fillPaintForStandard(activeBaseStyle, {
-              'fill-color': '#93c5fd',
+              'fill-color': '#bfdbfe',
               'fill-opacity': 0,
             }),
           });
@@ -1307,11 +2423,13 @@ const MapComponent: React.FC<MapComponentProps> = ({
             const stateId = resolveStateId(f.properties);
             if (!stateId) return;
 
+            resetAgencyStoreFilterSyncRef.current();
+
             // Ao trocar de estado, desligamos overlays regionais para evitar contexto antigo na tela.
             setOverlayAgencias(false);
             setOverlayLojas(false);
             clearRegionOverlaySources(m);
-            resetMunicipalityVisuals(m, municipalitiesFcRef, municipalitiesRawFcRef);
+            clearSelectedMunicipalityVisual(m);
             setMunicipalitySearchOptions([]);
             setSelectedCityLabel(null);
             setSelectedMunicipalityIbge(null);
@@ -1357,6 +2475,13 @@ const MapComponent: React.FC<MapComponentProps> = ({
           selectStateFeatureRef.current = applyStateSelection;
 
           const onStateClick = (e: mapboxgl.MapLayerMouseEvent) => {
+            if (!isMeshSelectionClick(e)) return;
+            if (tryOverlayMarkerClickFirst(e.point, e.lngLat)) return;
+            if (pointFocusCameraActiveRef.current) {
+              dismissPointFocusCamera();
+              return;
+            }
+            if (!meshSelectionEnabled()) return;
             const f = e.features?.[0] as GeoJSON.Feature | undefined;
             if (!f) return;
             applyStateSelection(f);
@@ -1414,8 +2539,8 @@ const MapComponent: React.FC<MapComponentProps> = ({
             type: 'fill',
             source: 'selected-municipality',
             paint: fillPaintForStandard(activeBaseStyle, {
-              'fill-color': '#38bdf8',
-              'fill-opacity': 0.12,
+              'fill-color': '#bae6fd',
+              'fill-opacity': 0.08,
             }),
           }, sym);
 
@@ -1433,6 +2558,9 @@ const MapComponent: React.FC<MapComponentProps> = ({
           const selectMunicipalityFeature = (feature: GeoJSON.Feature) => {
             const source = m.getSource('selected-municipality') as mapboxgl.GeoJSONSource | undefined;
             if (!source) return;
+
+            resetAgencyStoreFilterSyncRef.current();
+
             // Ao trocar de município, desligamos overlays regionais para o usuário reativar no novo contexto.
             setOverlayAgencias(false);
             setOverlayLojas(false);
@@ -1457,9 +2585,20 @@ const MapComponent: React.FC<MapComponentProps> = ({
           selectMunicipalityFeatureRef.current = selectMunicipalityFeature;
 
           const onMapClick = async (e: mapboxgl.MapMouseEvent) => {
+            if (!isMeshSelectionClick(e)) return;
+            if (tryOverlayMarkerClickFirst(e.point, e.lngLat)) return;
+
+            if (pointFocusCameraActiveRef.current) {
+              dismissPointFocusCamera();
+              return;
+            }
+
             const topStack = m.queryRenderedFeatures(e.point);
             if (topStack.length > 0) {
               const topId = topStack[0].layer.id;
+              if (topId === 'region-overlay-agencias-cir' || topId === 'structure-agencies-point') {
+                return;
+              }
               if (topId === 'br-states-hit') return;
               if (topId === 'municipalities-context-fill') return;
               if (topId.startsWith('selected-municipality')) return;
@@ -1467,25 +2606,22 @@ const MapComponent: React.FC<MapComponentProps> = ({
               if (topId.startsWith('region-overlay-')) return;
             }
 
-            // Evita "vazar" clique de agência para seleção de cidade quando o usuário clica perto do círculo.
-            const agencyHitLayers = ['structure-agencies-point', 'region-overlay-agencias-cir'];
-            const agencyHitBox: [mapboxgl.PointLike, mapboxgl.PointLike] = [
-              [e.point.x - 14, e.point.y - 14],
-              [e.point.x + 14, e.point.y + 14],
-            ];
-            const nearAgencyHit = m.queryRenderedFeatures(agencyHitBox, {
-              layers: agencyHitLayers.filter((layerId) => m.getLayer(layerId)),
-            });
-            if (nearAgencyHit.length > 0) return;
-
-            const muniByPoly = findMunicipalityFeatureContainingLngLat(municipalitiesFcRef.current, e.lngLat);
-            if (muniByPoly) {
-              selectMunicipalityFeature(muniByPoly);
-              return;
+            if (meshSelectionEnabled()) {
+              const muniByPoly = findMunicipalityFeatureContainingLngLat(
+                municipalitiesFcRef.current,
+                e.lngLat
+              );
+              if (muniByPoly) {
+                selectMunicipalityFeature(muniByPoly);
+                return;
+              }
             }
 
             const labelLayers = cityLabelLayerIds(m);
-            if (labelLayers.length === 0) return;
+            if (labelLayers.length === 0) {
+              dismissPointFocusCamera();
+              return;
+            }
             const clickBox: [mapboxgl.PointLike, mapboxgl.PointLike] = [
               [e.point.x - 5, e.point.y - 5],
               [e.point.x + 5, e.point.y + 5],
@@ -1497,13 +2633,22 @@ const MapComponent: React.FC<MapComponentProps> = ({
               const name = String(props.name ?? props.name_pt ?? props.nome ?? '');
               return name.trim().length > 0;
             });
-            if (!city) return;
+            if (!city) {
+              dismissPointFocusCamera();
+              return;
+            }
+
+            if (!meshSelectionEnabled()) {
+              dismissPointFocusCamera();
+              return;
+            }
 
             const geom = city.geometry;
             if (!geom || geom.type !== 'Point') return;
             const coords = geom.coordinates as [number, number];
             const cityName = String(city.properties?.name ?? city.properties?.name_pt ?? 'Cidade');
 
+            resetAgencyStoreFilterSyncRef.current();
             setSelectedCityLabel(cityName);
             setSelectedMunicipalityIbge(null);
 
@@ -1550,6 +2695,13 @@ const MapComponent: React.FC<MapComponentProps> = ({
           };
 
           const onMunicipalityPolygonClick = (e: mapboxgl.MapLayerMouseEvent) => {
+            if (!isMeshSelectionClick(e)) return;
+            if (tryOverlayMarkerClickFirst(e.point, e.lngLat)) return;
+            if (pointFocusCameraActiveRef.current) {
+              dismissPointFocusCamera();
+              return;
+            }
+            if (!meshSelectionEnabled()) return;
             const direct = (e.features?.[0] as GeoJSON.Feature | undefined) ?? null;
             const byPoint = findMunicipalityFeatureContainingLngLat(municipalitiesFcRef.current, e.lngLat);
             const feature = byPoint ?? direct;
@@ -1567,6 +2719,8 @@ const MapComponent: React.FC<MapComponentProps> = ({
           m.on('mouseleave', 'municipalities-context-fill', () => {
             m.getCanvas().style.cursor = '';
           });
+
+          applySelectionLayerTransitions(m);
         } catch (e) {
           console.warn('Seleção de cidade não aplicada:', e);
         }
@@ -1609,7 +2763,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
           filter: ['!', ['has', 'point_count']],
           layout: { visibility: 'none' },
           paint: circlePaintForStandard(activeBaseStyle, {
-            'circle-radius': 8,
+            'circle-radius': 10,
             'circle-color': '#b91c1c',
             'circle-stroke-width': 2,
             'circle-stroke-color': '#ffffff',
@@ -1647,6 +2801,10 @@ const MapComponent: React.FC<MapComponentProps> = ({
         const onStructClick = (e: mapboxgl.MapLayerMouseEvent) => {
           const f = e.features?.[0];
           if (!f || !f.properties || !map.current) return;
+          if (String(f.properties.kind ?? '') === 'agencia') {
+            handleAgencyFeatureClick(f as GeoJSON.Feature, e.lngLat);
+            return;
+          }
           const nome = String(f.properties.nome ?? '');
           const sub = String(f.properties.subtitulo ?? '');
           const det = String(f.properties.detalhe_agencias ?? '').trim();
@@ -1713,7 +2871,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
           type: 'circle',
           source: 'region-overlay-agencias',
           paint: circlePaintForStandard(activeBaseStyle, {
-            'circle-radius': 7,
+            'circle-radius': OVERLAY_AGENCIA_CIRCLE_RADIUS,
             'circle-color': '#b91c1c',
             'circle-stroke-width': 2,
             'circle-stroke-color': '#fff',
@@ -1726,7 +2884,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
           source: 'region-overlay-supervisores',
           paint: circlePaintForStandard(activeBaseStyle, {
             'circle-radius': 7,
-            'circle-color': '#7c3aed',
+            'circle-color': ['coalesce', ['to-color', ['get', 'seat_color']], '#7c3aed'],
             'circle-stroke-width': 2,
             'circle-stroke-color': '#fff',
             'circle-opacity': 0.95,
@@ -1737,7 +2895,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
           type: 'circle',
           source: 'region-overlay-lojas',
           paint: circlePaintForStandard(activeBaseStyle, {
-            'circle-radius': 7,
+            'circle-radius': OVERLAY_LOJA_CIRCLE_RADIUS,
             'circle-color': '#0d9488',
             'circle-stroke-width': 2,
             'circle-stroke-color': '#fff',
@@ -1745,38 +2903,53 @@ const MapComponent: React.FC<MapComponentProps> = ({
           }),
         });
 
-        const onRegionOverlayClick = (e: mapboxgl.MapLayerMouseEvent) => {
-          const f = e.features?.[0];
-          if (!f || !f.properties || !map.current) return;
+        const onRegionOverlayMarkerClick = (e: mapboxgl.MapLayerMouseEvent) => {
+          const f = e.features?.[0] as GeoJSON.Feature | undefined;
+          if (!f?.properties || !map.current) return;
           const info = readAgencyPopupInfoFromProperties(f.properties);
-          new mapboxgl.Popup({ maxWidth: '280px' })
-            .setLngLat(e.lngLat)
-            .setHTML(buildAgencyPopupHtml(info))
-            .addTo(map.current);
+          if (info.kind === 'loja') {
+            handleLojaFeatureClick(f, e.lngLat);
+            return;
+          }
+          if (info.kind !== 'agencia') {
+            void handleCommercialSeatClick(f, e.lngLat);
+            return;
+          }
+          pinOverlayMarkerSelection(f);
         };
-        regionOverlayClickHandlerRef.current = onRegionOverlayClick;
 
-        const regionOverlayLayerIds = [
-          'region-overlay-agencias-cir',
-          'region-overlay-supervisores-cir',
-          'region-overlay-lojas-cir',
-        ] as const;
+        const onRegionAgencyOverlayClick = (e: mapboxgl.MapLayerMouseEvent) => {
+          const f = (e.features?.[0] as GeoJSON.Feature | undefined) ?? pickAgencyFeatureAtPoint(m, e.point);
+          if (!f) return;
+          handleAgencyFeatureClick(f, e.lngLat);
+        };
 
-        for (const layerId of regionOverlayLayerIds) {
-          m.on('click', layerId, onRegionOverlayClick);
+        regionOverlayClickHandlerRef.current = onRegionOverlayMarkerClick;
+        regionOverlayAgencyClickHandlerRef.current = onRegionAgencyOverlayClick;
+
+        m.on('click', 'region-overlay-agencias-cir', onRegionAgencyOverlayClick);
+        m.on('mouseenter', 'region-overlay-agencias-cir', setStructPointer);
+        m.on('mouseleave', 'region-overlay-agencias-cir', clearStructPointer);
+
+        for (const layerId of ['region-overlay-supervisores-cir', 'region-overlay-lojas-cir'] as const) {
+          m.on('click', layerId, onRegionOverlayMarkerClick);
           m.on('mouseenter', layerId, setStructPointer);
           m.on('mouseleave', layerId, clearStructPointer);
         }
 
-        const hoverPopup = new mapboxgl.Popup({
-          closeButton: false,
-          closeOnClick: false,
-          offset: 12,
-          maxWidth: '320px',
-        });
+        for (const layerId of AGENCY_CLICK_LAYER_IDS) {
+          if (!m.getLayer(layerId)) continue;
+          try {
+            m.moveLayer(layerId);
+          } catch {
+            /* ignore */
+          }
+        }
+
+        const hoverPopup = new mapboxgl.Popup(agencyMapPopupHoverOptions);
         agencyHoverPopupRef.current = hoverPopup;
 
-        const onAgencyHoverEnter = (e: mapboxgl.MapLayerMouseEvent) => {
+        const onOverlayMarkerHoverEnter = (e: mapboxgl.MapLayerMouseEvent) => {
           const f = e.features?.[0];
           if (!f?.properties || !map.current || !f.geometry || f.geometry.type !== 'Point') return;
           const coordinates = [...(f.geometry.coordinates as [number, number])] as [number, number];
@@ -1785,41 +2958,46 @@ const MapComponent: React.FC<MapComponentProps> = ({
           map.current.getCanvas().style.cursor = 'pointer';
           hoverPopup
             .setLngLat(coordinates)
-            .setHTML(buildAgencyPopupHtml(info))
+            .setHTML(buildAgencyPopupHtml(info, { compact: true }))
             .addTo(map.current);
         };
 
-        const onAgencyHoverLeave = () => {
+        const onOverlayMarkerHoverLeave = () => {
           if (!map.current) return;
           map.current.getCanvas().style.cursor = '';
           hoverPopup.remove();
         };
 
-        agencyHoverEnterHandlerRef.current = onAgencyHoverEnter;
-        agencyHoverLeaveHandlerRef.current = onAgencyHoverLeave;
+        const onOverlayMarkerPointerDown = () => {
+          hoverPopup.remove();
+        };
 
-        for (const layerId of ['structure-agencies-point', 'region-overlay-agencias-cir'] as const) {
+        agencyHoverEnterHandlerRef.current = onOverlayMarkerHoverEnter;
+        agencyHoverLeaveHandlerRef.current = onOverlayMarkerHoverLeave;
+
+        const overlayHoverLayerIds = [
+          'structure-agencies-point',
+          'region-overlay-agencias-cir',
+          'region-overlay-lojas-cir',
+          'region-overlay-supervisores-cir',
+        ] as const;
+        overlayMarkerHoverLayersRef.current = overlayHoverLayerIds.filter((id) => Boolean(m.getLayer(id)));
+
+        for (const layerId of overlayHoverLayerIds) {
           if (!m.getLayer(layerId)) continue;
-          m.on('mouseenter', layerId, onAgencyHoverEnter);
-          m.on('mouseleave', layerId, onAgencyHoverLeave);
+          m.on('mouseenter', layerId, onOverlayMarkerHoverEnter);
+          m.on('mouseleave', layerId, onOverlayMarkerHoverLeave);
+          m.on('mousedown', layerId, onOverlayMarkerPointerDown);
         }
 
         setAgencyLayersVisibility(m, mapMarkersRef.current.some((x) => x.kind === 'agencia'));
 
-        const initial = mapMarkersRef.current;
-        if (initial.length > 0) {
-          const lngs = initial.map((x) => x.lngLat[0]);
-          const lats = initial.map((x) => x.lngLat[1]);
-          const b: mapboxgl.LngLatBoundsLike = [
-            [Math.min(...lngs), Math.min(...lats)],
-            [Math.max(...lngs), Math.max(...lats)],
-          ];
-          try {
-            m.fitBounds(b, { padding: 72, maxZoom: MAPBOX_CONFIG.zoom.max, duration: 400 });
-          } catch {
-            /* ignore */
-          }
+        try {
+          m.resize();
+        } catch {
+          /* ignore */
         }
+        fitMapToBrazilOverview(m, { duration: 0 });
       });
 
       map.current.on('error', (e) => {
@@ -1851,9 +3029,22 @@ const MapComponent: React.FC<MapComponentProps> = ({
 
     if (mapMarkers.length === 0) return;
 
+    const overviewZoom = MAPBOX_CONFIG.initialBrazilView.zoom;
+    if (m.getZoom() > overviewZoom + 0.35) {
+      return;
+    }
+
     const coords = mapMarkers.map((x) => x.lngLat);
     const lngs = coords.map((c) => c[0]);
     const lats = coords.map((c) => c[1]);
+    const lngSpan = Math.max(...lngs) - Math.min(...lngs);
+    const latSpan = Math.max(...lats) - Math.min(...lats);
+    /** Filtro nacional: encaixar o país com folga, não só a caixa dos pins. */
+    if (lngSpan > 20 && latSpan > 14) {
+      fitMapToBrazilOverview(m, { duration: 650 });
+      return;
+    }
+
     const b: mapboxgl.LngLatBoundsLike = [
       [Math.min(...lngs), Math.min(...lats)],
       [Math.max(...lngs), Math.max(...lats)],
@@ -1870,35 +3061,59 @@ const MapComponent: React.FC<MapComponentProps> = ({
     if (!mapContainer.current) return;
     startMapTransitionLoading();
     if (map.current) {
+      panCenterLimitCleanupRef.current?.();
+      panCenterLimitCleanupRef.current = null;
+      mapPointerGestureGuardRef.current?.detach();
+      mapPointerGestureGuardRef.current = null;
       map.current.remove();
       map.current = null;
     }
     initializeMap();
-  }, [activeBaseStyle]);
+  }, [activeBaseStyle, activeStandardTheme]);
 
   useEffect(() => {
     const m = map.current;
     if (!m?.isStyleLoaded()) return;
-    setAgencyLayersVisibility(m, mapMarkers.some((x) => x.kind === 'agencia'));
+    const showStructureAgencies =
+      !storeFilterCodAg && mapMarkers.some((x) => x.kind === 'agencia');
+    setAgencyLayersVisibility(m, showStructureAgencies);
     try {
       m.resize();
     } catch {
       /* ignore */
     }
-  }, [mapMarkers]);
+  }, [mapMarkers, storeFilterCodAg, mapReadyVersion]);
+
+  useEffect(() => {
+    if (!overlaySupervisores) return;
+    setLoadingSeatPoints(true);
+    void fetchCommercialSeatPoints({ hierarchy: hierarchyFilter })
+      .then((points) => {
+        setSqlSeatPoints(points);
+      })
+      .catch((error) => {
+        console.error('Falha ao atualizar sedes da estrutura:', error);
+      })
+      .finally(() => {
+        setLoadingSeatPoints(false);
+      });
+  }, [overlaySupervisores, hierarchyFilter]);
 
   useEffect(() => {
     const m = map.current;
     if (!m) return;
-    if (!overlayAgencias && !overlayLojas) return;
+    if (!overlayAgencias && !overlayLojas) {
+      lastViewportOverlayBboxKeyRef.current = null;
+      return;
+    }
 
     const scheduleRefresh = () => {
       if (refreshTimerRef.current != null) {
         window.clearTimeout(refreshTimerRef.current);
       }
       refreshTimerRef.current = window.setTimeout(() => {
-        void refreshOverlayDataForViewport();
-      }, 220);
+        void refreshOverlayDataForViewport({ silent: true });
+      }, 420);
     };
 
     m.on('moveend', scheduleRefresh);
@@ -1910,11 +3125,6 @@ const MapComponent: React.FC<MapComponentProps> = ({
       }
     };
   }, [overlayAgencias, overlayLojas, mapReadyVersion, hierarchyFilter]);
-
-  useEffect(() => {
-    if (!overlayAgencias) return;
-    void refreshOverlayDataForViewport();
-  }, [overlayAgencias, hierarchyFilter]);
 
   useEffect(() => {
     const m = map.current;
@@ -1946,6 +3156,39 @@ const MapComponent: React.FC<MapComponentProps> = ({
     filteredRegionSupervisores,
     filteredRegionLojas,
   ]);
+
+  useEffect(() => {
+    const m = map.current;
+    if (!m?.isStyleLoaded() || !m.getLayer('region-overlay-agencias-cir')) return;
+
+    try {
+      if (overlayAgencias && storeFilterCodAg) {
+        m.setPaintProperty('region-overlay-agencias-cir', 'circle-opacity', 0.98);
+        m.setPaintProperty('region-overlay-agencias-cir', 'circle-radius', OVERLAY_AGENCIA_CIRCLE_RADIUS_HIGHLIGHT);
+        m.setPaintProperty('region-overlay-agencias-cir', 'circle-stroke-width', 3);
+        m.setPaintProperty('region-overlay-agencias-cir', 'circle-stroke-opacity', 1);
+      } else {
+        m.setPaintProperty('region-overlay-agencias-cir', 'circle-opacity', 0.95);
+        m.setPaintProperty('region-overlay-agencias-cir', 'circle-radius', OVERLAY_AGENCIA_CIRCLE_RADIUS);
+        m.setPaintProperty('region-overlay-agencias-cir', 'circle-stroke-width', 2);
+        m.setPaintProperty('region-overlay-agencias-cir', 'circle-stroke-opacity', 1);
+      }
+
+      if (m.getLayer('region-overlay-lojas-cir')) {
+        if (overlayLojas && storeFilterCodAg) {
+          m.setPaintProperty('region-overlay-lojas-cir', 'circle-opacity', 0.98);
+          m.setPaintProperty('region-overlay-lojas-cir', 'circle-radius', OVERLAY_LOJA_CIRCLE_RADIUS_HIGHLIGHT);
+          m.setPaintProperty('region-overlay-lojas-cir', 'circle-stroke-width', 2);
+        } else {
+          m.setPaintProperty('region-overlay-lojas-cir', 'circle-opacity', 0.95);
+          m.setPaintProperty('region-overlay-lojas-cir', 'circle-radius', OVERLAY_LOJA_CIRCLE_RADIUS);
+          m.setPaintProperty('region-overlay-lojas-cir', 'circle-stroke-width', 2);
+        }
+      }
+    } catch {
+      /* estilo recarregando */
+    }
+  }, [overlayAgencias, overlayLojas, storeFilterCodAg, mapReadyVersion, activeBaseStyle]);
 
   useEffect(() => {
     const m = map.current;
@@ -1988,7 +3231,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
     const restoreStateChoroplethPaint = () => {
       if (!m.getLayer('br-states-choropleth')) return;
       try {
-        m.setPaintProperty('br-states-choropleth', 'fill-color', '#93c5fd');
+        m.setPaintProperty('br-states-choropleth', 'fill-color', '#bfdbfe');
         m.setPaintProperty('br-states-choropleth', 'fill-opacity', 0);
         if (stdBasemap) {
           m.setPaintProperty('br-states-choropleth', 'fill-emissive-strength', 1);
@@ -2102,7 +3345,6 @@ const MapComponent: React.FC<MapComponentProps> = ({
     selectedStateFeature,
     stateSearchOptions,
     municipalitySearchOptions,
-    selectedMunicipalityFeature,
     productivityScope,
     municipalityProductivityRows,
     municipalitiesGeoVersion,
@@ -2136,7 +3378,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
         m.setPaintProperty('selected-municipality-line', 'line-opacity', 0.55);
         m.setPaintProperty('selected-municipality-line', 'line-color', '#0f172a');
       } else {
-        m.setPaintProperty('selected-municipality-fill', 'fill-opacity', 0.12);
+        m.setPaintProperty('selected-municipality-fill', 'fill-opacity', 0.08);
         m.setPaintProperty('selected-municipality-line', 'line-width', 2.2);
         m.setPaintProperty('selected-municipality-line', 'line-opacity', 0.85);
         m.setPaintProperty('selected-municipality-line', 'line-color', '#0284c7');
@@ -2169,21 +3411,17 @@ const MapComponent: React.FC<MapComponentProps> = ({
       if (m && municipalityClickHandlerRef.current) {
         m.off('click', 'municipalities-context-fill', municipalityClickHandlerRef.current);
       }
+      if (m && regionOverlayAgencyClickHandlerRef.current) {
+        m.off('click', 'region-overlay-agencias-cir', regionOverlayAgencyClickHandlerRef.current);
+      }
       if (m && regionOverlayClickHandlerRef.current) {
         const h = regionOverlayClickHandlerRef.current;
-        for (const id of [
-          'region-overlay-agencias-sym',
-          'region-overlay-supervisores-sym',
-          'region-overlay-lojas-sym',
-          'region-overlay-agencias-cir',
-          'region-overlay-supervisores-cir',
-          'region-overlay-lojas-cir',
-        ] as const) {
+        for (const id of ['region-overlay-supervisores-cir', 'region-overlay-lojas-cir'] as const) {
           m.off('click', id, h);
         }
       }
       if (m && agencyHoverEnterHandlerRef.current && agencyHoverLeaveHandlerRef.current) {
-        for (const id of ['structure-agencies-point', 'region-overlay-agencias-cir'] as const) {
+        for (const id of overlayMarkerHoverLayersRef.current) {
           if (m.getLayer(id)) {
             m.off('mouseenter', id, agencyHoverEnterHandlerRef.current);
             m.off('mouseleave', id, agencyHoverLeaveHandlerRef.current);
@@ -2192,6 +3430,10 @@ const MapComponent: React.FC<MapComponentProps> = ({
       }
       agencyHoverPopupRef.current?.remove();
       agencyHoverPopupRef.current = null;
+      mapPointerGestureGuardRef.current?.detach();
+      mapPointerGestureGuardRef.current = null;
+      panCenterLimitCleanupRef.current?.();
+      panCenterLimitCleanupRef.current = null;
       map.current?.remove();
       map.current = null;
       if (mapTransitionTimerRef.current != null) {
@@ -2219,6 +3461,32 @@ const MapComponent: React.FC<MapComponentProps> = ({
           </div>
         </div>
       )}
+      {overlaySupervisores && seatLegendEntries.length > 0 && (
+        <div className="pointer-events-none absolute bottom-3 right-3 z-20 rounded-lg border border-slate-200/60 bg-white/65 px-2.5 py-2 text-[10px] text-slate-600 backdrop-blur-sm">
+          <p className="mb-1 font-medium uppercase tracking-wide text-slate-500">Paleta por gerência</p>
+          <div className="mb-1 grid grid-cols-[minmax(0,1fr)_20px_20px_20px] items-center gap-1.5 text-[9px] uppercase tracking-wide text-slate-400">
+            <span>Gerência de Área</span>
+            <span className="text-center">GG</span>
+            <span className="text-center">GC3</span>
+            <span className="text-center">GC</span>
+          </div>
+          <div className="space-y-1.5">
+            {seatLegendEntries.map((entry) => (
+              <div key={entry.ga} className="grid grid-cols-[minmax(0,1fr)_20px_20px_20px] items-center gap-1.5">
+                <span className="truncate text-[10px] text-slate-500" title={`${entry.gaNome} (${entry.ga})`}>
+                  {entry.gaNome}
+                </span>
+                <span
+                  className="mx-auto inline-flex h-2.5 w-2.5 rounded-full"
+                  style={{ backgroundColor: entry.gerente }}
+                />
+                <span className="mx-auto inline-flex h-2.5 w-2.5 rounded-full" style={{ backgroundColor: entry.coord }} />
+                <span className="mx-auto inline-flex h-2.5 w-2.5 rounded-full" style={{ backgroundColor: entry.sup }} />
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
       <div className="absolute top-4 left-4 z-20 w-[min(95vw,380px)]">
         <div>
           <div className="relative h-10 rounded-full border border-slate-200/90 bg-white/95 shadow-md shadow-slate-900/5 backdrop-blur-sm">
@@ -2238,9 +3506,13 @@ const MapComponent: React.FC<MapComponentProps> = ({
             />
           </div>
           {searchOpen && searchQuery.trim().length >= 2 && (
-            <div className="mt-2 max-h-72 overflow-auto rounded-xl border border-slate-200/90 bg-white/98 p-1 shadow-md shadow-slate-900/5">
+            <div
+              className="relative z-30 mt-2 max-h-72 overflow-auto rounded-xl border border-slate-200 bg-white p-1.5 shadow-lg shadow-slate-900/12 ring-1 ring-slate-900/5"
+              role="listbox"
+              aria-label="Resultados da busca"
+            >
               {visibleSearchOptions.length === 0 ? (
-                <p className="px-2 py-2 text-xs text-muted-foreground">
+                <p className="px-3 py-2.5 text-xs text-slate-500">
                   Nenhum resultado. Tente outro nome.
                 </p>
               ) : (
@@ -2248,12 +3520,15 @@ const MapComponent: React.FC<MapComponentProps> = ({
                   <button
                     key={option.id}
                     type="button"
+                    role="option"
                     onMouseDown={(e) => e.preventDefault()}
                     onClick={() => handleSearchSelect(option)}
-                    className="flex w-full items-center justify-between rounded-lg px-2 py-2 text-left hover:bg-slate-50"
+                    className="flex w-full items-center justify-between gap-2 rounded-lg px-3 py-2.5 text-left transition-colors hover:bg-slate-100 active:bg-slate-200/80"
                   >
-                    <span className="text-sm text-slate-800">{option.label}</span>
-                    <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-slate-600">
+                    <span className="min-w-0 truncate text-sm font-medium text-slate-800">
+                      {option.label}
+                    </span>
+                    <span className="shrink-0 rounded-md border border-slate-200 bg-slate-50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-600">
                       {option.kind}
                     </span>
                   </button>
@@ -2268,48 +3543,135 @@ const MapComponent: React.FC<MapComponentProps> = ({
               aria-label="Mostrar agências no mapa"
               aria-pressed={overlayAgencias}
               onClick={handleToggleAgencias}
-              className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full border text-[10px] font-bold shadow-sm backdrop-blur-sm transition-colors ${
+              disabled={loadingAgencyPoints}
+              className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full border text-[10px] font-bold shadow-sm backdrop-blur-sm transition-colors disabled:opacity-60 ${
                 overlayAgencias
                   ? 'border-slate-600 bg-slate-700 text-white shadow-slate-900/15'
                   : 'border-slate-200/90 bg-white/95 text-slate-600 hover:border-slate-300 hover:bg-slate-50'
               }`}
             >
-              AG
+              {loadingAgencyPoints ? '…' : 'AG'}
             </button>
-            <button
-              type="button"
-              title="Mostrar supervisores no mapa"
-              aria-label="Mostrar supervisores no mapa"
-              aria-pressed={overlaySupervisores}
-              onClick={() => setOverlaySupervisores((v) => !v)}
-              className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full border shadow-sm backdrop-blur-sm transition-colors ${
-                overlaySupervisores
-                  ? 'border-slate-600 bg-slate-700 text-white shadow-slate-900/15'
-                  : 'border-slate-200/90 bg-white/95 text-slate-600 hover:border-slate-300 hover:bg-slate-50'
-              }`}
-            >
-              <User className="h-4 w-4" />
-            </button>
-            <button
-              type="button"
-              title="Mostrar lojas no mapa"
-              aria-label="Mostrar lojas no mapa"
-              aria-pressed={overlayLojas}
-              onClick={handleToggleLojas}
-              className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full border shadow-sm backdrop-blur-sm transition-colors ${
-                overlayLojas
-                  ? 'border-slate-600 bg-slate-700 text-white shadow-slate-900/15'
-                  : 'border-slate-200/90 bg-white/95 text-slate-600 hover:border-slate-300 hover:bg-slate-50'
-              }`}
-            >
-              <Store className="h-4 w-4" />
-            </button>
+            <div ref={commercialTeamPickerRef} className="relative">
+              <button
+                type="button"
+                title="Mostrar Equipe Comercial"
+                aria-label="Mostrar Equipe Comercial"
+                aria-expanded={commercialTeamMenuOpen}
+                aria-pressed={overlaySupervisores}
+                disabled={loadingSeatPoints}
+                onClick={handleToggleCommercialTeamOverlay}
+                className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full border shadow-sm backdrop-blur-sm transition-colors disabled:opacity-60 ${
+                  overlaySupervisores
+                    ? 'border-slate-600 bg-slate-700 text-white shadow-slate-900/15'
+                    : 'border-slate-200/90 bg-white/95 text-slate-600 hover:border-slate-300 hover:bg-slate-50'
+                }`}
+              >
+                {loadingSeatPoints ? <span className="text-xs">…</span> : <User className="h-4 w-4" />}
+              </button>
+              {overlaySupervisores && commercialTeamMenuOpen && (
+                <div className="absolute left-0 top-[calc(100%+0.4rem)] z-30 min-w-[220px] rounded-xl border border-slate-200 bg-white p-2 shadow-lg shadow-slate-900/10">
+                  <p className="px-1 pb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                    Mostrar no mapa
+                  </p>
+                  <div className="space-y-1">
+                    {COMMERCIAL_TEAM_LEVEL_OPTIONS.map((option) => (
+                      <button
+                        key={option.id}
+                        type="button"
+                        onClick={() => handleToggleCommercialLevel(option.id)}
+                        className={`flex w-full items-center justify-between rounded-lg px-2 py-1.5 text-left text-xs transition-colors ${
+                          commercialTeamLevelVisibility[option.id]
+                            ? 'bg-slate-100 text-slate-900'
+                            : 'text-slate-600 hover:bg-slate-50'
+                        }`}
+                      >
+                        <span>{option.label}</span>
+                        <span
+                          className={`h-4 w-4 rounded border text-[10px] leading-[14px] text-center ${
+                            commercialTeamLevelVisibility[option.id]
+                              ? 'border-slate-700 bg-slate-700 text-white'
+                              : 'border-slate-300 bg-white text-transparent'
+                          }`}
+                        >
+                          ✓
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                  <p className="pt-2 text-[11px] text-slate-500">
+                    Selecione pelo menos um nível.
+                  </p>
+                </div>
+              )}
+            </div>
+            <div ref={storeSegmentPickerRef} className="relative">
+              <button
+                type="button"
+                title="Mostrar lojas no mapa"
+                aria-label="Mostrar lojas no mapa"
+                aria-expanded={storeSegmentMenuOpen}
+                aria-pressed={overlayLojas}
+                disabled={loadingStorePoints}
+                onClick={handleToggleLojas}
+                className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full border shadow-sm backdrop-blur-sm transition-colors disabled:opacity-60 ${
+                  overlayLojas
+                    ? 'border-slate-600 bg-slate-700 text-white shadow-slate-900/15'
+                    : 'border-slate-200/90 bg-white/95 text-slate-600 hover:border-slate-300 hover:bg-slate-50'
+                }`}
+              >
+                <Store className="h-4 w-4" />
+              </button>
+              {overlayLojas && storeSegmentMenuOpen && (
+                <div className="absolute left-0 top-[calc(100%+0.4rem)] z-30 min-w-[220px] rounded-xl border border-slate-200 bg-white p-2 shadow-lg shadow-slate-900/10">
+                  <p className="px-1 pb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                    Mostrar no mapa
+                  </p>
+                  <div className="space-y-1">
+                    {STORE_SEGMENT_OPTIONS.map((option) => (
+                      <button
+                        key={option.id}
+                        type="button"
+                        onClick={() => handleToggleStoreSegment(option.id)}
+                        className={`flex w-full items-center justify-between rounded-lg px-2 py-1.5 text-left text-xs transition-colors ${
+                          storeSegmentVisibility[option.id]
+                            ? 'bg-slate-100 text-slate-900'
+                            : 'text-slate-600 hover:bg-slate-50'
+                        }`}
+                      >
+                        <span>{option.label}</span>
+                        <span
+                          className={`h-4 w-4 rounded border text-[10px] leading-[14px] text-center ${
+                            storeSegmentVisibility[option.id]
+                              ? 'border-slate-700 bg-slate-700 text-white'
+                              : 'border-slate-300 bg-white text-transparent'
+                          }`}
+                        >
+                          ✓
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                  <p className="pt-2 text-[11px] text-slate-500">
+                    Selecione pelo menos um tipo.
+                  </p>
+                </div>
+              )}
+            </div>
           </div>
+          <MapOverlayMarkerInfoPanel
+            storeFilterCodAg={storeFilterCodAg}
+            storeFilterAgencyName={storeFilterAgencyName}
+            overlayMarkerSelection={overlayMarkerSelection}
+            storeCountOnMap={sqlStorePoints.length}
+            overlayLojasActive={overlayLojas}
+            onDismiss={dismissMapMarkerDock}
+          />
         </div>
       </div>
       <div
         className={`absolute top-4 z-20 overflow-visible transition-[right] duration-500 ease-out ${
-          hasStatePanel ? 'right-[calc(min(96vw,480px)+0.75rem)]' : 'right-4'
+          statePanelExpanded ? 'right-[calc(min(96vw,480px)+0.75rem)]' : 'right-4'
         }`}
       >
         <div className="rounded-3xl border border-slate-200/90 bg-white/95 p-2 shadow-lg shadow-slate-900/10 backdrop-blur-sm">
@@ -2329,10 +3691,10 @@ const MapComponent: React.FC<MapComponentProps> = ({
                 aria-label="Estilo do mapa"
                 onMouseEnter={openLayoutFlyoutHover}
                 onMouseLeave={scheduleLayoutHoverEnd}
-                className={`absolute right-full top-1/2 z-10 mr-1.5 flex w-max -translate-y-1/2 flex-row items-center gap-0.5 rounded-2xl border border-slate-200/90 bg-white/95 p-0.5 shadow-md shadow-slate-900/10 backdrop-blur-sm transition duration-200 ease-out ${
+                className={`absolute right-full top-1/2 z-10 mr-4 flex w-max -translate-y-1/2 flex-row items-center gap-1.5 rounded-2xl border border-slate-200/90 bg-white/95 p-1.5 shadow-lg shadow-slate-900/10 backdrop-blur-sm transition duration-200 ease-out ${
                   showLayoutFlyout
                     ? 'pointer-events-auto translate-x-0 opacity-100'
-                    : 'pointer-events-none -translate-x-1 opacity-0'
+                    : 'pointer-events-none -translate-x-3 opacity-0'
                 }`}
               >
                 {MAP_LAYOUT_OPTIONS.map((opt) => {
@@ -2351,18 +3713,33 @@ const MapComponent: React.FC<MapComponentProps> = ({
                         setMapLayoutFlyoutHover(false);
                         clearLayoutHoverTimer();
                       }}
-                      className="flex h-10 w-10 flex-col items-center justify-center gap-px rounded-md p-0 transition-colors hover:bg-slate-100/90 focus:outline-none focus-visible:bg-slate-100/90"
+                      className="group flex flex-col items-center gap-1 rounded-lg p-1 transition-colors hover:bg-slate-100/90 focus:outline-none focus-visible:bg-slate-100/90"
                     >
                       <span className="sr-only">{opt.label}</span>
                       <span
-                        className={`h-6 w-6 shrink-0 rounded-full shadow-inner ${opt.previewClass} ${
+                        className={`relative block h-9 w-9 shrink-0 overflow-hidden rounded-full shadow-inner transition ${
                           selected
-                            ? 'ring-2 ring-blue-600 ring-offset-1 ring-offset-white'
-                            : 'ring-1 ring-slate-200/70'
+                            ? 'ring-2 ring-blue-600 ring-offset-2 ring-offset-white'
+                            : 'ring-1 ring-slate-200/80 group-hover:ring-slate-300'
                         }`}
                         aria-hidden
-                      />
-                      <span className="max-w-[2.4rem] truncate text-center text-[7px] font-semibold leading-tight text-slate-600">
+                      >
+                        <img
+                          src={opt.previewImage}
+                          alt=""
+                          loading="lazy"
+                          draggable={false}
+                          className="h-full w-full rounded-full object-cover"
+                        />
+                        {opt.tintClass ? (
+                          <span className={`pointer-events-none absolute inset-0 rounded-full ${opt.tintClass}`} />
+                        ) : null}
+                      </span>
+                      <span
+                        className={`max-w-[3rem] truncate text-center text-[9px] font-semibold leading-tight ${
+                          selected ? 'text-blue-700' : 'text-slate-600'
+                        }`}
+                      >
                         {opt.caption}
                       </span>
                     </button>
@@ -2382,9 +3759,11 @@ const MapComponent: React.FC<MapComponentProps> = ({
                 className={`h-10 w-10 rounded-full border shadow-sm hover:text-slate-900 ${
                   mapStyleMode === 'standardWarm'
                     ? 'border-amber-300/90 bg-amber-50 text-amber-950 hover:bg-amber-100/90'
-                    : mapStyleMode === 'satellite'
-                      ? 'border-slate-600 bg-slate-700 text-white shadow-slate-900/15 hover:bg-slate-600'
-                      : 'border-slate-200/90 bg-white text-slate-600 hover:bg-slate-50'
+                    : mapStyleMode === 'standardCool'
+                      ? 'border-cyan-300/90 bg-cyan-50 text-cyan-950 hover:bg-cyan-100/90'
+                      : mapStyleMode === 'satellite' || mapStyleMode === 'dark'
+                        ? 'border-slate-600 bg-slate-700 text-white shadow-slate-900/15 hover:bg-slate-600'
+                        : 'border-slate-200/90 bg-white text-slate-600 hover:bg-slate-50'
                 }`}
               >
                 <Layers className="h-4 w-4" />
@@ -2421,11 +3800,21 @@ const MapComponent: React.FC<MapComponentProps> = ({
             <Button
               type="button"
               size="icon"
+              onClick={handleResetMapView2d}
+              title="Voltar à visão 2D (mapa de cima)"
+              aria-label="Voltar à visão 2D do mapa"
+              className="h-10 w-10 rounded-full border border-slate-200/90 bg-white text-slate-600 shadow-sm hover:bg-slate-50 hover:text-slate-900"
+            >
+              <span className="text-[10px] font-bold leading-none tracking-tight">2D</span>
+            </Button>
+            <Button
+              type="button"
+              size="icon"
               onClick={() => setMunicipalityMeshVisible((v) => !v)}
               aria-pressed={municipalityMeshVisible}
               title={
                 municipalityMeshVisible
-                  ? 'Ocultar malha de municípios (mantém zoom e seleção)'
+                  ? 'Ocultar malha de municípios'
                   : 'Mostrar malha de municípios'
               }
               aria-label={
@@ -2448,7 +3837,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
               disabled={!hasMapSelection}
               title={
                 hasMapSelection
-                  ? 'Limpar seleção (estado/município) e voltar a visão do Brasil'
+                  ? 'Limpar seleção'
                   : 'Nada selecionado no mapa'
               }
               aria-label="Limpar seleção do mapa"
@@ -2480,10 +3869,13 @@ const MapComponent: React.FC<MapComponentProps> = ({
           metrics={expressoMetrics}
           onClose={clearSelectedState}
           onOpenProductivitySheet={openProductivitySheet}
+          minimized={statePanelMinimized}
+          onMinimize={() => setStatePanelMinimized(true)}
+          onRestore={() => setStatePanelMinimized(false)}
         />
       )}
       {(() => {
-        const productivityDockInset = hasStatePanel ? 'left-0 right-[min(96vw,480px)]' : 'left-0 right-0';
+        const productivityDockInset = statePanelExpanded ? 'left-0 right-[min(96vw,480px)]' : 'left-0 right-0';
         const showChoroplethLegend =
           municipalityChoroplethEnabled && choroplethLegend != null && selectedBottomProduct != null;
 
@@ -2536,7 +3928,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
                     if (scope === 'municipio' && !selectedStateFeature) return;
                     setProductivityScope(scope);
                   }}
-                  rightInsetClass={hasStatePanel ? 'right-[min(96vw,480px)]' : 'right-0'}
+                  rightInsetClass={statePanelExpanded ? 'right-[min(96vw,480px)]' : 'right-0'}
                   onClose={() => {
                     setProductivitySheetOpen(false);
                     setSelectedBottomProduct(null);

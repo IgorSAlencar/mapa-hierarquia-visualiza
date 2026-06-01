@@ -1,4 +1,4 @@
-export type SqlMapPointKind = 'agencia' | 'loja';
+export type SqlMapPointKind = 'agencia' | 'loja' | 'supervisor';
 import type { SqlHierarchyFilter } from '@/data/commercialStructureMock';
 
 export interface SqlMapPoint {
@@ -8,6 +8,10 @@ export interface SqlMapPoint {
   lngLat: [number, number];
   codAg?: string | null;
   enderecoFormatado?: string | null;
+  commercialLevel?: 'supervisor' | 'coordenador' | 'gerente_area' | null;
+  chaveGerenciaArea?: number | null;
+  chaveEntidade?: number | null;
+  seatColor?: string | null;
 }
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? '';
@@ -23,6 +27,8 @@ interface FetchPointsOptions {
   bbox?: BboxQuery | null;
   limit?: number;
   hierarchy?: SqlHierarchyFilter | null;
+  /** Filtra lojas vinculadas à agência (COD_AG em COORDENADAS_LOJAS). */
+  codAg?: string | null;
 }
 
 function buildQueryParams(options: FetchPointsOptions = {}) {
@@ -36,8 +42,17 @@ function buildQueryParams(options: FetchPointsOptions = {}) {
   if (options.limit && Number.isFinite(options.limit)) {
     params.set('limit', String(Math.max(1, Math.round(options.limit))));
   }
+  const codAgRaw = options.codAg != null ? String(options.codAg).trim() : '';
+  const codAgNum = Number(codAgRaw.replace(',', '.'));
+  const codAg =
+    codAgRaw && Number.isFinite(codAgNum) ? String(Math.trunc(codAgNum)) : codAgRaw;
+  if (codAg) params.set('codAg', codAg);
+  // Evita que filtros de hierarquia (codAg da escada) sobrescrevam o codAg de lojas.
   if (options.hierarchy) {
     const entries: Array<[keyof SqlHierarchyFilter, string]> = [
+      ['chaveGerenciaArea', 'chaveGerenciaArea'],
+      ['chaveCoordenacao', 'chaveCoordenacao'],
+      ['chaveSupervisao', 'chaveSupervisao'],
       ['direReg', 'direReg'],
       ['codGerReg', 'codGerReg'],
       ['codGerArea', 'codGerArea'],
@@ -48,6 +63,7 @@ function buildQueryParams(options: FetchPointsOptions = {}) {
     for (const [key, paramName] of entries) {
       const value = options.hierarchy[key];
       if (value == null || !Number.isFinite(value)) continue;
+      if (paramName === 'codAg' && codAg) continue;
       params.set(paramName, String(Math.round(value)));
     }
   }
@@ -81,4 +97,8 @@ export function fetchAgencyPoints(options?: FetchPointsOptions) {
 
 export function fetchStorePoints(options?: FetchPointsOptions) {
   return fetchPoints('/api/map/lojas', options);
+}
+
+export function fetchCommercialSeatPoints(options?: FetchPointsOptions) {
+  return fetchPoints('/api/map/sedes', options);
 }
