@@ -30,8 +30,8 @@ const CommercialStructureFilters: React.FC<CommercialStructureFiltersProps> = ({
   onFiltersChange,
 }) => {
   const [gerenciasAreaSql, setGerenciasAreaSql] = useState<CommercialStructureItem[]>([]);
-  const [coordenacoesSql, setCoordenacoesSql] = useState<CommercialStructureItem[]>([]);
-  const [supervisoesSql, setSupervisoesSql] = useState<CommercialStructureItem[]>([]);
+  const [coordenacoesAllSql, setCoordenacoesAllSql] = useState<CommercialStructureItem[]>([]);
+  const [supervisoesAllSql, setSupervisoesAllSql] = useState<CommercialStructureItem[]>([]);
   const [loadingGerencias, setLoadingGerencias] = useState(false);
   const [loadingCoordenacoes, setLoadingCoordenacoes] = useState(false);
   const [loadingSupervisoes, setLoadingSupervisoes] = useState(false);
@@ -68,22 +68,17 @@ const CommercialStructureFilters: React.FC<CommercialStructureFiltersProps> = ({
   }, []);
 
   useEffect(() => {
-    const chaveGerenciaArea = Number(filters.chaveGerenciaArea);
-    if (!Number.isFinite(chaveGerenciaArea) || chaveGerenciaArea <= 0) {
-      setCoordenacoesSql([]);
-      return;
-    }
     let active = true;
     setLoadingCoordenacoes(true);
-    void fetchCoordenacoes(chaveGerenciaArea)
+    void fetchCoordenacoes()
       .then((items) => {
         if (!active) return;
-        setCoordenacoesSql(items);
+        setCoordenacoesAllSql(items);
       })
       .catch((error) => {
         console.warn('Falha ao carregar coordenações da API.', error);
         if (!active) return;
-        setCoordenacoesSql([]);
+        setCoordenacoesAllSql([]);
       })
       .finally(() => {
         if (active) setLoadingCoordenacoes(false);
@@ -91,25 +86,20 @@ const CommercialStructureFilters: React.FC<CommercialStructureFiltersProps> = ({
     return () => {
       active = false;
     };
-  }, [filters.chaveGerenciaArea]);
+  }, []);
 
   useEffect(() => {
-    const chaveCoordenacao = Number(filters.chaveCoordenacao);
-    if (!Number.isFinite(chaveCoordenacao) || chaveCoordenacao <= 0) {
-      setSupervisoesSql([]);
-      return;
-    }
     let active = true;
     setLoadingSupervisoes(true);
-    void fetchSupervisoes(chaveCoordenacao)
+    void fetchSupervisoes()
       .then((items) => {
         if (!active) return;
-        setSupervisoesSql(items);
+        setSupervisoesAllSql(items);
       })
       .catch((error) => {
         console.warn('Falha ao carregar supervisões da API.', error);
         if (!active) return;
-        setSupervisoesSql([]);
+        setSupervisoesAllSql([]);
       })
       .finally(() => {
         if (active) setLoadingSupervisoes(false);
@@ -117,7 +107,86 @@ const CommercialStructureFilters: React.FC<CommercialStructureFiltersProps> = ({
     return () => {
       active = false;
     };
-  }, [filters.chaveCoordenacao]);
+  }, []);
+
+  const chaveGerenciaAreaNum = Number(filters.chaveGerenciaArea);
+  const chaveCoordenacaoNum = Number(filters.chaveCoordenacao);
+
+  const coordenacoesOptions = useMemo(() => {
+    if (Number.isFinite(chaveGerenciaAreaNum) && chaveGerenciaAreaNum > 0) {
+      return coordenacoesAllSql.filter((item) => item.chaveGerenciaArea === Math.trunc(chaveGerenciaAreaNum));
+    }
+    return coordenacoesAllSql;
+  }, [coordenacoesAllSql, chaveGerenciaAreaNum]);
+
+  const supervisoesOptions = useMemo(() => {
+    if (Number.isFinite(chaveCoordenacaoNum) && chaveCoordenacaoNum > 0) {
+      return supervisoesAllSql.filter((item) => item.chaveCoordenacao === Math.trunc(chaveCoordenacaoNum));
+    }
+    return supervisoesAllSql;
+  }, [supervisoesAllSql, chaveCoordenacaoNum]);
+
+  const handleGerenciaAreaChange = (v: string) => {
+    if (v === ALL) {
+      onFiltersChange({
+        ...filters,
+        chaveGerenciaArea: '',
+        chaveCoordenacao: '',
+        chaveSupervisao: '',
+      });
+      return;
+    }
+    onFiltersChange({
+      ...filters,
+      chaveGerenciaArea: v,
+      chaveCoordenacao: '',
+      chaveSupervisao: '',
+    });
+  };
+
+  const handleCoordenacaoChange = (v: string) => {
+    if (v === ALL) {
+      onFiltersChange({
+        ...filters,
+        chaveCoordenacao: '',
+        chaveSupervisao: '',
+      });
+      return;
+    }
+    const item = coordenacoesAllSql.find((row) => String(row.chave) === v);
+    onFiltersChange({
+      ...filters,
+      chaveCoordenacao: v,
+      chaveSupervisao: '',
+      chaveGerenciaArea:
+        item?.chaveGerenciaArea != null && item.chaveGerenciaArea > 0
+          ? String(item.chaveGerenciaArea)
+          : filters.chaveGerenciaArea,
+    });
+  };
+
+  const handleSupervisaoChange = (v: string) => {
+    if (v === ALL) {
+      onFiltersChange({
+        ...filters,
+        chaveSupervisao: '',
+      });
+      return;
+    }
+    const item = supervisoesAllSql.find((row) => String(row.chave) === v);
+    onFiltersChange({
+      ...filters,
+      chaveSupervisao: v,
+      chaveCoordenacao:
+        item?.chaveCoordenacao != null && item.chaveCoordenacao > 0
+          ? String(item.chaveCoordenacao)
+          : filters.chaveCoordenacao,
+      chaveGerenciaArea:
+        item?.chaveGerenciaArea != null && item.chaveGerenciaArea > 0
+          ? String(item.chaveGerenciaArea)
+          : filters.chaveGerenciaArea,
+    });
+  };
 
   return (
     <div className="space-y-4">
@@ -127,8 +196,8 @@ const CommercialStructureFilters: React.FC<CommercialStructureFiltersProps> = ({
           Estrutura comercial
         </h2>
         <p className="text-sm text-muted-foreground">
-          Filtre por nível hierárquico para ver no mapa os responsáveis e as agências ligadas a
-          essa escada (dados modelo).
+          Filtre por nível hierárquico. Coordenação e supervisão podem ser escolhidas diretamente; ao
+          selecionar um supervisor, os níveis acima são preenchidos automaticamente.
         </p>
       </div>
 
@@ -158,16 +227,9 @@ const CommercialStructureFilters: React.FC<CommercialStructureFiltersProps> = ({
         />
 
         <Field
-          label="Gerente de Área"
+          label="Gerente de Gestão"
           value={filters.chaveGerenciaArea || ALL}
-          onChange={(v) =>
-            onFiltersChange({
-              ...filters,
-              chaveGerenciaArea: v === ALL ? '' : v,
-              chaveCoordenacao: '',
-              chaveSupervisao: '',
-            })
-          }
+          onChange={handleGerenciaAreaChange}
           options={gerenciasAreaSql.map((item) => ({
             value: String(item.chave),
             label: `${item.chave} - ${item.descricao}`,
@@ -176,36 +238,25 @@ const CommercialStructureFilters: React.FC<CommercialStructureFiltersProps> = ({
         />
 
         <Field
-          label="Coordenador"
+          label="Gerente Comercial III"
           value={filters.chaveCoordenacao || ALL}
-          onChange={(v) =>
-            onFiltersChange({
-              ...filters,
-              chaveCoordenacao: v === ALL ? '' : v,
-              chaveSupervisao: '',
-            })
-          }
-          options={coordenacoesSql.map((item) => ({
+          onChange={handleCoordenacaoChange}
+          options={coordenacoesOptions.map((item) => ({
             value: String(item.chave),
             label: `${item.chave} - ${item.descricao}`,
           }))}
-          disabled={loadingCoordenacoes || !filters.chaveGerenciaArea}
+          disabled={loadingCoordenacoes}
         />
 
         <Field
-          label="Supervisor"
+          label="Gerente Comercial"
           value={filters.chaveSupervisao || ALL}
-          onChange={(v) =>
-            onFiltersChange({
-              ...filters,
-              chaveSupervisao: v === ALL ? '' : v,
-            })
-          }
-          options={supervisoesSql.map((item) => ({
+          onChange={handleSupervisaoChange}
+          options={supervisoesOptions.map((item) => ({
             value: String(item.chave),
             label: `${item.chave} - ${item.descricao}`,
           }))}
-          disabled={loadingSupervisoes || !filters.chaveCoordenacao}
+          disabled={loadingSupervisoes}
         />
 
         <Field

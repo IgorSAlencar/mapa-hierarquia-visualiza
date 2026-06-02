@@ -110,7 +110,14 @@ export async function fetchStoreCoordinates({ bbox = null, limit = null, codAg =
   const codAgSql = hasCodAg
     ? ` AND TRY_CAST(l.COD_AG AS BIGINT) = TRY_CAST(@codAg AS BIGINT)`
     : '';
-  const hierarchySql = applyHierarchyFilter(request, hierarchy, 'esc');
+  const hierarchyForFilter =
+    hasCodAg && hierarchy
+      ? (() => {
+          const { codAg: _omitCodAg, ...rest } = hierarchy;
+          return Object.keys(rest).length > 0 ? rest : null;
+        })()
+      : hierarchy;
+  const hierarchySql = applyHierarchyFilter(request, hierarchyForFilter, 'esc');
   const hierarchyFilterSql = hierarchySql
     ? `
       AND EXISTS (

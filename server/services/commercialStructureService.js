@@ -1,4 +1,6 @@
 import {
+  fetchAllCoordenacoes,
+  fetchAllSupervisoes,
   fetchCoordenacoesByGerenciaArea,
   fetchGerenciasArea,
   fetchSupervisoesByCoordenacao,
@@ -30,4 +32,36 @@ export async function getSupervisoesByCoordenacao(chaveCoordenacao) {
   return rows
     .map((row) => normalizeListRow(row, 'CHAVE_SUPERVISAO', 'DESC_SUPERVISAO'))
     .filter(Boolean);
+}
+
+function normalizeCoordenacaoRow(row) {
+  const base = normalizeListRow(row, 'CHAVE_COORDENACAO', 'DESC_COORDENACAO');
+  if (!base) return null;
+  const chaveGerenciaArea = Number(row.CHAVE_GERENCIA_AREA);
+  return {
+    ...base,
+    chaveGerenciaArea: Number.isFinite(chaveGerenciaArea) ? Math.trunc(chaveGerenciaArea) : null,
+  };
+}
+
+function normalizeSupervisaoRow(row) {
+  const base = normalizeListRow(row, 'CHAVE_SUPERVISAO', 'DESC_SUPERVISAO');
+  if (!base) return null;
+  const chaveCoordenacao = Number(row.CHAVE_COORDENACAO);
+  const chaveGerenciaArea = Number(row.CHAVE_GERENCIA_AREA);
+  return {
+    ...base,
+    chaveCoordenacao: Number.isFinite(chaveCoordenacao) ? Math.trunc(chaveCoordenacao) : null,
+    chaveGerenciaArea: Number.isFinite(chaveGerenciaArea) ? Math.trunc(chaveGerenciaArea) : null,
+  };
+}
+
+export async function getAllCoordenacoes() {
+  const rows = await fetchAllCoordenacoes();
+  return rows.map((row) => normalizeCoordenacaoRow(row)).filter(Boolean);
+}
+
+export async function getAllSupervisoes() {
+  const rows = await fetchAllSupervisoes();
+  return rows.map((row) => normalizeSupervisaoRow(row)).filter(Boolean);
 }

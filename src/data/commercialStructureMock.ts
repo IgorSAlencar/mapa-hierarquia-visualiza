@@ -485,6 +485,13 @@ const UI_TO_SQL_HIERARCHY: Record<string, SqlHierarchyFilter> = {
   'ag-106': { codAg: 910106 },
 };
 
+/** Hierarquia SQL legada a partir do id de marcador mock (ex.: sup-alice). */
+export function resolveSqlHierarchyFromUiMarkerId(markerId: string): SqlHierarchyFilter | null {
+  const id = String(markerId ?? '').trim();
+  if (!id) return null;
+  return UI_TO_SQL_HIERARCHY[id] ?? null;
+}
+
 export function buildSqlHierarchyFilterFromUi(filters: FiltrosEstrutura): SqlHierarchyFilter | null {
   const parseChave = (value: string) => {
     const n = Number(value);

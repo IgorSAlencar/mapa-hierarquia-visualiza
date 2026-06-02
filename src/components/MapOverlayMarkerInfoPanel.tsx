@@ -96,8 +96,8 @@ const MapOverlayMarkerInfoPanel: React.FC<MapOverlayMarkerInfoPanelProps> = ({
             type="button"
             onClick={onDismiss}
             className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
-            aria-label="Fechar detalhe"
-            title="Fechar"
+            aria-label={storeFilterCodAg ? 'Limpar filtro por agência' : 'Limpar filtro da supervisão'}
+            title={storeFilterCodAg ? 'Limpar filtro por agência' : 'Limpar filtro da supervisão'}
           >
             <X className="h-3.5 w-3.5" />
           </button>

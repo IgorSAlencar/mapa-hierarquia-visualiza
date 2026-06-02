@@ -1,5 +1,7 @@
 import { Router } from 'express';
 import {
+  getAllCoordenacoes,
+  getAllSupervisoes,
   getCoordenacoesByGerenciaArea,
   getGerenciasArea,
   getSupervisoesByCoordenacao,
@@ -25,12 +27,10 @@ router.get('/gerencias-area', async (_req, res) => {
 
 router.get('/coordenacoes', async (req, res) => {
   const chaveGerenciaArea = parsePositiveInt(req.query.chaveGerenciaArea);
-  if (!chaveGerenciaArea) {
-    res.status(400).json({ message: 'Parâmetro chaveGerenciaArea inválido.' });
-    return;
-  }
   try {
-    const items = await getCoordenacoesByGerenciaArea(chaveGerenciaArea);
+    const items = chaveGerenciaArea
+      ? await getCoordenacoesByGerenciaArea(chaveGerenciaArea)
+      : await getAllCoordenacoes();
     res.json({ items });
   } catch (error) {
     console.error('Erro ao buscar coordenações:', error);
@@ -40,12 +40,10 @@ router.get('/coordenacoes', async (req, res) => {
 
 router.get('/supervisoes', async (req, res) => {
   const chaveCoordenacao = parsePositiveInt(req.query.chaveCoordenacao);
-  if (!chaveCoordenacao) {
-    res.status(400).json({ message: 'Parâmetro chaveCoordenacao inválido.' });
-    return;
-  }
   try {
-    const items = await getSupervisoesByCoordenacao(chaveCoordenacao);
+    const items = chaveCoordenacao
+      ? await getSupervisoesByCoordenacao(chaveCoordenacao)
+      : await getAllSupervisoes();
     res.json({ items });
   } catch (error) {
     console.error('Erro ao buscar supervisões:', error);
