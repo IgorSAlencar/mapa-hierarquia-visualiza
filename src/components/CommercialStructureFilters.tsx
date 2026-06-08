@@ -196,8 +196,8 @@ const CommercialStructureFilters: React.FC<CommercialStructureFiltersProps> = ({
           Estrutura comercial
         </h2>
         <p className="text-sm text-muted-foreground">
-          Filtre por nível hierárquico. Coordenação e supervisão podem ser escolhidas diretamente; ao
-          selecionar um supervisor, os níveis acima são preenchidos automaticamente.
+          Filtre por nível hierárquico. Gerente Comercial III e Gerente Comercial podem ser escolhidos
+          diretamente; ao selecionar um Gerente Comercial, os níveis acima são preenchidos automaticamente.
         </p>
       </div>
 

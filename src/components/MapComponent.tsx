@@ -53,6 +53,7 @@ import {
 import {
   filterRegionMapPoints,
   COMMERCIAL_TEAM_LEVEL_LABEL,
+  COMMERCIAL_TEAM_LEVEL_LABEL_PLURAL,
   regionPointsToFeatureCollection,
   type CommercialTeamLevel,
 } from '@/data/regionMapPointsMock';
@@ -69,6 +70,7 @@ import {
   type SqlMapPoint,
 } from '@/lib/mapDataApi';
 import { fetchExpressoProductivityRows, fetchExpressoStateMetrics } from '@/lib/expressoApi';
+import { loadSupervisionAreas } from '@/lib/supervisionAreas';
 
 /** Malha nacional IBGE (serviço de malhas → arquivo em `public/geo`). */
 const BRAZIL_BOUNDARY_GEOJSON = '/geo/brasil-limite-ibge.geojson';
@@ -882,6 +884,8 @@ function clearRegionOverlaySources(m: mapboxgl.Map) {
     'region-overlay-agencias',
     'region-overlay-supervisores',
     'region-overlay-lojas',
+    'supervision-area',
+    'supervisions-compare',
   ] as const) {
     const source = m.getSource(sourceId) as mapboxgl.GeoJSONSource | undefined;
     source?.setData(empty);
@@ -1316,6 +1320,31 @@ function seatColorByLevel(
   return hslToHex(hue, sat, light);
 }
 
+/** Paleta categórica determinística para o modo "Comparar áreas das supervisões". */
+const COMPARE_SUPERVISION_PALETTE: readonly string[] = [
+  '#2563eb',
+  '#dc2626',
+  '#16a34a',
+  '#d97706',
+  '#7c3aed',
+  '#0891b2',
+  '#db2777',
+  '#65a30d',
+  '#ea580c',
+  '#0d9488',
+  '#9333ea',
+  '#475569',
+  '#b91c1c',
+  '#15803d',
+  '#a16207',
+  '#1d4ed8',
+];
+
+function compareColorForIndex(i: number): string {
+  if (!Number.isFinite(i) || i < 0) return COMPARE_SUPERVISION_PALETTE[0];
+  return COMPARE_SUPERVISION_PALETTE[i % COMPARE_SUPERVISION_PALETTE.length];
+}
+
 function resolveStoreSegment(point: SqlMapPoint): StoreSegmentKey {
   const cod = String(point.codAg ?? '').trim();
   const id = point.id.trim().toLowerCase();
@@ -1383,6 +1412,9 @@ const MapComponent: React.FC<MapComponentProps> = ({
     gerente_area: true,
   });
   const [overlayLojas, setOverlayLojas] = useState(false);
+  /** Modo "Comparar áreas das supervisões": pinta as áreas de todas as supervisões filhas da GA/Coord ativa. */
+  const [compareSupervisionAreas, setCompareSupervisionAreas] = useState(false);
+  const compareSupervisionAreasRef = useRef(false);
   const [storeSegmentMenuOpen, setStoreSegmentMenuOpen] = useState(false);
   const [storeSegmentVisibility, setStoreSegmentVisibility] = useState<Record<StoreSegmentKey, boolean>>({
     varejo: true,
@@ -1481,7 +1513,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
   const [municipalitiesGeoVersion, setMunicipalitiesGeoVersion] = useState(0);
   const [choroplethLegend, setChoroplethLegend] = useState<{ min: number; max: number } | null>(null);
   /** Malha municipal (preenchimento + contornos do contexto); não afeta zoom nem contorno do município selecionado. */
-  const [municipalityMeshVisible, setMunicipalityMeshVisible] = useState(true);
+  const [municipalityMeshVisible, setMunicipalityMeshVisible] = useState(false);
   const municipalityMeshVisibleRef = useRef(municipalityMeshVisible);
   const [outsideMaskColor, setOutsideMaskColor] = useState<string>(MAPBOX_CONFIG.outsideBrazilMaskColor);
   const activeBaseStyle = MAP_STYLE_URL[mapStyleMode];
@@ -1581,16 +1613,96 @@ const MapComponent: React.FC<MapComponentProps> = ({
   const filteredRegionSupervisores = useMemo(
     () => {
       const visibleLevels = new Set(selectedCommercialTeamLevels);
+      // Quando o painel restringe a uma GA, removemos pontos de outras GAs que possam
+      // ter sobrado em cache. Coordenação não tem o campo no ponto (o backend já filtra).
+      const activeGa = Number(hierarchyFilter?.chaveGerenciaArea);
+      const hasGa = Number.isFinite(activeGa) && activeGa > 0;
       const filteredByLevel = sqlSeatPoints
         .filter((point) => !point.commercialLevel || visibleLevels.has(point.commercialLevel))
+        .filter((point) => !hasGa || Number(point.chaveGerenciaArea) === activeGa)
         .map((point) => ({
           ...point,
           seatColor: seatColorByLevel(point.chaveGerenciaArea, point.commercialLevel),
         }));
       return filterRegionMapPoints(filteredByLevel, selectedMunicipalityFeature, selectedStateFeature);
     },
-    [sqlSeatPoints, selectedMunicipalityFeature, selectedStateFeature, selectedCommercialTeamLevels]
+    [
+      sqlSeatPoints,
+      selectedMunicipalityFeature,
+      selectedStateFeature,
+      selectedCommercialTeamLevels,
+      hierarchyFilter?.chaveGerenciaArea,
+    ]
   );
+  /**
+   * Lista de supervisões filhas da GA/Coord ativa para o modo "Comparar áreas".
+   *
+   * O backend já filtra `sqlSeatPoints` pela `hierarchyFilter`, então quando há
+   * uma Coordenação ativa, todos os pontos de supervisor retornados pertencem a
+   * ela (não há `chaveCoordenacao` no `SqlMapPoint` para conferir client-side).
+   * Quando há GA ativa, ainda filtramos por `chaveGerenciaArea` como reforço.
+   */
+  const compareSupervisionsList = useMemo(() => {
+    const activeGa = Number(hierarchyFilter?.chaveGerenciaArea);
+    const activeCoord = Number(hierarchyFilter?.chaveCoordenacao);
+    const hasGa = Number.isFinite(activeGa) && activeGa > 0;
+    const hasCoord = Number.isFinite(activeCoord) && activeCoord > 0;
+    if (!hasGa && !hasCoord) return [] as Array<{ chaveSupervisao: number; nome: string; color: string }>;
+
+    const supervisors = sqlSeatPoints.filter((point) => {
+      if (point.commercialLevel !== 'supervisor') return false;
+      if (hasGa && Number(point.chaveGerenciaArea) !== activeGa) return false;
+      return true;
+    });
+
+    const dedup = new Map<number, string>();
+    for (const point of supervisors) {
+      const chave = Number(point.chaveEntidade);
+      if (!Number.isFinite(chave) || chave <= 0) continue;
+      if (dedup.has(chave)) continue;
+      dedup.set(chave, String(point.nome ?? `${COMMERCIAL_TEAM_LEVEL_LABEL.supervisor} ${chave}`));
+    }
+
+    return [...dedup.entries()]
+      .sort(([a], [b]) => a - b)
+      .map(([chaveSupervisao, nome], index) => ({
+        chaveSupervisao,
+        nome,
+        color: compareColorForIndex(index),
+      }));
+  }, [
+    sqlSeatPoints,
+    hierarchyFilter?.chaveGerenciaArea,
+    hierarchyFilter?.chaveCoordenacao,
+  ]);
+
+  /** Habilita o botão de comparar somente quando há GA ou Coord ativa (e não supervisão única). */
+  const canCompareSupervisionAreas = useMemo(() => {
+    const supKey = Number(hierarchyFilter?.chaveSupervisao);
+    if (Number.isFinite(supKey) && supKey > 0) return false;
+    const ga = Number(hierarchyFilter?.chaveGerenciaArea);
+    const coord = Number(hierarchyFilter?.chaveCoordenacao);
+    const hasScope = (Number.isFinite(ga) && ga > 0) || (Number.isFinite(coord) && coord > 0);
+    return hasScope && compareSupervisionsList.length > 0;
+  }, [
+    hierarchyFilter?.chaveGerenciaArea,
+    hierarchyFilter?.chaveCoordenacao,
+    hierarchyFilter?.chaveSupervisao,
+    compareSupervisionsList.length,
+  ]);
+
+  const compareScopeLabel = useMemo(() => {
+    const coord = Number(hierarchyFilter?.chaveCoordenacao);
+    if (Number.isFinite(coord) && coord > 0) {
+      return `${COMMERCIAL_TEAM_LEVEL_LABEL.coordenador} ${coord}`;
+    }
+    const ga = Number(hierarchyFilter?.chaveGerenciaArea);
+    if (Number.isFinite(ga) && ga > 0) {
+      return `${COMMERCIAL_TEAM_LEVEL_LABEL.gerente_area} ${ga}`;
+    }
+    return '';
+  }, [hierarchyFilter?.chaveGerenciaArea, hierarchyFilter?.chaveCoordenacao]);
+
   const seatLegendEntries = useMemo(() => {
     const map = new Map<number, { ga: string; gaNome: string; gerente: string; coord: string; sup: string }>();
     for (const point of sqlSeatPoints) {
@@ -1600,7 +1712,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
       const gaNome =
         point.commercialLevel === 'gerente_area'
           ? String(point.nome ?? '').trim()
-          : `Gerência de Área ${ga}`;
+          : `${COMMERCIAL_TEAM_LEVEL_LABEL.gerente_area} ${ga}`;
       map.set(ga, {
         ga: String(ga),
         gaNome,
@@ -1954,6 +2066,16 @@ const MapComponent: React.FC<MapComponentProps> = ({
   };
 
   const clearSupervisorOverlayFilter = useCallback(async () => {
+    const emptyFc: GeoJSON.FeatureCollection = { type: 'FeatureCollection', features: [] };
+    const supervisionAreaSource = map.current?.getSource('supervision-area') as
+      | mapboxgl.GeoJSONSource
+      | undefined;
+    supervisionAreaSource?.setData(emptyFc);
+    const supervisionsCompareSource = map.current?.getSource('supervisions-compare') as
+      | mapboxgl.GeoJSONSource
+      | undefined;
+    supervisionsCompareSource?.setData(emptyFc);
+
     overlaySeatHierarchyRef.current = null;
     setOverlaySeatFilterKey(null);
     setOverlayMarkerSelection(null);
@@ -1964,6 +2086,8 @@ const MapComponent: React.FC<MapComponentProps> = ({
     lastOverlayFcSignatureRef.current = {};
     setSqlAgencyPoints([]);
     setSqlStorePoints([]);
+    setOverlayAgencias(false);
+    setOverlayLojas(false);
 
     await refreshOverlayDataForViewport({
       silent: false,
@@ -2125,6 +2249,10 @@ const MapComponent: React.FC<MapComponentProps> = ({
   useEffect(() => {
     municipalityMeshVisibleRef.current = municipalityMeshVisible;
   }, [municipalityMeshVisible]);
+
+  useEffect(() => {
+    compareSupervisionAreasRef.current = compareSupervisionAreas;
+  }, [compareSupervisionAreas]);
 
   useEffect(() => {
     hierarchyFilterRef.current = hierarchyFilter;
@@ -2571,6 +2699,47 @@ const MapComponent: React.FC<MapComponentProps> = ({
           }
         };
 
+        const applySupervisionAreaForHierarchy = async (
+          hierarchy: SqlHierarchyFilter
+        ): Promise<void> => {
+          const mapInst = map.current;
+          if (!mapInst) return;
+          const areaSource = mapInst.getSource('supervision-area') as
+            | mapboxgl.GeoJSONSource
+            | undefined;
+          if (!areaSource) return;
+          const emptyFc: GeoJSON.FeatureCollection = { type: 'FeatureCollection', features: [] };
+
+          // Áreas só existem para o nível de supervisão; em coordenador/gerente_area
+          // zeramos para não deixar polígono de outra seleção "vazando" no mapa.
+          if (hierarchy.chaveSupervisao == null) {
+            areaSource.setData(emptyFc);
+            return;
+          }
+
+          try {
+            const index = await loadSupervisionAreas();
+            if (!map.current) return;
+            const liveSource = map.current.getSource('supervision-area') as
+              | mapboxgl.GeoJSONSource
+              | undefined;
+            if (!liveSource) return;
+            const areaFeature = index.getByChave(hierarchy.chaveSupervisao);
+            liveSource.setData(
+              areaFeature
+                ? { type: 'FeatureCollection', features: [areaFeature] }
+                : emptyFc
+            );
+          } catch (error) {
+            console.warn('Falha ao carregar área de atuação da supervisão:', error);
+            try {
+              areaSource.setData(emptyFc);
+            } catch {
+              /* source pode ter sido removida em troca de estilo */
+            }
+          }
+        };
+
         const handleCommercialSeatClick = async (feature: GeoJSON.Feature, lngLat: mapboxgl.LngLatLike) => {
           if (!map.current) return;
           markOverlayPointerClick();
@@ -2580,9 +2749,9 @@ const MapComponent: React.FC<MapComponentProps> = ({
           const hierarchy = readHierarchyFilterFromSeatFeature(feature, hierarchyFilterRef.current);
           if (!hierarchy) {
             toast({
-              title: 'Supervisão não identificada',
+              title: `${COMMERCIAL_TEAM_LEVEL_LABEL.supervisor} não identificado`,
               description:
-                'Selecione a supervisão no painel de filtros (chave SQL) ou clique no ponto da estrutura comercial no mapa.',
+                `Selecione o ${COMMERCIAL_TEAM_LEVEL_LABEL.supervisor} no painel de filtros (chave SQL) ou clique no ponto da estrutura comercial no mapa.`,
             });
             return;
           }
@@ -2601,6 +2770,9 @@ const MapComponent: React.FC<MapComponentProps> = ({
 
           setLoadingAgencyPoints(true);
           setLoadingStorePoints(true);
+          // Dispara o desenho da área em paralelo aos fetches de agências/lojas — falha do GeoJSON
+          // (rede/parse) não pode travar o filtro principal.
+          const areaPromise = applySupervisionAreaForHierarchy(hierarchy);
           try {
             const [agencias, lojas] = await Promise.all([
               fetchAgencyPoints({ hierarchy }),
@@ -2614,13 +2786,14 @@ const MapComponent: React.FC<MapComponentProps> = ({
           } catch (error) {
             console.error('Falha ao filtrar estrutura comercial:', error);
             toast({
-              title: 'Falha ao filtrar supervisão',
+              title: `Falha ao filtrar ${COMMERCIAL_TEAM_LEVEL_LABEL.supervisor}`,
               description: 'Não foi possível carregar agências e lojas vinculadas ao ponto selecionado.',
               variant: 'destructive',
             });
           } finally {
             setLoadingAgencyPoints(false);
             setLoadingStorePoints(false);
+            await areaPromise;
           }
         };
 
@@ -2900,6 +3073,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
           stateClickHandlerRef.current = onStateClick;
           m.on('click', 'br-states-hit', onStateClick);
           m.on('mouseenter', 'br-states-hit', () => {
+            if (!meshSelectionEnabled()) return;
             m.getCanvas().style.cursor = 'pointer';
           });
           m.on('mouseleave', 'br-states-hit', () => {
@@ -3124,6 +3298,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
           municipalityClickHandlerRef.current = onMunicipalityPolygonClick;
           m.on('click', 'municipalities-context-fill', onMunicipalityPolygonClick);
           m.on('mouseenter', 'municipalities-context-fill', () => {
+            if (!meshSelectionEnabled()) return;
             m.getCanvas().style.cursor = 'pointer';
           });
           m.on('mouseleave', 'municipalities-context-fill', () => {
@@ -3281,6 +3456,64 @@ const MapComponent: React.FC<MapComponentProps> = ({
         m.addSource('region-overlay-agencias', { type: 'geojson', data: emptyRegionFc });
         m.addSource('region-overlay-supervisores', { type: 'geojson', data: emptyRegionFc });
         m.addSource('region-overlay-lojas', { type: 'geojson', data: emptyRegionFc });
+        m.addSource('supervision-area', { type: 'geojson', data: emptyRegionFc });
+        m.addSource('supervisions-compare', { type: 'geojson', data: emptyRegionFc });
+
+        // Área de atuação da supervisão selecionada (fica abaixo dos pontos, acima do basemap).
+        // Usamos a primeira camada de estrutura como `beforeId` para os círculos continuarem por cima.
+        const structureBeforeId = m.getLayer('structure-people-circles')
+          ? 'structure-people-circles'
+          : sym;
+        m.addLayer(
+          {
+            id: 'supervisions-compare-fill',
+            type: 'fill',
+            source: 'supervisions-compare',
+            paint: fillPaintForStandard(activeBaseStyle, {
+              'fill-color': ['coalesce', ['to-color', ['get', 'compare_color']], '#94a3b8'],
+              'fill-opacity': 0.22,
+            }),
+          },
+          structureBeforeId
+        );
+        m.addLayer(
+          {
+            id: 'supervisions-compare-line',
+            type: 'line',
+            source: 'supervisions-compare',
+            paint: linePaintForStandard(activeBaseStyle, {
+              'line-color': ['coalesce', ['to-color', ['get', 'compare_color']], '#475569'],
+              'line-width': 1.8,
+              'line-opacity': 0.95,
+            }),
+          },
+          structureBeforeId
+        );
+        m.addLayer(
+          {
+            id: 'supervision-area-fill',
+            type: 'fill',
+            source: 'supervision-area',
+            paint: fillPaintForStandard(activeBaseStyle, {
+              'fill-color': '#a855f7',
+              'fill-opacity': 0.18,
+            }),
+          },
+          structureBeforeId
+        );
+        m.addLayer(
+          {
+            id: 'supervision-area-line',
+            type: 'line',
+            source: 'supervision-area',
+            paint: linePaintForStandard(activeBaseStyle, {
+              'line-color': '#7c3aed',
+              'line-width': 1.6,
+              'line-opacity': 0.85,
+            }),
+          },
+          structureBeforeId
+        );
 
         m.addLayer({
           id: 'region-overlay-agencias-cir',
@@ -3818,6 +4051,80 @@ const MapComponent: React.FC<MapComponentProps> = ({
     }
   }, [municipalityMeshVisible, mapReadyVersion]);
 
+  /** Sai do modo "Comparar áreas" automaticamente quando o escopo (GA/Coord) some. */
+  useEffect(() => {
+    if (compareSupervisionAreas && !canCompareSupervisionAreas) {
+      setCompareSupervisionAreas(false);
+    }
+  }, [compareSupervisionAreas, canCompareSupervisionAreas]);
+
+  /**
+   * Modo "Comparar áreas das supervisões": carrega o GeoJSON sob demanda, monta uma
+   * FeatureCollection com `compare_color` por feature e despeja na source
+   * `supervisions-compare`. Quando o modo desliga (ou some o escopo), a source é zerada.
+   */
+  useEffect(() => {
+    const m = map.current;
+    if (!m?.isStyleLoaded()) return;
+    const source = m.getSource('supervisions-compare') as mapboxgl.GeoJSONSource | undefined;
+    if (!source) return;
+    const emptyFc: GeoJSON.FeatureCollection = { type: 'FeatureCollection', features: [] };
+
+    if (!compareSupervisionAreas || compareSupervisionsList.length === 0) {
+      try {
+        source.setData(emptyFc);
+      } catch {
+        /* estilo recarregando */
+      }
+      return;
+    }
+
+    let cancelled = false;
+    void (async () => {
+      try {
+        const index = await loadSupervisionAreas();
+        if (cancelled || !map.current) return;
+        const liveSource = map.current.getSource('supervisions-compare') as
+          | mapboxgl.GeoJSONSource
+          | undefined;
+        if (!liveSource) return;
+
+        const colorByChave = new Map<number, string>();
+        for (const item of compareSupervisionsList) {
+          colorByChave.set(item.chaveSupervisao, item.color);
+        }
+        const baseFeatures = index.getManyByChaves(
+          compareSupervisionsList.map((item) => item.chaveSupervisao)
+        );
+        const features: GeoJSON.Feature[] = baseFeatures.map((feature) => {
+          const rawChave = (feature.properties as { chave_supervisao?: string | number } | null)
+            ?.chave_supervisao;
+          const chaveNum = Number(rawChave);
+          const color = colorByChave.get(chaveNum) ?? compareColorForIndex(0);
+          return {
+            ...feature,
+            properties: {
+              ...(feature.properties ?? {}),
+              compare_color: color,
+            },
+          };
+        });
+        liveSource.setData({ type: 'FeatureCollection', features });
+      } catch (error) {
+        console.warn('Falha ao carregar áreas das supervisões para comparação:', error);
+        try {
+          source.setData(emptyFc);
+        } catch {
+          /* source pode ter sido removida em troca de estilo */
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [compareSupervisionAreas, compareSupervisionsList, mapReadyVersion]);
+
   /** Com coropleto ativo, o destaque do município não pode cobrir o degradê (fill transparente + contorno leve). */
   useEffect(() => {
     const m = map.current;
@@ -3914,11 +4221,54 @@ const MapComponent: React.FC<MapComponentProps> = ({
           </div>
         </div>
       )}
+      {compareSupervisionAreas && compareSupervisionsList.length > 0 && (
+        <div className="absolute bottom-3 left-3 z-20 w-[min(280px,60vw)] rounded-xl border border-slate-200/70 bg-white/90 shadow-lg shadow-slate-900/10 backdrop-blur-sm">
+          <div className="flex items-start justify-between gap-2 px-3 pt-2.5 pb-1.5">
+            <div className="min-w-0">
+              <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                Áreas dos {COMMERCIAL_TEAM_LEVEL_LABEL_PLURAL.supervisor}
+              </p>
+              <p className="truncate text-xs font-medium text-slate-800" title={compareScopeLabel}>
+                {compareScopeLabel}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setCompareSupervisionAreas(false)}
+              title={`Ocultar áreas dos ${COMMERCIAL_TEAM_LEVEL_LABEL_PLURAL.supervisor}`}
+              aria-label={`Ocultar áreas dos ${COMMERCIAL_TEAM_LEVEL_LABEL_PLURAL.supervisor}`}
+              className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-900"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+          <div className="max-h-52 overflow-auto px-3 pb-2.5">
+            <ul className="space-y-1">
+              {compareSupervisionsList.map((item) => (
+                <li
+                  key={item.chaveSupervisao}
+                  className="flex items-center gap-2 text-[11px] text-slate-700"
+                >
+                  <span
+                    className="inline-flex h-2.5 w-2.5 shrink-0 rounded-full border border-white shadow-sm"
+                    style={{ backgroundColor: item.color }}
+                  />
+                  <span className="truncate" title={item.nome}>
+                    {item.nome}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </div>
+      )}
       {overlaySupervisores && seatLegendEntries.length > 0 && (
         <div className="pointer-events-none absolute bottom-3 right-3 z-20 rounded-lg border border-slate-200/60 bg-white/65 px-2.5 py-2 text-[10px] text-slate-600 backdrop-blur-sm">
-          <p className="mb-1 font-medium uppercase tracking-wide text-slate-500">Paleta por gerência</p>
+          <p className="mb-1 font-medium uppercase tracking-wide text-slate-500">
+            Paleta por {COMMERCIAL_TEAM_LEVEL_LABEL.gerente_area}
+          </p>
           <div className="mb-1 grid grid-cols-[minmax(0,1fr)_20px_20px_20px] items-center gap-1.5 text-[9px] uppercase tracking-wide text-slate-400">
-            <span>Gerência de Área</span>
+            <span>{COMMERCIAL_TEAM_LEVEL_LABEL.gerente_area}</span>
             <span className="text-center">GG</span>
             <span className="text-center">GC3</span>
             <span className="text-center">GC</span>
@@ -4111,6 +4461,27 @@ const MapComponent: React.FC<MapComponentProps> = ({
                 </div>
               )}
             </div>
+            <button
+              type="button"
+              title={
+                canCompareSupervisionAreas
+                  ? compareSupervisionAreas
+                    ? `Ocultar áreas dos ${COMMERCIAL_TEAM_LEVEL_LABEL_PLURAL.supervisor} — ${compareScopeLabel}`
+                    : `Comparar áreas dos ${COMMERCIAL_TEAM_LEVEL_LABEL_PLURAL.supervisor} — ${compareScopeLabel}`
+                  : `Selecione um ${COMMERCIAL_TEAM_LEVEL_LABEL.gerente_area} ou ${COMMERCIAL_TEAM_LEVEL_LABEL.coordenador} para comparar áreas`
+              }
+              aria-label={`Comparar áreas dos ${COMMERCIAL_TEAM_LEVEL_LABEL_PLURAL.supervisor}`}
+              aria-pressed={compareSupervisionAreas}
+              disabled={!canCompareSupervisionAreas}
+              onClick={() => setCompareSupervisionAreas((v) => !v)}
+              className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full border shadow-sm backdrop-blur-sm transition-colors disabled:opacity-60 disabled:cursor-not-allowed ${
+                compareSupervisionAreas
+                  ? 'border-slate-600 bg-slate-700 text-white shadow-slate-900/15'
+                  : 'border-slate-200/90 bg-white/95 text-slate-600 hover:border-slate-300 hover:bg-slate-50'
+              }`}
+            >
+              <Layers className="h-4 w-4" />
+            </button>
           </div>
           <MapOverlayMarkerInfoPanel
             storeFilterCodAg={storeFilterCodAg}

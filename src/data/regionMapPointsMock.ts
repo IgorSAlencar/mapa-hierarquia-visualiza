@@ -12,6 +12,13 @@ export const COMMERCIAL_TEAM_LEVEL_LABEL: Record<CommercialTeamLevel, string> = 
   gerente_area: 'Gerente de Gestão',
 };
 
+/** Rótulos no plural para textos de UI (legenda, comparativo de áreas). */
+export const COMMERCIAL_TEAM_LEVEL_LABEL_PLURAL: Record<CommercialTeamLevel, string> = {
+  supervisor: 'Gerentes Comerciais',
+  coordenador: 'Gerentes Comerciais III',
+  gerente_area: 'Gerentes de Gestão',
+};
+
 export interface RegionMapPoint {
   id: string;
   nome: string;
@@ -100,7 +107,7 @@ export function regionPointsToFeatureCollection(
             : p.kind === 'supervisor'
               ? p.commercialLevel
                 ? COMMERCIAL_TEAM_LEVEL_LABEL[p.commercialLevel]
-                : 'Supervisor'
+                : COMMERCIAL_TEAM_LEVEL_LABEL.supervisor
               : 'Loja',
         commercial_level: p.commercialLevel ?? '',
         chave_gerencia_area:
