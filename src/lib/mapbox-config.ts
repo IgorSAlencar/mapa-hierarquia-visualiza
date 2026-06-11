@@ -17,19 +17,8 @@ export const MAPBOX_CONFIG = {
     brazil: [[-74.05, -33.95], [-34.7, 5.35]] as [[number, number], [number, number]],
   },
   /**
-   * Até onde o usuário pode **arrastar** o mapa (centro da câmera).
-   * Não use `maxBounds` no Mapbox — em telas largas ele sobe o zoom mínimo.
-   * Ajuste `west` / `east` (longitude) para limitar esquerda e direita.
-   */
-  panCenterLimit: {
-    west: -78,
-    east: -34,
-    south: -20,
-    north: 1,
-  },
-  /**
-   * Vista inicial / reset do Brasil.
-   * `fitBounds` + `maxBounds` elevam o zoom mínimo em telas largas — use centro + zoom fixos.
+   * Vista inicial / reset do Brasil (abertura do mapa e botão 2D / limpar seleção).
+   * Não restringe o pan depois — o usuário pode arrastar livremente após carregar.
    */
   initialBrazilView: {
     center: [-54.0, -14.0] as [number, number],

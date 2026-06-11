@@ -32,7 +32,6 @@ import {
   animateToPointFocus,
   captureMapCamera,
   fitMapToBrazilOverview,
-  attachMapPanCenterLimit,
   applyMapScrollZoomSettings,
   getPointCoordinates,
   type SavedMapCamera,
@@ -71,6 +70,8 @@ import {
 } from '@/lib/mapDataApi';
 import { fetchExpressoProductivityRows, fetchExpressoStateMetrics } from '@/lib/expressoApi';
 import { loadSupervisionAreas } from '@/lib/supervisionAreas';
+import { getVisitRouteBounds, syncVisitRouteOnMap } from '@/lib/visitRouteMapLayer';
+import type { VisitRoute } from '@/data/visitRoutesMock';
 
 /** Malha nacional IBGE (serviço de malhas → arquivo em `public/geo`). */
 const BRAZIL_BOUNDARY_GEOJSON = '/geo/brasil-limite-ibge.geojson';
@@ -1195,6 +1196,46 @@ function hasPanelHierarchyFilter(filter: SqlHierarchyFilter | null | undefined):
   return Object.values(filter).some((v) => v != null && Number.isFinite(Number(v)) && Number(v) > 0);
 }
 
+/** GA ou Coordenação ativa (sem supervisão única) — escopo do modo "Comparar áreas". */
+function isCompareScopeHierarchy(filter: SqlHierarchyFilter | null | undefined): boolean {
+  if (!filter) return false;
+  const supKey = Number(filter.chaveSupervisao);
+  if (Number.isFinite(supKey) && supKey > 0) return false;
+  const ga = Number(filter.chaveGerenciaArea);
+  const coord = Number(filter.chaveCoordenacao);
+  return (Number.isFinite(ga) && ga > 0) || (Number.isFinite(coord) && coord > 0);
+}
+
+function parseOverlaySeatHierarchyKey(key: string | null): SqlHierarchyFilter | null {
+  if (!key) return null;
+  try {
+    const parsed = JSON.parse(key) as SqlHierarchyFilter;
+    return hasPanelHierarchyFilter(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Painel tem prioridade; senão usa o filtro definido por clique na sede (bolinha) no mapa. */
+function resolveCompareScopeHierarchy(
+  panel: SqlHierarchyFilter | null | undefined,
+  overlayKey: string | null
+): SqlHierarchyFilter | null {
+  if (isCompareScopeHierarchy(panel)) return panel!;
+  const overlay = parseOverlaySeatHierarchyKey(overlayKey);
+  return isCompareScopeHierarchy(overlay) ? overlay : null;
+}
+
+function resolveSeatPointsFetchHierarchy(
+  panel: SqlHierarchyFilter | null | undefined,
+  overlayKey: string | null
+): SqlHierarchyFilter | null | undefined {
+  if (isCompareScopeHierarchy(panel)) return panel;
+  const overlay = parseOverlaySeatHierarchyKey(overlayKey);
+  if (overlay) return overlay;
+  return panel ?? null;
+}
+
 function expandBbox(bbox: BboxQuery, paddingRatio = OVERLAY_BBOX_FETCH_PADDING_RATIO): BboxQuery {
   const lngSpan = bbox.maxLng - bbox.minLng;
   const latSpan = bbox.maxLat - bbox.minLat;
@@ -1267,6 +1308,12 @@ interface MapComponentProps {
   hierarchyFilter?: SqlHierarchyFilter | null;
   filtersPanelOpen?: boolean;
   onOpenFilters?: () => void;
+  /** Roteiro de visitas ativo (linha + paradas numeradas no mapa). */
+  visitRoute?: VisitRoute | null;
+  selectedVisitStopId?: number | null;
+  onVisitStopSelect?: (stopId: number) => void;
+  /** Comando de foco da câmera: `stopId` null enquadra o roteiro inteiro. */
+  visitFocus?: { tick: number; stopId: number | null } | null;
 }
 
 const COMMERCIAL_TEAM_LEVEL_OPTIONS: Array<{ id: CommercialTeamLevel; label: string }> = [
@@ -1364,12 +1411,18 @@ const MapComponent: React.FC<MapComponentProps> = ({
   hierarchyFilter = null,
   filtersPanelOpen = false,
   onOpenFilters,
+  visitRoute = null,
+  selectedVisitStopId = null,
+  onVisitStopSelect,
+  visitFocus = null,
 }) => {
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<mapboxgl.Map | null>(null);
-  const panCenterLimitCleanupRef = useRef<(() => void) | null>(null);
   const mapMarkersRef = useRef(mapMarkers);
   mapMarkersRef.current = mapMarkers;
+  const onVisitStopSelectRef = useRef(onVisitStopSelect);
+  onVisitStopSelectRef.current = onVisitStopSelect;
+  const visitRouteFitIdRef = useRef<string | null>(null);
   const { toast } = useToast();
   const clickHandlerRef = useRef<((e: mapboxgl.MapLayerMouseEvent) => void) | null>(null);
   const stateClickHandlerRef = useRef<((e: mapboxgl.MapLayerMouseEvent) => void) | null>(null);
@@ -1634,17 +1687,25 @@ const MapComponent: React.FC<MapComponentProps> = ({
       hierarchyFilter?.chaveGerenciaArea,
     ]
   );
+  const compareScopeHierarchy = useMemo(
+    () => resolveCompareScopeHierarchy(hierarchyFilter, overlaySeatFilterKey),
+    [hierarchyFilter, overlaySeatFilterKey]
+  );
+
   /**
    * Lista de supervisões filhas da GA/Coord ativa para o modo "Comparar áreas".
    *
-   * O backend já filtra `sqlSeatPoints` pela `hierarchyFilter`, então quando há
-   * uma Coordenação ativa, todos os pontos de supervisor retornados pertencem a
+   * O backend já filtra `sqlSeatPoints` pelo escopo (painel ou clique na sede no mapa);
+   * quando há Coordenação ativa, todos os pontos de supervisor retornados pertencem a
    * ela (não há `chaveCoordenacao` no `SqlMapPoint` para conferir client-side).
    * Quando há GA ativa, ainda filtramos por `chaveGerenciaArea` como reforço.
    */
   const compareSupervisionsList = useMemo(() => {
-    const activeGa = Number(hierarchyFilter?.chaveGerenciaArea);
-    const activeCoord = Number(hierarchyFilter?.chaveCoordenacao);
+    const scope = compareScopeHierarchy;
+    if (!scope) return [] as Array<{ chaveSupervisao: number; nome: string; color: string }>;
+
+    const activeGa = Number(scope.chaveGerenciaArea);
+    const activeCoord = Number(scope.chaveCoordenacao);
     const hasGa = Number.isFinite(activeGa) && activeGa > 0;
     const hasCoord = Number.isFinite(activeCoord) && activeCoord > 0;
     if (!hasGa && !hasCoord) return [] as Array<{ chaveSupervisao: number; nome: string; color: string }>;
@@ -1670,38 +1731,40 @@ const MapComponent: React.FC<MapComponentProps> = ({
         nome,
         color: compareColorForIndex(index),
       }));
-  }, [
-    sqlSeatPoints,
-    hierarchyFilter?.chaveGerenciaArea,
-    hierarchyFilter?.chaveCoordenacao,
-  ]);
+  }, [sqlSeatPoints, compareScopeHierarchy]);
 
-  /** Habilita o botão de comparar somente quando há GA ou Coord ativa (e não supervisão única). */
-  const canCompareSupervisionAreas = useMemo(() => {
-    const supKey = Number(hierarchyFilter?.chaveSupervisao);
-    if (Number.isFinite(supKey) && supKey > 0) return false;
-    const ga = Number(hierarchyFilter?.chaveGerenciaArea);
-    const coord = Number(hierarchyFilter?.chaveCoordenacao);
-    const hasScope = (Number.isFinite(ga) && ga > 0) || (Number.isFinite(coord) && coord > 0);
-    return hasScope && compareSupervisionsList.length > 0;
-  }, [
-    hierarchyFilter?.chaveGerenciaArea,
-    hierarchyFilter?.chaveCoordenacao,
-    hierarchyFilter?.chaveSupervisao,
-    compareSupervisionsList.length,
-  ]);
+  /** Habilita o botão de comparar quando há GA ou Coord no painel ou via clique na sede no mapa. */
+  const canCompareSupervisionAreas = useMemo(
+    () => Boolean(compareScopeHierarchy) && compareSupervisionsList.length > 0,
+    [compareScopeHierarchy, compareSupervisionsList.length]
+  );
 
   const compareScopeLabel = useMemo(() => {
-    const coord = Number(hierarchyFilter?.chaveCoordenacao);
+    const scope = compareScopeHierarchy;
+    if (!scope) return '';
+
+    const coord = Number(scope.chaveCoordenacao);
     if (Number.isFinite(coord) && coord > 0) {
-      return `${COMMERCIAL_TEAM_LEVEL_LABEL.coordenador} ${coord}`;
+      const coordPoint = sqlSeatPoints.find(
+        (p) => p.commercialLevel === 'coordenador' && Number(p.chaveEntidade) === coord
+      );
+      const nome = String(coordPoint?.nome ?? '').trim();
+      return nome
+        ? `${COMMERCIAL_TEAM_LEVEL_LABEL.coordenador} — ${nome}`
+        : `${COMMERCIAL_TEAM_LEVEL_LABEL.coordenador} ${coord}`;
     }
-    const ga = Number(hierarchyFilter?.chaveGerenciaArea);
+    const ga = Number(scope.chaveGerenciaArea);
     if (Number.isFinite(ga) && ga > 0) {
-      return `${COMMERCIAL_TEAM_LEVEL_LABEL.gerente_area} ${ga}`;
+      const gaPoint = sqlSeatPoints.find(
+        (p) => p.commercialLevel === 'gerente_area' && Number(p.chaveEntidade) === ga
+      );
+      const nome = String(gaPoint?.nome ?? '').trim();
+      return nome
+        ? `${COMMERCIAL_TEAM_LEVEL_LABEL.gerente_area} — ${nome}`
+        : `${COMMERCIAL_TEAM_LEVEL_LABEL.gerente_area} ${ga}`;
     }
     return '';
-  }, [hierarchyFilter?.chaveGerenciaArea, hierarchyFilter?.chaveCoordenacao]);
+  }, [compareScopeHierarchy, sqlSeatPoints]);
 
   const seatLegendEntries = useMemo(() => {
     const map = new Map<number, { ga: string; gaNome: string; gerente: string; coord: string; sup: string }>();
@@ -2596,8 +2659,6 @@ const MapComponent: React.FC<MapComponentProps> = ({
 
       map.current = new mapboxgl.Map(mapInit);
       applyMapScrollZoomSettings(map.current);
-      panCenterLimitCleanupRef.current?.();
-      panCenterLimitCleanupRef.current = attachMapPanCenterLimit(map.current);
       mapPointerGestureGuardRef.current?.detach();
       mapPointerGestureGuardRef.current = attachMapPointerGestureGuard(map.current);
 
@@ -3715,8 +3776,6 @@ const MapComponent: React.FC<MapComponentProps> = ({
     if (!mapContainer.current) return;
     startMapTransitionLoading();
     if (map.current) {
-      panCenterLimitCleanupRef.current?.();
-      panCenterLimitCleanupRef.current = null;
       mapPointerGestureGuardRef.current?.detach();
       mapPointerGestureGuardRef.current = null;
       map.current.remove();
@@ -3740,8 +3799,9 @@ const MapComponent: React.FC<MapComponentProps> = ({
 
   useEffect(() => {
     if (!overlaySupervisores) return;
+    const seatHierarchy = resolveSeatPointsFetchHierarchy(hierarchyFilter, overlaySeatFilterKey);
     setLoadingSeatPoints(true);
-    void fetchCommercialSeatPoints({ hierarchy: hierarchyFilter })
+    void fetchCommercialSeatPoints({ hierarchy: seatHierarchy })
       .then((points) => {
         setSqlSeatPoints(points);
       })
@@ -3751,7 +3811,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
       .finally(() => {
         setLoadingSeatPoints(false);
       });
-  }, [overlaySupervisores, hierarchyFilter]);
+  }, [overlaySupervisores, hierarchyFilter, overlaySeatFilterKey]);
 
   useEffect(() => {
     const m = map.current;
@@ -4152,6 +4212,50 @@ const MapComponent: React.FC<MapComponentProps> = ({
     }
   }, [municipalityChoroplethEnabled, activeBaseStyle]);
 
+  /** Camada do roteiro de visitas (linha + paradas numeradas por status). */
+  useEffect(() => {
+    const m = map.current;
+    if (!m?.isStyleLoaded()) return;
+    syncVisitRouteOnMap(m, visitRoute, selectedVisitStopId, (stopId) => {
+      onVisitStopSelectRef.current?.(stopId);
+    });
+    if (!visitRoute) {
+      visitRouteFitIdRef.current = null;
+      return;
+    }
+    if (visitRouteFitIdRef.current !== visitRoute.id) {
+      visitRouteFitIdRef.current = visitRoute.id;
+      const bounds = getVisitRouteBounds(visitRoute);
+      if (bounds) {
+        try {
+          m.fitBounds(bounds, { padding: 120, maxZoom: 11, duration: 1100, essential: true });
+        } catch {
+          /* viewport pequena para o padding */
+        }
+      }
+    }
+  }, [visitRoute, selectedVisitStopId, mapReadyVersion]);
+
+  /** Foco de câmera pedido pelos painéis ("Abrir no mapa" / "Ver roteiro completo"). */
+  useEffect(() => {
+    const m = map.current;
+    if (!m || !visitFocus || !visitRoute) return;
+    if (visitFocus.stopId == null) {
+      const bounds = getVisitRouteBounds(visitRoute);
+      if (bounds) {
+        try {
+          m.fitBounds(bounds, { padding: 120, maxZoom: 11, duration: 1100, essential: true });
+        } catch {
+          /* viewport pequena para o padding */
+        }
+      }
+      return;
+    }
+    const stop = visitRoute.stops.find((s) => s.id === visitFocus.stopId);
+    if (stop) animateToPointFocus(m, [stop.lng, stop.lat]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visitFocus]);
+
   useEffect(() => {
     return () => {
       const m = map.current;
@@ -4192,8 +4296,6 @@ const MapComponent: React.FC<MapComponentProps> = ({
       agencyHoverPopupRef.current = null;
       mapPointerGestureGuardRef.current?.detach();
       mapPointerGestureGuardRef.current = null;
-      panCenterLimitCleanupRef.current?.();
-      panCenterLimitCleanupRef.current = null;
       map.current?.remove();
       map.current = null;
       if (mapTransitionTimerRef.current != null) {
@@ -4621,6 +4723,16 @@ const MapComponent: React.FC<MapComponentProps> = ({
             >
               <span className="text-xl leading-none">-</span>
             </Button>
+          </div>
+        </div>
+      </div>
+      <div
+        className={`absolute bottom-4 z-20 overflow-visible pb-[env(safe-area-inset-bottom,0px)] transition-[right] duration-500 ease-out ${
+          statePanelExpanded ? 'right-[calc(min(96vw,480px)+0.75rem)]' : 'right-4'
+        }`}
+      >
+        <div className="rounded-3xl border border-slate-200/90 bg-white/95 p-2 shadow-lg shadow-slate-900/10 backdrop-blur-sm">
+          <div className="flex flex-col items-center gap-2">
             <Button
               type="button"
               size="icon"

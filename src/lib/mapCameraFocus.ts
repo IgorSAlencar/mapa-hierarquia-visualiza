@@ -63,37 +63,6 @@ export function applyMapScrollZoomSettings(m: mapboxgl.Map): void {
   }
 }
 
-/** Prende o pan ao retângulo em `MAPBOX_CONFIG.panCenterLimit` sem alterar zoom min/max. */
-export function attachMapPanCenterLimit(m: mapboxgl.Map): () => void {
-  const limits = MAPBOX_CONFIG.panCenterLimit;
-  if (!limits) return () => {};
-
-  let clamping = false;
-  const clampPanCenter = () => {
-    if (clamping || m.isZooming() || m.isRotating()) return;
-    const c = m.getCenter();
-    const lng = Math.min(limits.east, Math.max(limits.west, c.lng));
-    const lat = Math.min(limits.north, Math.max(limits.south, c.lat));
-    if (lng === c.lng && lat === c.lat) return;
-    clamping = true;
-    try {
-      m.setCenter([lng, lat]);
-    } catch {
-      /* ignore */
-    } finally {
-      clamping = false;
-    }
-  };
-
-  // Só após arrastar com o mouse — nunca após zoom (moveend/zoomend + setCenter desloca a vista).
-  m.on('drag', clampPanCenter);
-  m.on('dragend', clampPanCenter);
-  return () => {
-    m.off('drag', clampPanCenter);
-    m.off('dragend', clampPanCenter);
-  };
-}
-
 export function captureMapCamera(m: mapboxgl.Map): SavedMapCamera {
   const center = m.getCenter();
   return {
