@@ -9,7 +9,7 @@ import {
   Search,
   SlidersHorizontal,
   Store,
-  User,
+  Users,
   X,
 } from 'lucide-react';
 import ExpressoBottomSheet from '@/components/ExpressoBottomSheet';
@@ -31,6 +31,7 @@ import {
   animateToFlatView,
   animateToPointFocus,
   captureMapCamera,
+  restoreMapCamera,
   fitMapToBrazilOverview,
   applyMapScrollZoomSettings,
   getPointCoordinates,
@@ -71,6 +72,12 @@ import {
 import { fetchExpressoProductivityRows, fetchExpressoStateMetrics } from '@/lib/expressoApi';
 import { loadSupervisionAreas } from '@/lib/supervisionAreas';
 import { getVisitRouteBounds, syncVisitRouteOnMap } from '@/lib/visitRouteMapLayer';
+import { isCompareScopeHierarchy } from '@/lib/compareAreasScope';
+import {
+  fetchSupervisoesForCompareScope,
+  mergeCompareSupervisionList,
+  writeCompareSupervisionsToMap,
+} from '@/lib/compareSupervisionsGeoJson';
 import type { VisitRoute } from '@/data/visitRoutesMock';
 
 /** Malha nacional IBGE (serviço de malhas → arquivo em `public/geo`). */
@@ -1186,6 +1193,47 @@ function buildMunicipalitySearchOptions(
   return options.sort((a, b) => a.label.localeCompare(b.label, 'pt-BR'));
 }
 
+function filterMunicipalitySearchOptions(
+  municipalitiesFc: GeoJSON.FeatureCollection,
+  query: string,
+  limit: number
+): SearchOption[] {
+  const q = normalizeText(query);
+  if (q.length < 2) return [];
+  const options = municipalitiesFc.features
+    .map((feature, index) => {
+      const name = municipalityNameFromProperties(feature.properties);
+      if (!name || !normalizeText(name).includes(q)) return null;
+      return {
+        id: `muni-br-${index}-${normalizeText(name)}`,
+        label: name,
+        kind: 'municipio' as const,
+        feature,
+        uf: null,
+      };
+    })
+    .filter(Boolean) as SearchOption[];
+  return options.sort((a, b) => a.label.localeCompare(b.label, 'pt-BR')).slice(0, limit);
+}
+
+function fitMapToRegionFeature(
+  m: mapboxgl.Map,
+  feature: GeoJSON.Feature,
+  kind: SearchOption['kind']
+) {
+  const bounds = featureBounds(feature);
+  if (!bounds) return;
+  const fit =
+    kind === 'estado'
+      ? { padding: 64, maxZoom: 7.8, duration: 700 }
+      : { padding: 52, maxZoom: 11.5, duration: 700 };
+  try {
+    m.fitBounds(bounds, fit);
+  } catch {
+    /* ignore */
+  }
+}
+
 const OVERLAY_BBOX_FETCH_PADDING_RATIO = 0.4;
 const OVERLAY_ZOOM_REFETCH_DELTA = 0.4;
 const OVERLAY_MOVEEND_DEBOUNCE_MS = 820;
@@ -1194,16 +1242,6 @@ const OVERLAY_VIEWPORT_DRAW_DEBOUNCE_MS = 120;
 function hasPanelHierarchyFilter(filter: SqlHierarchyFilter | null | undefined): boolean {
   if (!filter) return false;
   return Object.values(filter).some((v) => v != null && Number.isFinite(Number(v)) && Number(v) > 0);
-}
-
-/** GA ou Coordenação ativa (sem supervisão única) — escopo do modo "Comparar áreas". */
-function isCompareScopeHierarchy(filter: SqlHierarchyFilter | null | undefined): boolean {
-  if (!filter) return false;
-  const supKey = Number(filter.chaveSupervisao);
-  if (Number.isFinite(supKey) && supKey > 0) return false;
-  const ga = Number(filter.chaveGerenciaArea);
-  const coord = Number(filter.chaveCoordenacao);
-  return (Number.isFinite(ga) && ga > 0) || (Number.isFinite(coord) && coord > 0);
 }
 
 function parseOverlaySeatHierarchyKey(key: string | null): SqlHierarchyFilter | null {
@@ -1314,6 +1352,13 @@ interface MapComponentProps {
   onVisitStopSelect?: (stopId: number) => void;
   /** Comando de foco da câmera: `stopId` null enquadra o roteiro inteiro. */
   visitFocus?: { tick: number; stopId: number | null } | null;
+  /** Modo "Comparar áreas das supervisões" (controlado pelo pai, ex. painel Navegar). */
+  compareSupervisionAreas?: boolean;
+  onCompareSupervisionAreasChange?: (active: boolean) => void;
+  /** Incrementado pelo painel Navegar a cada "Comparar áreas no mapa" (pipeline único). */
+  compareApplyTick?: number;
+  /** Painéis flutuantes do Navegar (abaixo da UI do mapa: busca, AG, lojas, equipe). */
+  navigatorOverlays?: React.ReactNode;
 }
 
 const COMMERCIAL_TEAM_LEVEL_OPTIONS: Array<{ id: CommercialTeamLevel; label: string }> = [
@@ -1367,31 +1412,6 @@ function seatColorByLevel(
   return hslToHex(hue, sat, light);
 }
 
-/** Paleta categórica determinística para o modo "Comparar áreas das supervisões". */
-const COMPARE_SUPERVISION_PALETTE: readonly string[] = [
-  '#2563eb',
-  '#dc2626',
-  '#16a34a',
-  '#d97706',
-  '#7c3aed',
-  '#0891b2',
-  '#db2777',
-  '#65a30d',
-  '#ea580c',
-  '#0d9488',
-  '#9333ea',
-  '#475569',
-  '#b91c1c',
-  '#15803d',
-  '#a16207',
-  '#1d4ed8',
-];
-
-function compareColorForIndex(i: number): string {
-  if (!Number.isFinite(i) || i < 0) return COMPARE_SUPERVISION_PALETTE[0];
-  return COMPARE_SUPERVISION_PALETTE[i % COMPARE_SUPERVISION_PALETTE.length];
-}
-
 function resolveStoreSegment(point: SqlMapPoint): StoreSegmentKey {
   const cod = String(point.codAg ?? '').trim();
   const id = point.id.trim().toLowerCase();
@@ -1415,6 +1435,10 @@ const MapComponent: React.FC<MapComponentProps> = ({
   selectedVisitStopId = null,
   onVisitStopSelect,
   visitFocus = null,
+  compareSupervisionAreas: compareSupervisionAreasProp = false,
+  onCompareSupervisionAreasChange,
+  compareApplyTick = 0,
+  navigatorOverlays,
 }) => {
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<mapboxgl.Map | null>(null);
@@ -1466,7 +1490,18 @@ const MapComponent: React.FC<MapComponentProps> = ({
   });
   const [overlayLojas, setOverlayLojas] = useState(false);
   /** Modo "Comparar áreas das supervisões": pinta as áreas de todas as supervisões filhas da GA/Coord ativa. */
-  const [compareSupervisionAreas, setCompareSupervisionAreas] = useState(false);
+  const [compareSupervisionAreasLocal, setCompareSupervisionAreasLocal] = useState(false);
+  const compareSupervisionAreas = onCompareSupervisionAreasChange
+    ? compareSupervisionAreasProp
+    : compareSupervisionAreasLocal;
+  const setCompareSupervisionAreas = useCallback(
+    (value: boolean | ((prev: boolean) => boolean)) => {
+      const next = typeof value === 'function' ? value(compareSupervisionAreas) : value;
+      if (onCompareSupervisionAreasChange) onCompareSupervisionAreasChange(next);
+      else setCompareSupervisionAreasLocal(next);
+    },
+    [compareSupervisionAreas, onCompareSupervisionAreasChange]
+  );
   const compareSupervisionAreasRef = useRef(false);
   const [storeSegmentMenuOpen, setStoreSegmentMenuOpen] = useState(false);
   const [storeSegmentVisibility, setStoreSegmentVisibility] = useState<Record<StoreSegmentKey, boolean>>({
@@ -1477,6 +1512,9 @@ const MapComponent: React.FC<MapComponentProps> = ({
   });
   const [sqlAgencyPoints, setSqlAgencyPoints] = useState<SqlMapPoint[]>([]);
   const [sqlSeatPoints, setSqlSeatPoints] = useState<SqlMapPoint[]>([]);
+  const [apiSupervisoesForCompare, setApiSupervisoesForCompare] = useState<
+    Array<{ chave: number; descricao: string }>
+  >([]);
   const [sqlStorePoints, setSqlStorePoints] = useState<SqlMapPoint[]>([]);
   const [loadingAgencyPoints, setLoadingAgencyPoints] = useState(false);
   const [loadingSeatPoints, setLoadingSeatPoints] = useState(false);
@@ -1506,6 +1544,8 @@ const MapComponent: React.FC<MapComponentProps> = ({
   const mapTransitionTimerRef = useRef<number | null>(null);
   const mapTransitionStartRef = useRef<number>(Date.now());
   const [mapReadyVersion, setMapReadyVersion] = useState(0);
+  const mapStyleSwapPreserveRef = useRef(false);
+  const preservedCameraForStyleSwapRef = useRef<SavedMapCamera | null>(null);
   const [isMapTransitionLoading, setIsMapTransitionLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchOpen, setSearchOpen] = useState(false);
@@ -1694,49 +1734,29 @@ const MapComponent: React.FC<MapComponentProps> = ({
 
   /**
    * Lista de supervisões filhas da GA/Coord ativa para o modo "Comparar áreas".
-   *
-   * O backend já filtra `sqlSeatPoints` pelo escopo (painel ou clique na sede no mapa);
-   * quando há Coordenação ativa, todos os pontos de supervisor retornados pertencem a
-   * ela (não há `chaveCoordenacao` no `SqlMapPoint` para conferir client-side).
-   * Quando há GA ativa, ainda filtramos por `chaveGerenciaArea` como reforço.
+   * Usa sedes do mapa; se ainda vazio, cai na lista da API de estrutura comercial.
    */
   const compareSupervisionsList = useMemo(() => {
-    const scope = compareScopeHierarchy;
-    if (!scope) return [] as Array<{ chaveSupervisao: number; nome: string; color: string }>;
-
-    const activeGa = Number(scope.chaveGerenciaArea);
-    const activeCoord = Number(scope.chaveCoordenacao);
-    const hasGa = Number.isFinite(activeGa) && activeGa > 0;
-    const hasCoord = Number.isFinite(activeCoord) && activeCoord > 0;
-    if (!hasGa && !hasCoord) return [] as Array<{ chaveSupervisao: number; nome: string; color: string }>;
-
-    const supervisors = sqlSeatPoints.filter((point) => {
-      if (point.commercialLevel !== 'supervisor') return false;
-      if (hasGa && Number(point.chaveGerenciaArea) !== activeGa) return false;
-      return true;
-    });
-
-    const dedup = new Map<number, string>();
-    for (const point of supervisors) {
-      const chave = Number(point.chaveEntidade);
-      if (!Number.isFinite(chave) || chave <= 0) continue;
-      if (dedup.has(chave)) continue;
-      dedup.set(chave, String(point.nome ?? `${COMMERCIAL_TEAM_LEVEL_LABEL.supervisor} ${chave}`));
-    }
-
-    return [...dedup.entries()]
-      .sort(([a], [b]) => a - b)
-      .map(([chaveSupervisao, nome], index) => ({
-        chaveSupervisao,
-        nome,
-        color: compareColorForIndex(index),
-      }));
-  }, [sqlSeatPoints, compareScopeHierarchy]);
+    if (!compareScopeHierarchy) return [] as ReturnType<typeof mergeCompareSupervisionList>;
+    return mergeCompareSupervisionList(
+      sqlSeatPoints,
+      apiSupervisoesForCompare,
+      compareScopeHierarchy
+    );
+  }, [sqlSeatPoints, compareScopeHierarchy, apiSupervisoesForCompare]);
 
   /** Habilita o botão de comparar quando há GA ou Coord no painel ou via clique na sede no mapa. */
   const canCompareSupervisionAreas = useMemo(
     () => Boolean(compareScopeHierarchy) && compareSupervisionsList.length > 0,
     [compareScopeHierarchy, compareSupervisionsList.length]
+  );
+
+  /** Só exibe o controle de comparar áreas com GG ou GC III visíveis em "Mostrar Equipe Comercial". */
+  const showCompareSupervisionAreasButton = useMemo(
+    () =>
+      overlaySupervisores &&
+      (commercialTeamLevelVisibility.coordenador || commercialTeamLevelVisibility.gerente_area),
+    [overlaySupervisores, commercialTeamLevelVisibility]
   );
 
   const compareScopeLabel = useMemo(() => {
@@ -2162,11 +2182,12 @@ const MapComponent: React.FC<MapComponentProps> = ({
     const q = normalizeText(searchQuery);
     if (q.length < 2) return [];
     const states = stateSearchOptions.filter((item) => normalizeText(item.label).includes(q));
-    const municipalities = municipalitySearchOptions.filter((item) =>
-      normalizeText(item.label).includes(q)
-    );
+    const municipalities =
+      municipalitySearchOptions.length > 0
+        ? municipalitySearchOptions.filter((item) => normalizeText(item.label).includes(q))
+        : filterMunicipalitySearchOptions(allMunicipalitiesFcRef.current, searchQuery, 8);
     return [...states.slice(0, 6), ...municipalities.slice(0, 8)];
-  }, [searchQuery, stateSearchOptions, municipalitySearchOptions]);
+  }, [searchQuery, stateSearchOptions, municipalitySearchOptions, municipalitiesGeoVersion]);
 
   const municipalityNamesForTable = useMemo(() => {
     const names =
@@ -2340,11 +2361,12 @@ const MapComponent: React.FC<MapComponentProps> = ({
 
   const handleSearchSelect = (option: SearchOption) => {
     if (!meshSelectionEnabled()) {
-      toast({
-        title: 'Malha desligada',
-        description:
-          'Ative a malha de municípios no mapa para selecionar estado ou município.',
-      });
+      const m = map.current;
+      if (m) {
+        fitMapToRegionFeature(m, option.feature, option.kind);
+      }
+      setSearchQuery(option.label);
+      setSearchOpen(false);
       return;
     }
     if (option.kind === 'estado') {
@@ -3708,7 +3730,14 @@ const MapComponent: React.FC<MapComponentProps> = ({
         } catch {
           /* ignore */
         }
-        fitMapToBrazilOverview(m, { duration: 0 });
+        const preserved = preservedCameraForStyleSwapRef.current;
+        if (mapStyleSwapPreserveRef.current && preserved) {
+          mapStyleSwapPreserveRef.current = false;
+          preservedCameraForStyleSwapRef.current = null;
+          restoreMapCamera(m, preserved);
+        } else {
+          fitMapToBrazilOverview(m, { duration: 0 });
+        }
       });
 
       map.current.on('error', (e) => {
@@ -3774,6 +3803,11 @@ const MapComponent: React.FC<MapComponentProps> = ({
 
   useEffect(() => {
     if (!mapContainer.current) return;
+    const isStyleSwap = Boolean(map.current);
+    if (isStyleSwap) {
+      preservedCameraForStyleSwapRef.current = captureMapCamera(map.current!);
+      mapStyleSwapPreserveRef.current = true;
+    }
     startMapTransitionLoading();
     if (map.current) {
       mapPointerGestureGuardRef.current?.detach();
@@ -3783,6 +3817,83 @@ const MapComponent: React.FC<MapComponentProps> = ({
     }
     initializeMap();
   }, [activeBaseStyle, activeStandardTheme]);
+
+  /** Reaplica seleção geográfica e overlays no mapa após troca de estilo (camadas custom são recriadas no load). */
+  useEffect(() => {
+    const m = map.current;
+    if (!m?.isStyleLoaded()) return;
+    if (!m.getLayer('br-states-selected')) return;
+
+    lastOverlayFcSignatureRef.current = {};
+
+    const state = selectedStateFeature;
+    if (state) {
+      const stateId = resolveStateId(state.properties);
+      if (stateId) {
+        try {
+          m.setFilter('br-states-selected', ['==', ['get', 'sigla'], stateId]);
+          m.setFilter('br-states-dim', ['!=', ['get', 'sigla'], stateId]);
+          m.setFilter('br-states-outline', ['==', ['get', 'sigla'], stateId]);
+        } catch {
+          /* estilo recarregando */
+        }
+      }
+      const munis = municipalitiesFcRef.current;
+      const ctx = m.getSource('municipalities-context') as mapboxgl.GeoJSONSource | undefined;
+      if (ctx && munis.features.length > 0) {
+        try {
+          ctx.setData(munis);
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+
+    if (selectedMunicipalityFeature) {
+      const sel = m.getSource('selected-municipality') as mapboxgl.GeoJSONSource | undefined;
+      try {
+        sel?.setData({
+          type: 'FeatureCollection',
+          features: [selectedMunicipalityFeature],
+        });
+      } catch {
+        /* ignore */
+      }
+    }
+
+    const hierarchy = overlaySeatHierarchyRef.current;
+    if (hierarchy?.chaveSupervisao != null) {
+      void (async () => {
+        try {
+          const index = await loadSupervisionAreas();
+          const mapInst = map.current;
+          if (!mapInst?.isStyleLoaded()) return;
+          const src = mapInst.getSource('supervision-area') as mapboxgl.GeoJSONSource | undefined;
+          if (!src) return;
+          const areaFeature = index.getByChave(hierarchy.chaveSupervisao!);
+          src.setData(
+            areaFeature
+              ? { type: 'FeatureCollection', features: [areaFeature] }
+              : { type: 'FeatureCollection', features: [] }
+          );
+        } catch (error) {
+          console.warn('Falha ao restaurar área de supervisão após troca de estilo:', error);
+        }
+      })();
+    }
+
+    if (compareSupervisionAreas && compareSupervisionsList.length > 0) {
+      void writeCompareSupervisionsToMap(m, compareSupervisionsList).catch((error) => {
+        console.warn('Falha ao restaurar comparação de áreas após troca de estilo:', error);
+      });
+    }
+  }, [
+    mapReadyVersion,
+    selectedStateFeature,
+    selectedMunicipalityFeature,
+    compareSupervisionAreas,
+    compareSupervisionsList,
+  ]);
 
   useEffect(() => {
     const m = map.current;
@@ -3798,10 +3909,91 @@ const MapComponent: React.FC<MapComponentProps> = ({
   }, [mapMarkers, storeFilterCodAg, mapReadyVersion]);
 
   useEffect(() => {
-    if (!overlaySupervisores) return;
-    const seatHierarchy = resolveSeatPointsFetchHierarchy(hierarchyFilter, overlaySeatFilterKey);
+    if (!compareApplyTick || !compareSupervisionAreas || !compareScopeHierarchy) return;
+
+    let cancelled = false;
+    const scope = compareScopeHierarchy;
+
     setLoadingSeatPoints(true);
-    void fetchCommercialSeatPoints({ hierarchy: seatHierarchy })
+
+    void (async () => {
+      try {
+        const [seatPoints, apiItems] = await Promise.all([
+          fetchCommercialSeatPoints({ hierarchy: scope }),
+          fetchSupervisoesForCompareScope(scope),
+        ]);
+        if (cancelled) return;
+
+        setSqlSeatPoints(seatPoints);
+        setApiSupervisoesForCompare(apiItems);
+
+        const list = mergeCompareSupervisionList(seatPoints, apiItems, scope);
+        const m = map.current;
+        if (m?.isStyleLoaded()) {
+          await writeCompareSupervisionsToMap(m, list);
+          for (const layerId of ['supervisions-compare-fill', 'supervisions-compare-line'] as const) {
+            if (!m.getLayer(layerId)) continue;
+            try {
+              m.setLayoutProperty(layerId, 'visibility', 'visible');
+            } catch {
+              /* estilo recarregando */
+            }
+          }
+        }
+      } catch (error) {
+        console.warn('Falha ao aplicar comparação de áreas pelo Navegar:', error);
+      } finally {
+        if (!cancelled) setLoadingSeatPoints(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [compareApplyTick, compareSupervisionAreas, compareScopeHierarchy, mapReadyVersion]);
+
+  useEffect(() => {
+    if (!compareSupervisionAreas || !compareScopeHierarchy) {
+      setApiSupervisoesForCompare([]);
+      return;
+    }
+    let cancelled = false;
+    void fetchSupervisoesForCompareScope(compareScopeHierarchy)
+      .then((items) => {
+        if (!cancelled) setApiSupervisoesForCompare(items);
+      })
+      .catch((error) => {
+        console.warn('Falha ao carregar supervisões para comparar áreas:', error);
+        if (!cancelled) setApiSupervisoesForCompare([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [compareSupervisionAreas, compareScopeHierarchy]);
+
+  /** Ao comparar pela barra de camadas, liga a equipe comercial se ainda não estiver ativa. */
+  useEffect(() => {
+    if (!compareSupervisionAreas || !compareScopeHierarchy) return;
+    if (compareApplyTick > 0) return;
+    setCommercialTeamLevelVisibility({
+      supervisor: true,
+      coordenador: false,
+      gerente_area: false,
+    });
+    setOverlaySupervisores(true);
+  }, [compareSupervisionAreas, compareScopeHierarchy, compareApplyTick]);
+
+  useEffect(() => {
+    const seatHierarchy =
+      compareSupervisionAreas && compareScopeHierarchy
+        ? compareScopeHierarchy
+        : resolveSeatPointsFetchHierarchy(hierarchyFilter, overlaySeatFilterKey);
+    const shouldFetchSeats =
+      overlaySupervisores ||
+      (compareSupervisionAreas && isCompareScopeHierarchy(compareScopeHierarchy));
+    if (!shouldFetchSeats) return;
+    setLoadingSeatPoints(true);
+    void fetchCommercialSeatPoints({ hierarchy: seatHierarchy ?? hierarchyFilter })
       .then((points) => {
         setSqlSeatPoints(points);
       })
@@ -3811,7 +4003,27 @@ const MapComponent: React.FC<MapComponentProps> = ({
       .finally(() => {
         setLoadingSeatPoints(false);
       });
-  }, [overlaySupervisores, hierarchyFilter, overlaySeatFilterKey]);
+  }, [
+    overlaySupervisores,
+    compareSupervisionAreas,
+    compareScopeHierarchy,
+    hierarchyFilter,
+    overlaySeatFilterKey,
+  ]);
+
+  useEffect(() => {
+    const m = map.current;
+    if (!m?.isStyleLoaded()) return;
+    const visibility = compareSupervisionAreas ? 'visible' : 'none';
+    for (const layerId of ['supervisions-compare-fill', 'supervisions-compare-line'] as const) {
+      if (!m.getLayer(layerId)) continue;
+      try {
+        m.setLayoutProperty(layerId, 'visibility', visibility);
+      } catch {
+        /* estilo recarregando */
+      }
+    }
+  }, [compareSupervisionAreas, mapReadyVersion]);
 
   useEffect(() => {
     const m = map.current;
@@ -4111,12 +4323,18 @@ const MapComponent: React.FC<MapComponentProps> = ({
     }
   }, [municipalityMeshVisible, mapReadyVersion]);
 
-  /** Sai do modo "Comparar áreas" automaticamente quando o escopo (GA/Coord) some. */
+  /** Sai do modo "Comparar áreas" quando o escopo hierárquico (GG/GC III) deixa de existir. */
   useEffect(() => {
-    if (compareSupervisionAreas && !canCompareSupervisionAreas) {
+    if (compareSupervisionAreas && !compareScopeHierarchy) {
       setCompareSupervisionAreas(false);
     }
-  }, [compareSupervisionAreas, canCompareSupervisionAreas]);
+  }, [compareSupervisionAreas, compareScopeHierarchy, setCompareSupervisionAreas]);
+
+  useEffect(() => {
+    if (compareSupervisionAreas && !showCompareSupervisionAreasButton) {
+      setCompareSupervisionAreas(false);
+    }
+  }, [compareSupervisionAreas, showCompareSupervisionAreasButton, setCompareSupervisionAreas]);
 
   /**
    * Modo "Comparar áreas das supervisões": carrega o GeoJSON sob demanda, monta uma
@@ -4128,57 +4346,26 @@ const MapComponent: React.FC<MapComponentProps> = ({
     if (!m?.isStyleLoaded()) return;
     const source = m.getSource('supervisions-compare') as mapboxgl.GeoJSONSource | undefined;
     if (!source) return;
-    const emptyFc: GeoJSON.FeatureCollection = { type: 'FeatureCollection', features: [] };
 
-    if (!compareSupervisionAreas || compareSupervisionsList.length === 0) {
+    if (!compareSupervisionAreas) {
       try {
-        source.setData(emptyFc);
+        source.setData({ type: 'FeatureCollection', features: [] });
       } catch {
         /* estilo recarregando */
       }
       return;
     }
 
-    let cancelled = false;
-    void (async () => {
-      try {
-        const index = await loadSupervisionAreas();
-        if (cancelled || !map.current) return;
-        const liveSource = map.current.getSource('supervisions-compare') as
-          | mapboxgl.GeoJSONSource
-          | undefined;
-        if (!liveSource) return;
+    if (compareSupervisionsList.length === 0) {
+      return;
+    }
 
-        const colorByChave = new Map<number, string>();
-        for (const item of compareSupervisionsList) {
-          colorByChave.set(item.chaveSupervisao, item.color);
-        }
-        const baseFeatures = index.getManyByChaves(
-          compareSupervisionsList.map((item) => item.chaveSupervisao)
-        );
-        const features: GeoJSON.Feature[] = baseFeatures.map((feature) => {
-          const rawChave = (feature.properties as { chave_supervisao?: string | number } | null)
-            ?.chave_supervisao;
-          const chaveNum = Number(rawChave);
-          const color = colorByChave.get(chaveNum) ?? compareColorForIndex(0);
-          return {
-            ...feature,
-            properties: {
-              ...(feature.properties ?? {}),
-              compare_color: color,
-            },
-          };
-        });
-        liveSource.setData({ type: 'FeatureCollection', features });
-      } catch (error) {
+    let cancelled = false;
+    void writeCompareSupervisionsToMap(m, compareSupervisionsList).catch((error) => {
+      if (!cancelled) {
         console.warn('Falha ao carregar áreas das supervisões para comparação:', error);
-        try {
-          source.setData(emptyFc);
-        } catch {
-          /* source pode ter sido removida em troca de estilo */
-        }
       }
-    })();
+    });
 
     return () => {
       cancelled = true;
@@ -4308,6 +4495,11 @@ const MapComponent: React.FC<MapComponentProps> = ({
   return (
     <div className="relative h-full rounded-lg overflow-hidden">
       <div ref={mapContainer} className="absolute inset-0" />
+      {navigatorOverlays ? (
+        <div className="pointer-events-none absolute inset-0 z-[15] overflow-visible">
+          {navigatorOverlays}
+        </div>
+      ) : null}
       {isMapTransitionLoading && (
         <div
           className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center"
@@ -4361,34 +4553,6 @@ const MapComponent: React.FC<MapComponentProps> = ({
                 </li>
               ))}
             </ul>
-          </div>
-        </div>
-      )}
-      {overlaySupervisores && seatLegendEntries.length > 0 && (
-        <div className="pointer-events-none absolute bottom-3 right-3 z-20 rounded-lg border border-slate-200/60 bg-white/65 px-2.5 py-2 text-[10px] text-slate-600 backdrop-blur-sm">
-          <p className="mb-1 font-medium uppercase tracking-wide text-slate-500">
-            Paleta por {COMMERCIAL_TEAM_LEVEL_LABEL.gerente_area}
-          </p>
-          <div className="mb-1 grid grid-cols-[minmax(0,1fr)_20px_20px_20px] items-center gap-1.5 text-[9px] uppercase tracking-wide text-slate-400">
-            <span>{COMMERCIAL_TEAM_LEVEL_LABEL.gerente_area}</span>
-            <span className="text-center">GG</span>
-            <span className="text-center">GC3</span>
-            <span className="text-center">GC</span>
-          </div>
-          <div className="space-y-1.5">
-            {seatLegendEntries.map((entry) => (
-              <div key={entry.ga} className="grid grid-cols-[minmax(0,1fr)_20px_20px_20px] items-center gap-1.5">
-                <span className="truncate text-[10px] text-slate-500" title={`${entry.gaNome} (${entry.ga})`}>
-                  {entry.gaNome}
-                </span>
-                <span
-                  className="mx-auto inline-flex h-2.5 w-2.5 rounded-full"
-                  style={{ backgroundColor: entry.gerente }}
-                />
-                <span className="mx-auto inline-flex h-2.5 w-2.5 rounded-full" style={{ backgroundColor: entry.coord }} />
-                <span className="mx-auto inline-flex h-2.5 w-2.5 rounded-full" style={{ backgroundColor: entry.sup }} />
-              </div>
-            ))}
           </div>
         </div>
       )}
@@ -4472,7 +4636,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
                     : 'border-slate-200/90 bg-white/95 text-slate-600 hover:border-slate-300 hover:bg-slate-50'
                 }`}
               >
-                {loadingSeatPoints ? <span className="text-xs">…</span> : <User className="h-4 w-4" />}
+                {loadingSeatPoints ? <span className="text-xs">…</span> : <Users className="h-4 w-4" />}
               </button>
               {overlaySupervisores && commercialTeamMenuOpen && (
                 <div className="absolute left-0 top-[calc(100%+0.4rem)] z-30 min-w-[220px] rounded-xl border border-slate-200 bg-white p-2 shadow-lg shadow-slate-900/10">
@@ -4563,6 +4727,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
                 </div>
               )}
             </div>
+            {showCompareSupervisionAreasButton ? (
             <button
               type="button"
               title={
@@ -4570,7 +4735,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
                   ? compareSupervisionAreas
                     ? `Ocultar áreas dos ${COMMERCIAL_TEAM_LEVEL_LABEL_PLURAL.supervisor} — ${compareScopeLabel}`
                     : `Comparar áreas dos ${COMMERCIAL_TEAM_LEVEL_LABEL_PLURAL.supervisor} — ${compareScopeLabel}`
-                  : `Selecione um ${COMMERCIAL_TEAM_LEVEL_LABEL.gerente_area} ou ${COMMERCIAL_TEAM_LEVEL_LABEL.coordenador} para comparar áreas`
+                  : `Selecione um ${COMMERCIAL_TEAM_LEVEL_LABEL.gerente_area} ou ${COMMERCIAL_TEAM_LEVEL_LABEL.coordenador} no mapa para comparar áreas`
               }
               aria-label={`Comparar áreas dos ${COMMERCIAL_TEAM_LEVEL_LABEL_PLURAL.supervisor}`}
               aria-pressed={compareSupervisionAreas}
@@ -4584,6 +4749,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
             >
               <Layers className="h-4 w-4" />
             </button>
+            ) : null}
           </div>
           <MapOverlayMarkerInfoPanel
             storeFilterCodAg={storeFilterCodAg}
@@ -4633,7 +4799,6 @@ const MapComponent: React.FC<MapComponentProps> = ({
                       aria-checked={selected}
                       title={opt.label}
                       onClick={() => {
-                        clearSelectedState();
                         setMapStyleMode(opt.id);
                         setMapLayoutMenuPinned(false);
                         setMapLayoutFlyoutHover(false);
@@ -4727,11 +4892,51 @@ const MapComponent: React.FC<MapComponentProps> = ({
         </div>
       </div>
       <div
-        className={`absolute bottom-4 z-20 overflow-visible pb-[env(safe-area-inset-bottom,0px)] transition-[right] duration-500 ease-out ${
+        className={`absolute bottom-4 z-20 flex max-w-[min(96vw,calc(100%-2rem))] items-end gap-3 overflow-visible pb-[env(safe-area-inset-bottom,0px)] transition-[right] duration-500 ease-out ${
           statePanelExpanded ? 'right-[calc(min(96vw,480px)+0.75rem)]' : 'right-4'
         }`}
       >
-        <div className="rounded-3xl border border-slate-200/90 bg-white/95 p-2 shadow-lg shadow-slate-900/10 backdrop-blur-sm">
+        {overlaySupervisores && seatLegendEntries.length > 0 ? (
+          <div className="pointer-events-none min-w-0 max-w-[min(280px,calc(100vw-7rem))] shrink rounded-lg border border-slate-200/60 bg-white/90 px-2.5 py-2 text-[10px] text-slate-600 shadow-md shadow-slate-900/5 backdrop-blur-sm">
+            <p className="mb-1 font-medium uppercase tracking-wide text-slate-500">
+              Paleta por {COMMERCIAL_TEAM_LEVEL_LABEL.gerente_area}
+            </p>
+            <div className="mb-1 grid grid-cols-[minmax(0,1fr)_20px_20px_20px] items-center gap-1.5 text-[9px] uppercase tracking-wide text-slate-400">
+              <span>{COMMERCIAL_TEAM_LEVEL_LABEL.gerente_area}</span>
+              <span className="text-center">GG</span>
+              <span className="text-center">GC3</span>
+              <span className="text-center">GC</span>
+            </div>
+            <div className="max-h-40 space-y-1.5 overflow-y-auto">
+              {seatLegendEntries.map((entry) => (
+                <div
+                  key={entry.ga}
+                  className="grid grid-cols-[minmax(0,1fr)_20px_20px_20px] items-center gap-1.5"
+                >
+                  <span
+                    className="truncate text-[10px] text-slate-500"
+                    title={`${entry.gaNome} (${entry.ga})`}
+                  >
+                    {entry.gaNome}
+                  </span>
+                  <span
+                    className="mx-auto inline-flex h-2.5 w-2.5 rounded-full"
+                    style={{ backgroundColor: entry.gerente }}
+                  />
+                  <span
+                    className="mx-auto inline-flex h-2.5 w-2.5 rounded-full"
+                    style={{ backgroundColor: entry.coord }}
+                  />
+                  <span
+                    className="mx-auto inline-flex h-2.5 w-2.5 rounded-full"
+                    style={{ backgroundColor: entry.sup }}
+                  />
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
+        <div className="shrink-0 rounded-3xl border border-slate-200/90 bg-white/95 p-2 shadow-lg shadow-slate-900/10 backdrop-blur-sm">
           <div className="flex flex-col items-center gap-2">
             <Button
               type="button"

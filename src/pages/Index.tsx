@@ -1,11 +1,15 @@
 import React, { useMemo, useState } from 'react';
+import { flushSync } from 'react-dom';
 import MapComponent from '@/components/MapComponent';
 import CommercialStructureFilters from '@/components/CommercialStructureFilters';
 import NavigatorPanel, { type NavigatorSection } from '@/components/navigator/NavigatorPanel';
+import CompararAreasPanel from '@/components/navigator/CompararAreasPanel';
+import { HIERARCHY_ALL } from '@/components/navigator/HierarchyScopeSelect';
 import VisitasRoteirosPanel from '@/components/navigator/VisitasRoteirosPanel';
 import VisitStopDetailCard from '@/components/navigator/VisitStopDetailCard';
 import RouteLegend from '@/components/navigator/RouteLegend';
 import type { VisitRoute } from '@/data/visitRoutesMock';
+import { usePanelDrag } from '@/hooks/usePanelDrag';
 import {
   FILTROS_INICIAIS,
   buildSqlHierarchyFilterFromUi,
@@ -15,15 +19,28 @@ import {
 import { Map, Building2, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 
+const NAVIGATOR_PANEL_DOCK = { x: 16, y: 150 } as const;
+
 const Index = () => {
   const [filters, setFilters] = useState<FiltrosEstrutura>(FILTROS_INICIAIS);
   const [filtersPanelOpen, setFiltersPanelOpen] = useState(false);
 
-  const [navigatorMinimized, setNavigatorMinimized] = useState(false);
+  const [navigatorMinimized, setNavigatorMinimized] = useState(true);
   const [activeSection, setActiveSection] = useState<NavigatorSection | null>(null);
   const [activeRoute, setActiveRoute] = useState<VisitRoute | null>(null);
   const [selectedStopId, setSelectedStopId] = useState<number | null>(null);
   const [visitFocus, setVisitFocus] = useState<{ tick: number; stopId: number | null } | null>(null);
+  const [compareSupervisionAreas, setCompareSupervisionAreas] = useState(false);
+  const [compareApplyTick, setCompareApplyTick] = useState(0);
+
+  const navigatorDrag = usePanelDrag(NAVIGATOR_PANEL_DOCK);
+  const visitasDrag = usePanelDrag({ x: 332, y: 150 });
+  const compararDrag = usePanelDrag({ x: 332, y: 150 });
+  const [stopDetailInitial] = useState(() => ({
+    x: typeof window !== 'undefined' ? Math.max(16, window.innerWidth - 400) : 16,
+    y: 96,
+  }));
+  const stopDetailDrag = usePanelDrag(stopDetailInitial);
 
   const mapMarkers = useMemo(() => getMarcadoresParaFiltros(filters), [filters]);
 
@@ -53,6 +70,20 @@ const Index = () => {
     if (section !== 'visitas') clearVisitState();
   };
 
+  const handleApplyCompare = (gerenciaSel: string, coordenacaoSel: string) => {
+    flushSync(() => {
+      setFilters((prev) => ({
+        ...prev,
+        chaveGerenciaArea: gerenciaSel === HIERARCHY_ALL ? '' : gerenciaSel,
+        chaveCoordenacao: coordenacaoSel === HIERARCHY_ALL ? '' : coordenacaoSel,
+        chaveSupervisao: '',
+        supervisorId: '',
+      }));
+    });
+    setCompareSupervisionAreas(true);
+    setCompareApplyTick((tick) => tick + 1);
+  };
+
   const handleRouteChange = (route: VisitRoute | null) => {
     setActiveRoute(route);
     setSelectedStopId(null);
@@ -63,6 +94,85 @@ const Index = () => {
     const next = activeRoute.stops.find((stop) => stop.ordem === selectedStop.ordem + direction);
     if (next) setSelectedStopId(next.id);
   };
+
+  const handleNavigatorMinimize = () => {
+    navigatorDrag.setPosition(NAVIGATOR_PANEL_DOCK);
+    setNavigatorMinimized(true);
+  };
+
+  const navigatorOverlays = (
+    <>
+      {navigatorMinimized ? (
+        <NavigatorPanel
+          minimized
+          onMinimize={handleNavigatorMinimize}
+          onRestore={() => setNavigatorMinimized(false)}
+          activeSection={activeSection}
+          onSelectSection={handleSelectSection}
+        />
+      ) : (
+        <>
+          <NavigatorPanel
+            minimized={false}
+            onMinimize={handleNavigatorMinimize}
+            onRestore={() => setNavigatorMinimized(false)}
+            activeSection={activeSection}
+            onSelectSection={handleSelectSection}
+            shellStyle={navigatorDrag.shellStyle}
+            headerDragProps={navigatorDrag.headerDragProps}
+          />
+          {activeSection === 'visitas' && (
+            <VisitasRoteirosPanel
+              onBack={() => handleSelectSection(null)}
+              onClose={() => handleSelectSection(null)}
+              activeRoute={activeRoute}
+              onRouteChange={handleRouteChange}
+              selectedStopId={selectedStopId}
+              onStopSelect={setSelectedStopId}
+              onViewFullRoute={() => {
+                setSelectedStopId(null);
+                setVisitFocus({ tick: Date.now(), stopId: null });
+              }}
+              shellStyle={visitasDrag.shellStyle}
+              headerDragProps={visitasDrag.headerDragProps}
+            />
+          )}
+          {activeSection === 'comparar' && (
+            <CompararAreasPanel
+              onBack={() => handleSelectSection(null)}
+              onClose={() => handleSelectSection(null)}
+              compareActive={compareSupervisionAreas}
+              onApplyCompare={handleApplyCompare}
+              onDeactivateCompare={() => setCompareSupervisionAreas(false)}
+              appliedGerenciaChave={filters.chaveGerenciaArea}
+              appliedCoordenacaoChave={filters.chaveCoordenacao}
+              shellStyle={compararDrag.shellStyle}
+              headerDragProps={compararDrag.headerDragProps}
+            />
+          )}
+        </>
+      )}
+
+      {activeRoute && (
+        <div className="pointer-events-none absolute right-16 top-4">
+          <RouteLegend />
+        </div>
+      )}
+
+      {activeRoute && selectedStop && (
+        <VisitStopDetailCard
+          route={activeRoute}
+          stop={selectedStop}
+          onClose={() => setSelectedStopId(null)}
+          onOpenOnMap={() => setVisitFocus({ tick: Date.now(), stopId: selectedStop.id })}
+          onPrev={() => handleStopStep(-1)}
+          onNext={() => handleStopStep(1)}
+          shellStyle={stopDetailDrag.shellStyle}
+          headerDragProps={stopDetailDrag.headerDragProps}
+        />
+      )}
+    </>
+  );
 
   return (
     <div className="min-h-screen bg-background">
@@ -92,60 +202,11 @@ const Index = () => {
           selectedVisitStopId={selectedStopId}
           onVisitStopSelect={setSelectedStopId}
           visitFocus={visitFocus}
+          compareSupervisionAreas={compareSupervisionAreas}
+          onCompareSupervisionAreasChange={setCompareSupervisionAreas}
+          compareApplyTick={compareApplyTick}
+          navigatorOverlays={navigatorOverlays}
         />
-
-        {navigatorMinimized ? (
-          <NavigatorPanel
-            minimized
-            onMinimize={() => setNavigatorMinimized(true)}
-            onRestore={() => setNavigatorMinimized(false)}
-            activeSection={activeSection}
-            onSelectSection={handleSelectSection}
-          />
-        ) : (
-          <div className="pointer-events-none absolute bottom-6 left-4 top-[150px] z-20 flex items-start gap-3">
-            <NavigatorPanel
-              minimized={false}
-              onMinimize={() => setNavigatorMinimized(true)}
-              onRestore={() => setNavigatorMinimized(false)}
-              activeSection={activeSection}
-              onSelectSection={handleSelectSection}
-            />
-            {activeSection === 'visitas' && (
-              <VisitasRoteirosPanel
-                onBack={() => handleSelectSection(null)}
-                onClose={() => handleSelectSection(null)}
-                activeRoute={activeRoute}
-                onRouteChange={handleRouteChange}
-                selectedStopId={selectedStopId}
-                onStopSelect={setSelectedStopId}
-                onViewFullRoute={() => {
-                  setSelectedStopId(null);
-                  setVisitFocus({ tick: Date.now(), stopId: null });
-                }}
-              />
-            )}
-          </div>
-        )}
-
-        {activeRoute && (
-          <div className="pointer-events-none absolute right-16 top-4 z-20">
-            <RouteLegend />
-          </div>
-        )}
-
-        {activeRoute && selectedStop && (
-          <div className="pointer-events-none absolute right-16 top-24 z-20">
-            <VisitStopDetailCard
-              route={activeRoute}
-              stop={selectedStop}
-              onClose={() => setSelectedStopId(null)}
-              onOpenOnMap={() => setVisitFocus({ tick: Date.now(), stopId: selectedStop.id })}
-              onPrev={() => handleStopStep(-1)}
-              onNext={() => handleStopStep(1)}
-            />
-          </div>
-        )}
 
         <div
           className={`absolute inset-0 z-30 bg-black/20 transition-opacity duration-300 ${

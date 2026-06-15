@@ -23,6 +23,9 @@ import {
   type VisitRoute,
 } from '@/data/visitRoutesMock';
 import RouteStopsList from './RouteStopsList';
+import type { CSSProperties } from 'react';
+import type { PanelHeaderDragProps } from '@/hooks/usePanelDrag';
+import { mergeHeaderDrag } from '@/components/navigator/mergeHeaderDrag';
 
 const ALL = 'all';
 
@@ -34,6 +37,8 @@ interface VisitasRoteirosPanelProps {
   selectedStopId: number | null;
   onStopSelect: (stopId: number) => void;
   onViewFullRoute: () => void;
+  shellStyle?: CSSProperties;
+  headerDragProps?: PanelHeaderDragProps;
 }
 
 const VisitasRoteirosPanel: React.FC<VisitasRoteirosPanelProps> = ({
@@ -44,6 +49,8 @@ const VisitasRoteirosPanel: React.FC<VisitasRoteirosPanelProps> = ({
   selectedStopId,
   onStopSelect,
   onViewFullRoute,
+  shellStyle,
+  headerDragProps,
 }) => {
   const [gerencias, setGerencias] = useState<CommercialStructureItem[]>(FALLBACK_GERENCIAS);
   const [coordenacoes, setCoordenacoes] = useState<CommercialStructureItem[]>(FALLBACK_COORDENACOES);
@@ -108,11 +115,25 @@ const VisitasRoteirosPanel: React.FC<VisitasRoteirosPanelProps> = ({
     onRouteChange(activeRoute?.id === route.id ? null : route);
   };
 
+  const header = mergeHeaderDrag(
+    'flex shrink-0 items-center gap-2 border-b border-slate-200 px-3 py-3',
+    headerDragProps
+  );
+
   return (
-    <div className="pointer-events-auto flex max-h-full w-[330px] flex-col overflow-hidden rounded-2xl border border-slate-200/90 bg-white/95 shadow-xl shadow-slate-900/10 backdrop-blur-md">
-      <header className="flex shrink-0 items-center gap-2 border-b border-slate-200 px-3 py-3">
+    <div
+      style={shellStyle}
+      className="pointer-events-auto flex max-h-full w-[330px] flex-col overflow-hidden rounded-2xl border border-slate-200/90 bg-white/95 shadow-xl shadow-slate-900/10 backdrop-blur-md"
+    >
+      <header
+        className={header.className}
+        style={header.dragStyle}
+        {...header.dragHandlers}
+        title="Arraste para mover o painel"
+      >
         <button
           type="button"
+          data-panel-drag-ignore
           onClick={onBack}
           className="rounded-lg p-1.5 text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-700"
           aria-label="Voltar para o painel Navegar"
@@ -124,6 +145,7 @@ const VisitasRoteirosPanel: React.FC<VisitasRoteirosPanelProps> = ({
         </h2>
         <button
           type="button"
+          data-panel-drag-ignore
           onClick={onClose}
           className="rounded-lg p-1.5 text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-700"
           aria-label="Fechar painel de visitas e roteiros"

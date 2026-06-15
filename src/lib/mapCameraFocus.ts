@@ -73,6 +73,19 @@ export function captureMapCamera(m: mapboxgl.Map): SavedMapCamera {
   };
 }
 
+export function restoreMapCamera(m: mapboxgl.Map, camera: SavedMapCamera): void {
+  try {
+    m.jumpTo({
+      center: camera.center,
+      zoom: camera.zoom,
+      bearing: camera.bearing,
+      pitch: camera.pitch,
+    });
+  } catch {
+    /* ignore */
+  }
+}
+
 function resolveFocusZoom(currentZoom: number): number {
   const target = Math.max(
     interactive3d.focusZoomMin,

@@ -1,8 +1,11 @@
 import React from 'react';
+import type { CSSProperties } from 'react';
 import { ArrowLeft, ArrowRight, CalendarClock, MapPin, MapPinned, Package, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { VisitRoute, VisitStop } from '@/data/visitRoutesMock';
 import { STOP_STATUS_STYLE } from './RouteStopsList';
+import type { PanelHeaderDragProps } from '@/hooks/usePanelDrag';
+import { mergeHeaderDrag } from '@/components/navigator/mergeHeaderDrag';
 
 interface VisitStopDetailCardProps {
   route: VisitRoute;
@@ -11,6 +14,8 @@ interface VisitStopDetailCardProps {
   onOpenOnMap: () => void;
   onPrev: () => void;
   onNext: () => void;
+  shellStyle?: CSSProperties;
+  headerDragProps?: PanelHeaderDragProps;
 }
 
 const VisitStopDetailCard: React.FC<VisitStopDetailCardProps> = ({
@@ -20,14 +25,29 @@ const VisitStopDetailCard: React.FC<VisitStopDetailCardProps> = ({
   onOpenOnMap,
   onPrev,
   onNext,
+  shellStyle,
+  headerDragProps,
 }) => {
   const style = STOP_STATUS_STYLE[stop.status];
   const isFirst = stop.ordem <= 1;
   const isLast = stop.ordem >= route.stops.length;
 
+  const header = mergeHeaderDrag(
+    'flex items-start gap-2 border-b border-slate-200 px-3 py-3',
+    headerDragProps
+  );
+
   return (
-    <div className="pointer-events-auto w-[320px] overflow-hidden rounded-2xl border border-slate-200/90 bg-white/95 shadow-xl shadow-slate-900/10 backdrop-blur-md">
-      <header className="flex items-start gap-2 border-b border-slate-200 px-3 py-3">
+    <div
+      style={shellStyle}
+      className="pointer-events-auto w-[320px] overflow-hidden rounded-2xl border border-slate-200/90 bg-white/95 shadow-xl shadow-slate-900/10 backdrop-blur-md"
+    >
+      <header
+        className={header.className}
+        style={header.dragStyle}
+        {...header.dragHandlers}
+        title="Arraste para mover o painel"
+      >
         <span className={cn('mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[11px] font-bold text-white', style.dot)}>
           {stop.ordem}
         </span>
@@ -40,6 +60,7 @@ const VisitStopDetailCard: React.FC<VisitStopDetailCardProps> = ({
         </span>
         <button
           type="button"
+          data-panel-drag-ignore
           onClick={onClose}
           className="shrink-0 rounded-lg p-1 text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-700"
           aria-label="Fechar detalhes da visita"
