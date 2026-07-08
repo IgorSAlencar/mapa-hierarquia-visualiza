@@ -1,13 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { ArrowLeft, CalendarDays, Route as RouteIcon, X } from 'lucide-react';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
+import { ArrowLeft, ChevronUp, Minus, Route as RouteIcon, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import {
   fetchCoordenacoes,
@@ -22,12 +14,13 @@ import {
   getRouteForSupervisao,
   type VisitRoute,
 } from '@/data/visitRoutesMock';
-import RouteStopsList from './RouteStopsList';
+import HierarchyBreadcrumb, { type BreadcrumbStep } from './HierarchyBreadcrumb';
+import HierarchyLevelCards, { type LevelCardOption } from './HierarchyLevelCards';
+import RegionOverviewCards from './RegionOverviewCards';
+import RouteDetailsModal from './RouteDetailsModal';
 import type { CSSProperties } from 'react';
 import type { PanelHeaderDragProps } from '@/hooks/usePanelDrag';
 import { mergeHeaderDrag } from '@/components/navigator/mergeHeaderDrag';
-
-const ALL = 'all';
 
 interface VisitasRoteirosPanelProps {
   onBack: () => void;
@@ -55,8 +48,10 @@ const VisitasRoteirosPanel: React.FC<VisitasRoteirosPanelProps> = ({
   const [gerencias, setGerencias] = useState<CommercialStructureItem[]>(FALLBACK_GERENCIAS);
   const [coordenacoes, setCoordenacoes] = useState<CommercialStructureItem[]>(FALLBACK_COORDENACOES);
   const [supervisoes, setSupervisoes] = useState<CommercialStructureItem[]>(FALLBACK_SUPERVISOES);
-  const [gerenciaSel, setGerenciaSel] = useState<string>(ALL);
-  const [coordenacaoSel, setCoordenacaoSel] = useState<string>(ALL);
+  const [gerenciaSel, setGerenciaSel] = useState<CommercialStructureItem | null>(null);
+  const [coordenacaoSel, setCoordenacaoSel] = useState<CommercialStructureItem | null>(null);
+  const [minimized, setMinimized] = useState(false);
+  const [modalOpen, setModalOpen] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -73,52 +68,161 @@ const VisitasRoteirosPanel: React.FC<VisitasRoteirosPanelProps> = ({
     };
   }, []);
 
-  const coordenacoesOptions = useMemo(() => {
-    if (gerenciaSel === ALL) return coordenacoes;
-    const chaveGg = Number(gerenciaSel);
-    return coordenacoes.filter((item) => item.chaveGerenciaArea === chaveGg);
-  }, [coordenacoes, gerenciaSel]);
+  const supervisoesDaCoordenacao = (chaveCoord: number) =>
+    supervisoes.filter((s) => s.chaveCoordenacao === chaveCoord);
 
-  const supervisoesOptions = useMemo(() => {
-    if (coordenacaoSel !== ALL) {
-      const chaveGc3 = Number(coordenacaoSel);
-      return supervisoes.filter((item) => item.chaveCoordenacao === chaveGc3);
-    }
-    if (gerenciaSel !== ALL) {
-      const chaveGg = Number(gerenciaSel);
-      const coordsDaGerencia = new Set(
-        coordenacoes.filter((c) => c.chaveGerenciaArea === chaveGg).map((c) => c.chave)
-      );
-      return supervisoes.filter(
-        (item) =>
-          item.chaveGerenciaArea === chaveGg ||
-          (item.chaveCoordenacao != null && coordsDaGerencia.has(item.chaveCoordenacao))
-      );
-    }
+  const supervisoesDaGerencia = (chaveGg: number) => {
+    const coordsDaGerencia = new Set(
+      coordenacoes.filter((c) => c.chaveGerenciaArea === chaveGg).map((c) => c.chave)
+    );
+    return supervisoes.filter(
+      (s) =>
+        s.chaveGerenciaArea === chaveGg ||
+        (s.chaveCoordenacao != null && coordsDaGerencia.has(s.chaveCoordenacao))
+    );
+  };
+
+  /** Supervisões do escopo atual — alimenta os números da visão geral. */
+  const supervisoesEscopo = useMemo(() => {
+    if (coordenacaoSel) return supervisoesDaCoordenacao(coordenacaoSel.chave);
+    if (gerenciaSel) return supervisoesDaGerencia(gerenciaSel.chave);
     return supervisoes;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [supervisoes, coordenacoes, gerenciaSel, coordenacaoSel]);
 
-  const handleGerenciaChange = (value: string) => {
-    setGerenciaSel(value);
-    setCoordenacaoSel(ALL);
-    onRouteChange(null);
+  const contarRoteiros = (itens: CommercialStructureItem[]) =>
+    itens.filter((s) => getRouteForSupervisao(s.chave)).length;
+
+  const nivel: 'gerencia' | 'coordenacao' | 'gerente' = coordenacaoSel
+    ? 'gerente'
+    : gerenciaSel
+      ? 'coordenacao'
+      : 'gerencia';
+
+  const breadcrumbSteps: BreadcrumbStep[] = [
+    {
+      label: 'Gerências',
+      onClick:
+        nivel === 'gerencia'
+          ? undefined
+          : () => {
+              setGerenciaSel(null);
+              setCoordenacaoSel(null);
+            },
+    },
+    ...(gerenciaSel
+      ? [
+          {
+            label: gerenciaSel.descricao,
+            onClick: nivel === 'coordenacao' ? undefined : () => setCoordenacaoSel(null),
+          },
+        ]
+      : []),
+    ...(coordenacaoSel ? [{ label: coordenacaoSel.descricao }] : []),
+  ];
+
+  const gerenciaCards: LevelCardOption[] = useMemo(
+    () =>
+      gerencias.map((g) => {
+        const escopo = supervisoesDaGerencia(g.chave);
+        const roteiros = contarRoteiros(escopo);
+        const totalCoords = coordenacoes.filter((c) => c.chaveGerenciaArea === g.chave).length;
+        return {
+          chave: g.chave,
+          titulo: g.descricao,
+          subtitulo: `${totalCoords} GC III · ${escopo.length} gerentes`,
+          destaque: `${roteiros} roteiro${roteiros === 1 ? '' : 's'} hoje`,
+          destaqueAtivo: roteiros > 0,
+        };
+      }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [gerencias, coordenacoes, supervisoes]
+  );
+
+  const coordenacaoCards: LevelCardOption[] = useMemo(() => {
+    if (!gerenciaSel) return [];
+    return coordenacoes
+      .filter((c) => c.chaveGerenciaArea === gerenciaSel.chave)
+      .map((c) => {
+        const escopo = supervisoesDaCoordenacao(c.chave);
+        const roteiros = contarRoteiros(escopo);
+        return {
+          chave: c.chave,
+          titulo: c.descricao,
+          subtitulo: `${escopo.length} gerente${escopo.length === 1 ? '' : 's'}`,
+          destaque: `${roteiros} roteiro${roteiros === 1 ? '' : 's'} hoje`,
+          destaqueAtivo: roteiros > 0,
+        };
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [coordenacoes, supervisoes, gerenciaSel]);
+
+  const handleSelectGerencia = (chave: number) => {
+    const item = gerencias.find((g) => g.chave === chave) ?? null;
+    setGerenciaSel(item);
+    setCoordenacaoSel(null);
   };
 
-  const handleCoordenacaoChange = (value: string) => {
-    setCoordenacaoSel(value);
-    onRouteChange(null);
+  const handleSelectCoordenacao = (chave: number) => {
+    const item = coordenacoes.find((c) => c.chave === chave) ?? null;
+    setCoordenacaoSel(item);
   };
 
-  const handleGcClick = (item: CommercialStructureItem) => {
+  const handleGerenteClick = (item: CommercialStructureItem) => {
     const route = getRouteForSupervisao(item.chave);
     if (!route) return;
-    onRouteChange(activeRoute?.id === route.id ? null : route);
+    onRouteChange(route);
+    setModalOpen(true);
   };
 
+  const tituloNivel =
+    nivel === 'gerencia'
+      ? 'Selecione uma Gerência de Gestão'
+      : nivel === 'coordenacao'
+        ? 'Selecione um Gerente Comercial III'
+        : 'Gerentes Comerciais';
+
   const header = mergeHeaderDrag(
-    'flex shrink-0 items-center gap-2 border-b border-slate-200 px-3 py-3',
+    'flex shrink-0 items-center gap-1.5 border-b border-slate-200 px-3 py-3',
     headerDragProps
   );
+
+  const minimizedBar = mergeHeaderDrag(
+    'pointer-events-auto flex w-[330px] items-center gap-2 rounded-2xl border border-slate-200/90 bg-white/95 px-3 py-2.5 shadow-xl shadow-slate-900/10 backdrop-blur-md',
+    headerDragProps
+  );
+
+  if (minimized) {
+    return (
+      <div
+        style={{ ...shellStyle, ...minimizedBar.dragStyle }}
+        className={minimizedBar.className}
+        {...minimizedBar.dragHandlers}
+        title="Arraste para mover o painel"
+      >
+        <span className="rounded-lg bg-violet-50 p-1.5 text-violet-600">
+          <RouteIcon className="h-4 w-4" aria-hidden />
+        </span>
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-xs font-bold uppercase tracking-wide text-slate-900">
+            Visitas e Roteiros
+          </p>
+          {activeRoute && (
+            <p className="truncate text-[10px] text-slate-500">{activeRoute.gerenteComercial}</p>
+          )}
+        </div>
+        <button
+          type="button"
+          data-panel-drag-ignore
+          onClick={() => setMinimized(false)}
+          className="rounded-lg p-1.5 text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-700"
+          aria-label="Restaurar painel de visitas e roteiros"
+        >
+          <ChevronUp className="h-4 w-4" />
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div
@@ -146,6 +250,16 @@ const VisitasRoteirosPanel: React.FC<VisitasRoteirosPanelProps> = ({
         <button
           type="button"
           data-panel-drag-ignore
+          onClick={() => setMinimized(true)}
+          className="rounded-lg p-1.5 text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-700"
+          aria-label="Minimizar painel (mantém a rota no mapa)"
+          title="Minimizar (mantém a rota no mapa)"
+        >
+          <Minus className="h-4 w-4" />
+        </button>
+        <button
+          type="button"
+          data-panel-drag-ignore
           onClick={onClose}
           className="rounded-lg p-1.5 text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-700"
           aria-label="Fechar painel de visitas e roteiros"
@@ -154,148 +268,97 @@ const VisitasRoteirosPanel: React.FC<VisitasRoteirosPanelProps> = ({
         </button>
       </header>
 
-      <Tabs defaultValue="roteiros" className="flex min-h-0 flex-1 flex-col">
-        <TabsList className="mx-3 mt-3 grid shrink-0 grid-cols-3">
-          <TabsTrigger value="visao-geral" className="text-xs">Visão geral</TabsTrigger>
-          <TabsTrigger value="roteiros" className="text-xs">Roteiros</TabsTrigger>
-          <TabsTrigger value="historico" className="text-xs">Histórico</TabsTrigger>
-        </TabsList>
+      <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3">
+        <HierarchyBreadcrumb steps={breadcrumbSteps} />
 
-        <TabsContent value="visao-geral" className="min-h-0 flex-1 overflow-y-auto p-4">
-          <PlaceholderTab message="A visão geral das visitas da equipe estará disponível em breve." />
-        </TabsContent>
+        <div className="space-y-1.5">
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+            Visão geral {coordenacaoSel ? 'da equipe' : gerenciaSel ? 'da gerência' : 'geral'}
+          </p>
+          <RegionOverviewCards supervisoes={supervisoesEscopo} />
+        </div>
 
-        <TabsContent value="roteiros" className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3">
-          <div className="space-y-2">
-            <HierarchySelect
-              placeholder="Gerente de Gestão"
-              value={gerenciaSel}
-              onChange={handleGerenciaChange}
-              options={gerencias}
+        <div className="space-y-2">
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+            {tituloNivel}
+          </p>
+
+          {nivel === 'gerencia' && (
+            <HierarchyLevelCards
+              options={gerenciaCards}
+              onSelect={handleSelectGerencia}
+              emptyMessage="Nenhuma Gerência de Gestão disponível."
             />
-            <HierarchySelect
-              placeholder="Gerente Comercial III"
-              value={coordenacaoSel}
-              onChange={handleCoordenacaoChange}
-              options={coordenacoesOptions}
-            />
-          </div>
+          )}
 
-          <div className="space-y-2">
-            <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
-              Gerentes Comerciais
-            </p>
-            {supervisoesOptions.map((item) => {
-              const route = getRouteForSupervisao(item.chave);
-              const isActive = Boolean(route && activeRoute?.id === route.id);
-              return (
-                <button
-                  key={item.chave}
-                  type="button"
-                  onClick={() => handleGcClick(item)}
-                  disabled={!route}
-                  className={cn(
-                    'flex w-full items-center gap-2 rounded-xl border px-3 py-2 text-left transition-colors',
-                    isActive
-                      ? 'border-blue-300 bg-blue-50/80'
-                      : 'border-slate-200 bg-white',
-                    route ? 'hover:border-slate-300 hover:bg-slate-50' : 'cursor-default opacity-70'
-                  )}
-                >
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-xs font-semibold text-slate-900">
-                      {route ? route.gerenteComercial : item.descricao}
-                    </span>
-                    <span className="block truncate text-[10px] text-slate-500">{item.descricao}</span>
-                  </span>
-                  <span
+          {nivel === 'coordenacao' && (
+            <HierarchyLevelCards
+              options={coordenacaoCards}
+              onSelect={handleSelectCoordenacao}
+              emptyMessage="Nenhum Gerente Comercial III nesta gerência."
+            />
+          )}
+
+          {nivel === 'gerente' && (
+            <div className="space-y-2">
+              {supervisoesEscopo.map((item) => {
+                const route = getRouteForSupervisao(item.chave);
+                const isActive = Boolean(route && activeRoute?.id === route.id);
+                return (
+                  <button
+                    key={item.chave}
+                    type="button"
+                    onClick={() => handleGerenteClick(item)}
+                    disabled={!route}
                     className={cn(
-                      'shrink-0 rounded-md border px-2 py-0.5 text-[10px] font-semibold',
+                      'flex w-full items-center gap-2 rounded-xl border px-3 py-2 text-left transition-colors',
+                      isActive ? 'border-blue-300 bg-blue-50/80' : 'border-slate-200 bg-white',
                       route
-                        ? 'border-blue-200 bg-blue-50 text-blue-700'
-                        : 'border-slate-200 bg-slate-50 text-slate-500'
+                        ? 'hover:border-slate-300 hover:bg-slate-50'
+                        : 'cursor-default opacity-70'
                     )}
                   >
-                    {route ? 'Roteiro do dia' : 'Sem roteiro hoje'}
-                  </span>
-                </button>
-              );
-            })}
-            {supervisoesOptions.length === 0 && (
-              <p className="rounded-xl border border-dashed border-slate-200 p-3 text-xs text-slate-500">
-                Nenhum Gerente Comercial encontrado para o filtro selecionado.
-              </p>
-            )}
-          </div>
-
-          {activeRoute && (
-            <div className="space-y-3 border-t border-slate-200 pt-3">
-              <div className="flex items-start gap-2">
-                <span className="mt-0.5 rounded-lg bg-violet-50 p-1.5 text-violet-600">
-                  <RouteIcon className="h-4 w-4" aria-hidden />
-                </span>
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-semibold text-slate-900">{activeRoute.nome}</p>
-                  <p className="flex items-center gap-1 text-[11px] text-slate-500">
-                    <CalendarDays className="h-3 w-3" aria-hidden />
-                    {activeRoute.data}
-                  </p>
-                </div>
-              </div>
-              <RouteStopsList
-                route={activeRoute}
-                selectedStopId={selectedStopId}
-                onStopSelect={onStopSelect}
-                onViewFullRoute={onViewFullRoute}
-              />
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-xs font-semibold text-slate-900">
+                        {route ? route.gerenteComercial : item.descricao}
+                      </span>
+                      <span className="block truncate text-[10px] text-slate-500">
+                        {item.descricao}
+                      </span>
+                    </span>
+                    <span
+                      className={cn(
+                        'shrink-0 rounded-md border px-2 py-0.5 text-[10px] font-semibold',
+                        route
+                          ? 'border-blue-200 bg-blue-50 text-blue-700'
+                          : 'border-slate-200 bg-slate-50 text-slate-500'
+                      )}
+                    >
+                      {route ? 'Roteiro do dia' : 'Sem roteiro hoje'}
+                    </span>
+                  </button>
+                );
+              })}
+              {supervisoesEscopo.length === 0 && (
+                <p className="rounded-xl border border-dashed border-slate-200 p-3 text-xs text-slate-500">
+                  Nenhum Gerente Comercial nesta coordenação.
+                </p>
+              )}
             </div>
           )}
-        </TabsContent>
+        </div>
+      </div>
 
-        <TabsContent value="historico" className="min-h-0 flex-1 overflow-y-auto p-4">
-          <PlaceholderTab message="O histórico de visitas realizadas estará disponível em breve." />
-        </TabsContent>
-      </Tabs>
+      <RouteDetailsModal
+        open={modalOpen}
+        onOpenChange={setModalOpen}
+        route={activeRoute}
+        selectedStopId={selectedStopId}
+        onStopSelect={onStopSelect}
+        onViewFullRoute={onViewFullRoute}
+      />
     </div>
   );
 };
-
-function HierarchySelect({
-  placeholder,
-  value,
-  onChange,
-  options,
-}: {
-  placeholder: string;
-  value: string;
-  onChange: (value: string) => void;
-  options: CommercialStructureItem[];
-}) {
-  return (
-    <Select value={value} onValueChange={onChange}>
-      <SelectTrigger className="h-9 w-full bg-white text-xs">
-        <SelectValue placeholder={placeholder} />
-      </SelectTrigger>
-      <SelectContent>
-        <SelectItem value={ALL} className="text-xs">
-          {placeholder}: todos
-        </SelectItem>
-        {options.map((item) => (
-          <SelectItem key={item.chave} value={String(item.chave)} className="text-xs">
-            {item.chave} - {item.descricao}
-          </SelectItem>
-        ))}
-      </SelectContent>
-    </Select>
-  );
-}
-
-function PlaceholderTab({ message }: { message: string }) {
-  return (
-    <div className="rounded-xl border border-dashed border-slate-200 p-4 text-center text-xs text-slate-500">
-      {message}
-    </div>
-  );
-}
 
 export default VisitasRoteirosPanel;

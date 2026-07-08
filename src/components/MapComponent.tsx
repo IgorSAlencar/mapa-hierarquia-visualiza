@@ -72,6 +72,7 @@ import {
 import { fetchExpressoProductivityRows, fetchExpressoStateMetrics } from '@/lib/expressoApi';
 import { loadSupervisionAreas } from '@/lib/supervisionAreas';
 import { getVisitRouteBounds, syncVisitRouteOnMap } from '@/lib/visitRouteMapLayer';
+import RouteLegend from '@/components/navigator/RouteLegend';
 import { isCompareScopeHierarchy } from '@/lib/compareAreasScope';
 import {
   fetchSupervisoesForCompareScope,
@@ -4762,7 +4763,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
         </div>
       </div>
       <div
-        className={`absolute top-4 z-20 overflow-visible transition-[right] duration-500 ease-out ${
+        className={`absolute top-4 z-20 flex flex-col items-end gap-2 overflow-visible transition-[right] duration-500 ease-out ${
           statePanelExpanded ? 'right-[calc(min(96vw,480px)+0.75rem)]' : 'right-4'
         }`}
       >
@@ -4890,6 +4891,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
             </Button>
           </div>
         </div>
+        {visitRoute ? <RouteLegend /> : null}
       </div>
       <div
         className={`absolute bottom-4 z-20 flex max-w-[min(96vw,calc(100%-2rem))] items-end gap-3 overflow-visible pb-[env(safe-area-inset-bottom,0px)] transition-[right] duration-500 ease-out ${

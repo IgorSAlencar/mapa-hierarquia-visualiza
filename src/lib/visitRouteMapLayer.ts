@@ -1,10 +1,14 @@
 import type mapboxgl from 'mapbox-gl';
 import type { VisitRoute } from '@/data/visitRoutesMock';
+import { fetchDrivingGeometry, getCachedDrivingGeometry } from '@/lib/mapboxDirections';
 
 /**
  * Camada de roteiro de visitas: linha azul ligando as paradas + círculos
  * numerados coloridos por status. Mantida fora do MapComponent para não
  * inchar o arquivo principal.
+ *
+ * A linha usa a Mapbox Directions API para seguir as ruas; enquanto a
+ * resposta não chega (ou se falhar), mostra a ligação reta entre paradas.
  */
 
 const SOURCE_ID = 'visit-route';
@@ -32,8 +36,21 @@ const registeredHandlers = new WeakMap<
 
 const stopClickCallbacks = new WeakMap<mapboxgl.Map, StopClickHandler>();
 
-function buildFeatureCollection(route: VisitRoute): GeoJSON.FeatureCollection {
-  const coordinates = route.stops.map((stop) => [stop.lng, stop.lat] as [number, number]);
+/** Id do roteiro exibido em cada mapa, para descartar respostas atrasadas da Directions API. */
+const activeRouteIds = new WeakMap<mapboxgl.Map, string>();
+
+/**
+ * Chave dos dados desenhados por mapa (`roteiro:tipoDeLinha`). Evita
+ * reprocessar o GeoJSON quando só a parada selecionada mudou.
+ */
+const renderedDataKeys = new WeakMap<mapboxgl.Map, string>();
+
+function buildFeatureCollection(
+  route: VisitRoute,
+  lineCoordinates?: [number, number][]
+): GeoJSON.FeatureCollection {
+  const coordinates =
+    lineCoordinates ?? route.stops.map((stop) => [stop.lng, stop.lat] as [number, number]);
   const line: GeoJSON.Feature = {
     type: 'Feature',
     geometry: { type: 'LineString', coordinates },
@@ -58,6 +75,8 @@ function ensureLayers(m: mapboxgl.Map): void {
       type: 'geojson',
       data: { type: 'FeatureCollection', features: [] },
     });
+    // Fonte recriada (primeira vez ou troca de estilo): força novo setData.
+    renderedDataKeys.delete(m);
   }
 
   if (!m.getLayer(LINE_LAYER_ID)) {
@@ -139,7 +158,30 @@ function ensureInteractions(m: mapboxgl.Map): void {
   registeredHandlers.set(m, { click, enter, leave });
 }
 
+/**
+ * Busca o trajeto pelas ruas (Directions API) e, quando disponível, troca a
+ * linha reta pela geometria real. Se o roteiro ativo mudar antes da resposta,
+ * o resultado é descartado.
+ */
+function applyStreetGeometry(m: mapboxgl.Map, route: VisitRoute): void {
+  const stops = route.stops.map((stop) => [stop.lng, stop.lat] as [number, number]);
+  void fetchDrivingGeometry(route.id, stops).then((geometry) => {
+    // Sem rota de carro possível: mantém a linha reta já desenhada.
+    if (!geometry) return;
+    if (activeRouteIds.get(m) !== route.id) return;
+    try {
+      const src = m.getSource(SOURCE_ID) as mapboxgl.GeoJSONSource | undefined;
+      if (!src) return;
+      src.setData(buildFeatureCollection(route, geometry));
+      renderedDataKeys.set(m, `${route.id}:street`);
+    } catch {
+      /* mapa ou estilo descartado durante a requisição */
+    }
+  });
+}
+
 export function removeVisitRouteFromMap(m: mapboxgl.Map): void {
+  renderedDataKeys.delete(m);
   try {
     for (const layerId of [STOP_NUMBER_LAYER_ID, STOP_CIRCLE_LAYER_ID, LINE_LAYER_ID]) {
       if (m.getLayer(layerId)) m.removeLayer(layerId);
@@ -163,16 +205,29 @@ export function syncVisitRouteOnMap(
   stopClickCallbacks.set(m, onStopClick);
 
   if (!route) {
+    activeRouteIds.delete(m);
     removeVisitRouteFromMap(m);
     return;
   }
+
+  activeRouteIds.set(m, route.id);
 
   try {
     ensureLayers(m);
     ensureInteractions(m);
 
-    const src = m.getSource(SOURCE_ID) as mapboxgl.GeoJSONSource | undefined;
-    src?.setData(buildFeatureCollection(route));
+    // Usa a geometria das ruas do cache se já disponível; senão, linha reta
+    // imediata enquanto a Directions API responde (uma única vez por roteiro).
+    const cachedGeometry = getCachedDrivingGeometry(route.id);
+    const dataKey = `${route.id}:${cachedGeometry ? 'street' : 'straight'}`;
+
+    if (renderedDataKeys.get(m) !== dataKey) {
+      const src = m.getSource(SOURCE_ID) as mapboxgl.GeoJSONSource | undefined;
+      src?.setData(buildFeatureCollection(route, cachedGeometry ?? undefined));
+      renderedDataKeys.set(m, dataKey);
+    }
+
+    if (!cachedGeometry) applyStreetGeometry(m, route);
 
     const highlight: number | mapboxgl.ExpressionSpecification =
       selectedStopId == null

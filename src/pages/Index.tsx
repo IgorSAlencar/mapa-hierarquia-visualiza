@@ -7,7 +7,6 @@ import CompararAreasPanel from '@/components/navigator/CompararAreasPanel';
 import { HIERARCHY_ALL } from '@/components/navigator/HierarchyScopeSelect';
 import VisitasRoteirosPanel from '@/components/navigator/VisitasRoteirosPanel';
 import VisitStopDetailCard from '@/components/navigator/VisitStopDetailCard';
-import RouteLegend from '@/components/navigator/RouteLegend';
 import type { VisitRoute } from '@/data/visitRoutesMock';
 import { usePanelDrag } from '@/hooks/usePanelDrag';
 import {
@@ -151,12 +150,6 @@ const Index = () => {
             />
           )}
         </>
-      )}
-
-      {activeRoute && (
-        <div className="pointer-events-none absolute right-16 top-4">
-          <RouteLegend />
-        </div>
       )}
 
       {activeRoute && selectedStop && (
