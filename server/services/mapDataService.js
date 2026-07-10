@@ -102,6 +102,7 @@ export async function getCommercialSeatMapPoints({ hierarchy = null } = {}) {
       const commercialLevel = normalizeText(row.commercialLevel) ?? 'supervisor';
       const entidadeChave = Number(row.entidadeChave);
       const chaveGerenciaArea = Number(row.CHAVE_GERENCIA_AREA);
+      const chaveCoordenacao = Number(row.CHAVE_COORDENACAO);
       const safeKey = Number.isFinite(entidadeChave) ? String(Math.trunc(entidadeChave)) : String(index);
       return {
         id: `sql-sede-${commercialLevel}-${safeKey}`,
@@ -111,6 +112,7 @@ export async function getCommercialSeatMapPoints({ hierarchy = null } = {}) {
         lngLat,
         codAg,
         chaveGerenciaArea: Number.isFinite(chaveGerenciaArea) ? Math.trunc(chaveGerenciaArea) : null,
+        chaveCoordenacao: Number.isFinite(chaveCoordenacao) ? Math.trunc(chaveCoordenacao) : null,
         chaveEntidade: Number.isFinite(entidadeChave) ? Math.trunc(entidadeChave) : null,
       };
     })

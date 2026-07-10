@@ -7,6 +7,7 @@ import CompararAreasPanel from '@/components/navigator/CompararAreasPanel';
 import { HIERARCHY_ALL } from '@/components/navigator/HierarchyScopeSelect';
 import VisitasRoteirosPanel from '@/components/navigator/VisitasRoteirosPanel';
 import VisitStopDetailCard from '@/components/navigator/VisitStopDetailCard';
+import RouteDetailsPanel from '@/components/navigator/RouteDetailsPanel';
 import type { VisitRoute } from '@/data/visitRoutesMock';
 import { usePanelDrag } from '@/hooks/usePanelDrag';
 import {
@@ -27,14 +28,25 @@ const Index = () => {
   const [navigatorMinimized, setNavigatorMinimized] = useState(true);
   const [activeSection, setActiveSection] = useState<NavigatorSection | null>(null);
   const [activeRoute, setActiveRoute] = useState<VisitRoute | null>(null);
+  const [routeDetailsOpen, setRouteDetailsOpen] = useState(false);
   const [selectedStopId, setSelectedStopId] = useState<number | null>(null);
   const [visitFocus, setVisitFocus] = useState<{ tick: number; stopId: number | null } | null>(null);
   const [compareSupervisionAreas, setCompareSupervisionAreas] = useState(false);
   const [compareApplyTick, setCompareApplyTick] = useState(0);
+  /** "Todos" em GG e GC III: compara as áreas de toda a estrutura. */
+  const [compareAllTerritory, setCompareAllTerritory] = useState(false);
 
   const navigatorDrag = usePanelDrag(NAVIGATOR_PANEL_DOCK);
   const visitasDrag = usePanelDrag({ x: 332, y: 150 });
   const compararDrag = usePanelDrag({ x: 332, y: 150 });
+  // Abre encostado à direita, antes da coluna de controles do mapa, com o topo
+  // alinhado ao dock de controles (top-4 = 16px). Offset = 16 (margem à direita)
+  // + 56 (largura do dock) + 12 (mesmo respiro da legenda até os botões).
+  const [routeDetailsInitial] = useState(() => ({
+    x: typeof window !== 'undefined' ? Math.max(16, window.innerWidth - 320 - 84) : 678,
+    y: 16,
+  }));
+  const routeDetailsDrag = usePanelDrag(routeDetailsInitial);
   const [stopDetailInitial] = useState(() => ({
     x: typeof window !== 'undefined' ? Math.max(16, window.innerWidth - 400) : 16,
     y: 96,
@@ -60,13 +72,27 @@ const Index = () => {
 
   const clearVisitState = () => {
     setActiveRoute(null);
+    setRouteDetailsOpen(false);
     setSelectedStopId(null);
     setVisitFocus(null);
   };
 
+  /** Desliga a comparação e desfaz o filtro de GG/GC III aplicado pelo painel. */
+  const clearCompareState = () => {
+    setCompareSupervisionAreas(false);
+    setCompareAllTerritory(false);
+    setFilters((prev) => ({
+      ...prev,
+      chaveGerenciaArea: '',
+      chaveCoordenacao: '',
+    }));
+  };
+
   const handleSelectSection = (section: NavigatorSection | null) => {
+    const leavingComparar = activeSection === 'comparar' && section !== 'comparar';
     setActiveSection(section);
     if (section !== 'visitas') clearVisitState();
+    if (leavingComparar) clearCompareState();
   };
 
   const handleApplyCompare = (gerenciaSel: string, coordenacaoSel: string) => {
@@ -79,12 +105,19 @@ const Index = () => {
         supervisorId: '',
       }));
     });
+    setCompareAllTerritory(gerenciaSel === HIERARCHY_ALL && coordenacaoSel === HIERARCHY_ALL);
     setCompareSupervisionAreas(true);
     setCompareApplyTick((tick) => tick + 1);
   };
 
+  const handleCompareActiveChange = (active: boolean) => {
+    setCompareSupervisionAreas(active);
+    if (!active) setCompareAllTerritory(false);
+  };
+
   const handleRouteChange = (route: VisitRoute | null) => {
     setActiveRoute(route);
+    setRouteDetailsOpen(route != null);
     setSelectedStopId(null);
   };
 
@@ -126,12 +159,6 @@ const Index = () => {
               onClose={() => handleSelectSection(null)}
               activeRoute={activeRoute}
               onRouteChange={handleRouteChange}
-              selectedStopId={selectedStopId}
-              onStopSelect={setSelectedStopId}
-              onViewFullRoute={() => {
-                setSelectedStopId(null);
-                setVisitFocus({ tick: Date.now(), stopId: null });
-              }}
               shellStyle={visitasDrag.shellStyle}
               headerDragProps={visitasDrag.headerDragProps}
             />
@@ -142,7 +169,7 @@ const Index = () => {
               onClose={() => handleSelectSection(null)}
               compareActive={compareSupervisionAreas}
               onApplyCompare={handleApplyCompare}
-              onDeactivateCompare={() => setCompareSupervisionAreas(false)}
+              onDeactivateCompare={() => handleCompareActiveChange(false)}
               appliedGerenciaChave={filters.chaveGerenciaArea}
               appliedCoordenacaoChave={filters.chaveCoordenacao}
               shellStyle={compararDrag.shellStyle}
@@ -150,6 +177,21 @@ const Index = () => {
             />
           )}
         </>
+      )}
+
+      {activeRoute && routeDetailsOpen && (
+        <RouteDetailsPanel
+          route={activeRoute}
+          selectedStopId={selectedStopId}
+          onStopSelect={setSelectedStopId}
+          onViewFullRoute={() => {
+            setSelectedStopId(null);
+            setVisitFocus({ tick: Date.now(), stopId: null });
+          }}
+          onClose={() => setRouteDetailsOpen(false)}
+          shellStyle={routeDetailsDrag.shellStyle}
+          headerDragProps={routeDetailsDrag.headerDragProps}
+        />
       )}
 
       {activeRoute && selectedStop && (
@@ -196,8 +238,9 @@ const Index = () => {
           onVisitStopSelect={setSelectedStopId}
           visitFocus={visitFocus}
           compareSupervisionAreas={compareSupervisionAreas}
-          onCompareSupervisionAreasChange={setCompareSupervisionAreas}
+          onCompareSupervisionAreasChange={handleCompareActiveChange}
           compareApplyTick={compareApplyTick}
+          compareAllTerritory={compareAllTerritory}
           navigatorOverlays={navigatorOverlays}
         />
 

@@ -31,6 +31,7 @@ export interface RegionMapPoint {
   codAg?: string;
   enderecoFormatado?: string;
   chaveGerenciaArea?: number | null;
+  chaveCoordenacao?: number | null;
   chaveEntidade?: number | null;
   seatColor?: string | null;
 }

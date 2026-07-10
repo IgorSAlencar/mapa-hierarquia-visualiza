@@ -17,7 +17,6 @@ import {
 import HierarchyBreadcrumb, { type BreadcrumbStep } from './HierarchyBreadcrumb';
 import HierarchyLevelCards, { type LevelCardOption } from './HierarchyLevelCards';
 import RegionOverviewCards from './RegionOverviewCards';
-import RouteDetailsModal from './RouteDetailsModal';
 import type { CSSProperties } from 'react';
 import type { PanelHeaderDragProps } from '@/hooks/usePanelDrag';
 import { mergeHeaderDrag } from '@/components/navigator/mergeHeaderDrag';
@@ -27,9 +26,6 @@ interface VisitasRoteirosPanelProps {
   onClose: () => void;
   activeRoute: VisitRoute | null;
   onRouteChange: (route: VisitRoute | null) => void;
-  selectedStopId: number | null;
-  onStopSelect: (stopId: number) => void;
-  onViewFullRoute: () => void;
   shellStyle?: CSSProperties;
   headerDragProps?: PanelHeaderDragProps;
 }
@@ -39,9 +35,6 @@ const VisitasRoteirosPanel: React.FC<VisitasRoteirosPanelProps> = ({
   onClose,
   activeRoute,
   onRouteChange,
-  selectedStopId,
-  onStopSelect,
-  onViewFullRoute,
   shellStyle,
   headerDragProps,
 }) => {
@@ -51,7 +44,6 @@ const VisitasRoteirosPanel: React.FC<VisitasRoteirosPanelProps> = ({
   const [gerenciaSel, setGerenciaSel] = useState<CommercialStructureItem | null>(null);
   const [coordenacaoSel, setCoordenacaoSel] = useState<CommercialStructureItem | null>(null);
   const [minimized, setMinimized] = useState(false);
-  const [modalOpen, setModalOpen] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -171,8 +163,8 @@ const VisitasRoteirosPanel: React.FC<VisitasRoteirosPanelProps> = ({
   const handleGerenteClick = (item: CommercialStructureItem) => {
     const route = getRouteForSupervisao(item.chave);
     if (!route) return;
+    // Abre o painel lateral de detalhes (controlado pelo pai via onRouteChange).
     onRouteChange(route);
-    setModalOpen(true);
   };
 
   const tituloNivel =
@@ -348,15 +340,6 @@ const VisitasRoteirosPanel: React.FC<VisitasRoteirosPanelProps> = ({
           )}
         </div>
       </div>
-
-      <RouteDetailsModal
-        open={modalOpen}
-        onOpenChange={setModalOpen}
-        route={activeRoute}
-        selectedStopId={selectedStopId}
-        onStopSelect={onStopSelect}
-        onViewFullRoute={onViewFullRoute}
-      />
     </div>
   );
 };

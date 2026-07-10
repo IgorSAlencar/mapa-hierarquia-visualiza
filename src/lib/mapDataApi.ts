@@ -10,6 +10,7 @@ export interface SqlMapPoint {
   enderecoFormatado?: string | null;
   commercialLevel?: 'supervisor' | 'coordenador' | 'gerente_area' | null;
   chaveGerenciaArea?: number | null;
+  chaveCoordenacao?: number | null;
   chaveEntidade?: number | null;
   seatColor?: string | null;
 }

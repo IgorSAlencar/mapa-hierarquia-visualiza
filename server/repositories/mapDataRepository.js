@@ -192,6 +192,11 @@ export async function fetchCommercialSeatCoordinates({ hierarchy = null } = {}) 
           FROM MESU..CONS_DISTRIBUICAO_ENTIDADES AS ent
           WHERE ent.CHAVE_SUPERVISAO = s.CHAVE_SUPERVISAO
         ) AS BIGINT) AS CHAVE_GERENCIA_AREA,
+        CAST((
+          SELECT TOP 1 ent.CHAVE_COORDENACAO
+          FROM MESU..CONS_DISTRIBUICAO_ENTIDADES AS ent
+          WHERE ent.CHAVE_SUPERVISAO = s.CHAVE_SUPERVISAO
+        ) AS BIGINT) AS CHAVE_COORDENACAO,
         CAST(s.COD_AG AS NVARCHAR(50)) AS COD_AG,
         CAST(s.LON AS float) AS lon,
         CAST(s.LAT AS float) AS lat,
@@ -211,6 +216,7 @@ export async function fetchCommercialSeatCoordinates({ hierarchy = null } = {}) 
           FROM MESU..CONS_DISTRIBUICAO_ENTIDADES AS ent
           WHERE ent.CHAVE_COORDENACAO = c.CHAVE_COORDENACAO
         ) AS BIGINT) AS CHAVE_GERENCIA_AREA,
+        CAST(c.CHAVE_COORDENACAO AS BIGINT) AS CHAVE_COORDENACAO,
         CAST(c.COD_AG AS NVARCHAR(50)) AS COD_AG,
         CAST(c.LON AS float) AS lon,
         CAST(c.LAT AS float) AS lat,
@@ -228,6 +234,11 @@ export async function fetchCommercialSeatCoordinates({ hierarchy = null } = {}) 
           FROM MESU..CONS_DISTRIBUICAO_ENTIDADES AS ent
           WHERE ent.CHAVE_SUPERVISAO = s.CHAVE_SUPERVISAO
         ) AS BIGINT) AS CHAVE_GERENCIA_AREA,
+        CAST((
+          SELECT TOP 1 ent.CHAVE_COORDENACAO
+          FROM MESU..CONS_DISTRIBUICAO_ENTIDADES AS ent
+          WHERE ent.CHAVE_SUPERVISAO = s.CHAVE_SUPERVISAO
+        ) AS BIGINT) AS CHAVE_COORDENACAO,
         CAST(s.COD_AG AS NVARCHAR(50)) AS COD_AG,
         CAST(s.LON AS float) AS lon,
         CAST(s.LAT AS float) AS lat,
@@ -248,6 +259,7 @@ export async function fetchCommercialSeatCoordinates({ hierarchy = null } = {}) 
         CAST(g.CHAVE_GERENCIA_AREA AS BIGINT) AS entidadeChave,
         g.DESC_GERENCIA_AREA AS entidadeNome,
         CAST(g.CHAVE_GERENCIA_AREA AS BIGINT) AS CHAVE_GERENCIA_AREA,
+        CAST(NULL AS BIGINT) AS CHAVE_COORDENACAO,
         CAST(g.COD_AG AS NVARCHAR(50)) AS COD_AG,
         CAST(g.LON AS float) AS lon,
         CAST(g.LAT AS float) AS lat,
@@ -265,6 +277,7 @@ export async function fetchCommercialSeatCoordinates({ hierarchy = null } = {}) 
           FROM MESU..CONS_DISTRIBUICAO_ENTIDADES AS ent
           WHERE ent.CHAVE_COORDENACAO = c.CHAVE_COORDENACAO
         ) AS BIGINT) AS CHAVE_GERENCIA_AREA,
+        CAST(c.CHAVE_COORDENACAO AS BIGINT) AS CHAVE_COORDENACAO,
         CAST(c.COD_AG AS NVARCHAR(50)) AS COD_AG,
         CAST(c.LON AS float) AS lon,
         CAST(c.LAT AS float) AS lat,
@@ -287,6 +300,11 @@ export async function fetchCommercialSeatCoordinates({ hierarchy = null } = {}) 
           FROM MESU..CONS_DISTRIBUICAO_ENTIDADES AS ent
           WHERE ent.CHAVE_SUPERVISAO = s.CHAVE_SUPERVISAO
         ) AS BIGINT) AS CHAVE_GERENCIA_AREA,
+        CAST((
+          SELECT TOP 1 ent.CHAVE_COORDENACAO
+          FROM MESU..CONS_DISTRIBUICAO_ENTIDADES AS ent
+          WHERE ent.CHAVE_SUPERVISAO = s.CHAVE_SUPERVISAO
+        ) AS BIGINT) AS CHAVE_COORDENACAO,
         CAST(s.COD_AG AS NVARCHAR(50)) AS COD_AG,
         CAST(s.LON AS float) AS lon,
         CAST(s.LAT AS float) AS lat,
@@ -307,6 +325,7 @@ export async function fetchCommercialSeatCoordinates({ hierarchy = null } = {}) 
         CAST(g.CHAVE_GERENCIA_AREA AS BIGINT) AS entidadeChave,
         g.DESC_GERENCIA_AREA AS entidadeNome,
         CAST(g.CHAVE_GERENCIA_AREA AS BIGINT) AS CHAVE_GERENCIA_AREA,
+        CAST(NULL AS BIGINT) AS CHAVE_COORDENACAO,
         CAST(g.COD_AG AS NVARCHAR(50)) AS COD_AG,
         CAST(g.LON AS float) AS lon,
         CAST(g.LAT AS float) AS lat,
@@ -323,6 +342,7 @@ export async function fetchCommercialSeatCoordinates({ hierarchy = null } = {}) 
           FROM MESU..CONS_DISTRIBUICAO_ENTIDADES AS ent
           WHERE ent.CHAVE_COORDENACAO = c.CHAVE_COORDENACAO
         ) AS BIGINT) AS CHAVE_GERENCIA_AREA,
+        CAST(c.CHAVE_COORDENACAO AS BIGINT) AS CHAVE_COORDENACAO,
         CAST(c.COD_AG AS NVARCHAR(50)) AS COD_AG,
         CAST(c.LON AS float) AS lon,
         CAST(c.LAT AS float) AS lat,
@@ -339,6 +359,11 @@ export async function fetchCommercialSeatCoordinates({ hierarchy = null } = {}) 
           FROM MESU..CONS_DISTRIBUICAO_ENTIDADES AS ent
           WHERE ent.CHAVE_SUPERVISAO = s.CHAVE_SUPERVISAO
         ) AS BIGINT) AS CHAVE_GERENCIA_AREA,
+        CAST((
+          SELECT TOP 1 ent.CHAVE_COORDENACAO
+          FROM MESU..CONS_DISTRIBUICAO_ENTIDADES AS ent
+          WHERE ent.CHAVE_SUPERVISAO = s.CHAVE_SUPERVISAO
+        ) AS BIGINT) AS CHAVE_COORDENACAO,
         CAST(s.COD_AG AS NVARCHAR(50)) AS COD_AG,
         CAST(s.LON AS float) AS lon,
         CAST(s.LAT AS float) AS lat,

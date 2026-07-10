@@ -92,10 +92,12 @@ const CompararAreasPanel: React.FC<CompararAreasPanelProps> = ({
           (item.chaveCoordenacao != null && coordsDaGerencia.has(item.chaveCoordenacao))
       );
     }
-    return [];
+    // "Todos" nos dois níveis: escopo é a estrutura inteira.
+    return supervisoes;
   }, [supervisoes, coordenacoes, gerenciaSel, coordenacaoSel]);
 
   const canApply =
+    (gerenciaSel === HIERARCHY_ALL && coordenacaoSel === HIERARCHY_ALL) ||
     (gerenciaSel !== HIERARCHY_ALL && Number(gerenciaSel) > 0) ||
     (coordenacaoSel !== HIERARCHY_ALL && Number(coordenacaoSel) > 0);
 

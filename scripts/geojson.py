@@ -96,7 +96,7 @@ print(f"Municípios únicos: {df['CD_MUNIC'].nunique()}")
 # 2. CARREGAR GEOJSON DOS MUNICÍPIOS DO BRASIL
 # ============================================================
 
-caminho_geojson = r"C:\Users\Igor\Downloads\mapa-hierarquia-visualiza\mapa-hierarquia-visualiza\public\geo\Brasil_Municipios.json"
+caminho_geojson = r"C:\Users\Igor\Downloads\mapa-hierarquia-visualiza\mapa-hierarquia-visualiza\dist\geo\Brasil_Municipios.json"
 
 with open(caminho_geojson, "r", encoding="utf-8") as f:
     brasil = json.load(f)

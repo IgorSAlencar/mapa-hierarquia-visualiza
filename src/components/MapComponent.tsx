@@ -7,6 +7,7 @@ import {
   Layers,
   MapPinOff,
   Search,
+  ChevronLeft,
   SlidersHorizontal,
   Store,
   Users,
@@ -400,7 +401,7 @@ async function ensureBrazilOutsideMask(
 
     ensureBrazilBoundaryOutlineLayers(m, styleUrl, stackBeforeId ?? findMaskInsertBeforeLayerId(m));
     repositionBrazilCutoutLayers(m);
-    applyBrazilBasemapLabelTweaks(m);
+    scheduleBrazilBasemapLabelTweaks(m);
     return true;
   } catch (e) {
     console.warn('Máscara fora do Brasil não aplicada:', e);
@@ -417,20 +418,25 @@ function keepOnlyStateAndCityLabels(m: mapboxgl.Map) {
     const sourceLayer = String(
       (layer as mapboxgl.SymbolLayerSpecification)['source-layer'] ?? ''
     ).toLowerCase();
+    // No Standard, o rótulo "Brazil"/"Brasil" costuma vir em camadas country/admin-0.
     const hideForeign =
       id.includes('country') ||
       id.includes('continent') ||
       id.includes('admin-0') ||
+      id.includes('admin0') ||
       id.includes('region-label') ||
       id.includes('marine') ||
       id.includes('water-name') ||
-      id.includes('waterway');
+      id.includes('waterway') ||
+      sourceLayer.includes('country');
     const keep =
       !hideForeign &&
       (id.includes('settlement') ||
         id.includes('place-label') ||
+        id.includes('place_label') ||
         id.includes('state-label') ||
         id.includes('admin-1') ||
+        id.includes('admin1') ||
         sourceLayer.includes('place_label'));
     try {
       m.setLayoutProperty(layer.id, 'visibility', keep ? 'visible' : 'none');
@@ -444,13 +450,20 @@ const BR_ISO_FILTER: FilterSpecification = ['==', ['get', 'iso_3166_1'], 'BR'];
 /** Remove rótulos de país (ex.: "Brazil") mantendo estados e cidades. */
 const HIDE_COUNTRY_PLACE_FILTER: FilterSpecification = [
   '!',
-  ['in', ['get', 'class'], ['literal', ['country', 'disputed_country', 'dependency']]],
+  [
+    'in',
+    ['coalesce', ['get', 'class'], ['get', 'type'], ''],
+    ['literal', ['country', 'disputed_country', 'dependency', 'continent']],
+  ],
 ];
 const HIDE_BRAZIL_COUNTRY_NAME_FILTER: FilterSpecification = [
   'all',
-  ['!=', ['get', 'name_en'], 'Brazil'],
-  ['!=', ['get', 'name'], 'Brazil'],
-  ['!=', ['get', 'name'], 'Brasil'],
+  ['!=', ['downcase', ['to-string', ['coalesce', ['get', 'name_en'], '']]], 'brazil'],
+  ['!=', ['downcase', ['to-string', ['coalesce', ['get', 'name'], '']]], 'brazil'],
+  ['!=', ['downcase', ['to-string', ['coalesce', ['get', 'name'], '']]], 'brasil'],
+  ['!=', ['downcase', ['to-string', ['coalesce', ['get', 'name_pt'], '']]], 'brasil'],
+  ['!=', ['downcase', ['to-string', ['coalesce', ['get', 'name_preferred'], '']]], 'brazil'],
+  ['!=', ['downcase', ['to-string', ['coalesce', ['get', 'name_preferred'], '']]], 'brasil'],
 ];
 const SYMBOL_SOURCE_LAYERS_BR_ONLY = new Set(['place_label', 'airport_label']);
 
@@ -495,12 +508,35 @@ function hideCountryLabelsOnPlaceSymbolLayers(m: mapboxgl.Map) {
   for (const layer of m.getStyle().layers ?? []) {
     if (layer.type !== 'symbol') continue;
     const id = layer.id.toLowerCase();
+    if (id.startsWith('brazil-') || id.startsWith('brasil-') || id.startsWith('structure-')) continue;
+
     const sourceLayer = String(
       (layer as mapboxgl.SymbolLayerSpecification)['source-layer'] ?? ''
     ).toLowerCase();
-    if (sourceLayer.includes('place_label')) continue;
-    if (!id.includes('place')) continue;
-    if (id.startsWith('brazil-') || id.startsWith('brasil-') || id.startsWith('structure-')) continue;
+
+    // Standard: esconde camadas de país por visibilidade (filtro às vezes não aplica).
+    if (
+      id.includes('country') ||
+      id.includes('continent') ||
+      id.includes('admin-0') ||
+      id.includes('admin0') ||
+      sourceLayer.includes('country')
+    ) {
+      try {
+        m.setLayoutProperty(layer.id, 'visibility', 'none');
+      } catch {
+        /* skip */
+      }
+      continue;
+    }
+
+    const looksLikePlace =
+      id.includes('place') ||
+      id.includes('settlement') ||
+      sourceLayer.includes('place_label') ||
+      sourceLayer.includes('place');
+    if (!looksLikePlace) continue;
+
     try {
       const existing = (layer as mapboxgl.SymbolLayerSpecification).filter;
       const combined: FilterSpecification = existing
@@ -522,6 +558,19 @@ function applyBrazilBasemapLabelTweaks(m: mapboxgl.Map) {
   keepOnlyStateAndCityLabels(m);
   restrictSymbolLayersToBrazil(m);
   hideCountryLabelsOnPlaceSymbolLayers(m);
+}
+
+/** Standard carrega rótulos em fragmentos assíncronos — reaplica a remoção de "Brazil". */
+function scheduleBrazilBasemapLabelTweaks(m: mapboxgl.Map) {
+  applyBrazilBasemapLabelTweaks(m);
+  const reapply = () => {
+    if (!m.getStyle()) return;
+    applyBrazilBasemapLabelTweaks(m);
+  };
+  m.once('idle', reapply);
+  // Fragmentos do Standard podem chegar depois do primeiro idle.
+  window.setTimeout(reapply, 400);
+  window.setTimeout(reapply, 1200);
 }
 
 function firstSymbolLayerId(m: mapboxgl.Map): string | undefined {
@@ -570,6 +619,78 @@ function disableBasemapClouds(m: mapboxgl.Map) {
   }
 }
 
+/** Fonte de rótulos próprios (Streets v8) para o Standard, já que o basemap fica sem place labels. */
+const BR_PLACES_SOURCE_ID = 'brazil-places';
+
+function ensureCustomBrazilPlaceLabels(m: mapboxgl.Map) {
+  try {
+    if (!m.getSource(BR_PLACES_SOURCE_ID)) {
+      m.addSource(BR_PLACES_SOURCE_ID, {
+        type: 'vector',
+        url: 'mapbox://mapbox.mapbox-streets-v8',
+      });
+    }
+    if (!m.getLayer('brazil-state-labels')) {
+      m.addLayer({
+        id: 'brazil-state-labels',
+        type: 'symbol',
+        source: BR_PLACES_SOURCE_ID,
+        'source-layer': 'place_label',
+        minzoom: 3,
+        maxzoom: 9,
+        filter: [
+          'all',
+          ['==', ['get', 'iso_3166_1'], 'BR'],
+          ['==', ['get', 'class'], 'state'],
+        ],
+        layout: {
+          'text-field': ['coalesce', ['get', 'name_pt'], ['get', 'name']],
+          'text-font': ['DIN Pro Medium', 'Arial Unicode MS Regular'],
+          'text-size': ['interpolate', ['linear'], ['zoom'], 3, 9.5, 6, 13],
+          'text-transform': 'uppercase',
+          'text-letter-spacing': 0.12,
+          'text-max-width': 7,
+        },
+        paint: {
+          'text-color': '#8a94a6',
+          'text-halo-color': 'rgba(255,255,255,0.9)',
+          'text-halo-width': 1.2,
+          'text-emissive-strength': 1,
+        },
+      });
+    }
+    if (!m.getLayer('brazil-city-labels')) {
+      m.addLayer({
+        id: 'brazil-city-labels',
+        type: 'symbol',
+        source: BR_PLACES_SOURCE_ID,
+        'source-layer': 'place_label',
+        minzoom: 4,
+        filter: [
+          'all',
+          ['==', ['get', 'iso_3166_1'], 'BR'],
+          ['==', ['get', 'class'], 'settlement'],
+          ['<=', ['coalesce', ['get', 'symbolrank'], 16], 14],
+        ],
+        layout: {
+          'text-field': ['coalesce', ['get', 'name_pt'], ['get', 'name']],
+          'text-font': ['DIN Pro Regular', 'Arial Unicode MS Regular'],
+          'text-size': ['interpolate', ['linear'], ['zoom'], 4, 10, 8, 12.5, 12, 16],
+          'text-max-width': 8,
+        },
+        paint: {
+          'text-color': '#3f4a5a',
+          'text-halo-color': 'rgba(255,255,255,0.92)',
+          'text-halo-width': 1.1,
+          'text-emissive-strength': 1,
+        },
+      });
+    }
+  } catch (error) {
+    console.warn('Falha ao criar rótulos próprios de estados/cidades:', error);
+  }
+}
+
 function applyStandardThemeBasemap(m: mapboxgl.Map, theme: 'warm' | 'cool') {
   const tryTheme = (t: string) => {
     try {
@@ -583,11 +704,15 @@ function applyStandardThemeBasemap(m: mapboxgl.Map, theme: 'warm' | 'cool') {
   try {
     m.setConfigProperty('basemap', 'show3dObjects', true);
     m.setConfigProperty('basemap', 'lightPreset', 'day');
+    // No Standard os rótulos ficam num import inacessível via setFilter;
+    // desliga todos os place labels e usa camadas próprias (sem "Brazil").
+    m.setConfigProperty('basemap', 'showPlaceLabels', false);
     disableBasemapClouds(m);
   } catch {
     /* ignore */
   }
-  applyBrazilBasemapLabelTweaks(m);
+  ensureCustomBrazilPlaceLabels(m);
+  scheduleBrazilBasemapLabelTweaks(m);
   repositionBrazilCutoutLayers(m);
 }
 
@@ -903,6 +1028,11 @@ function clearRegionOverlaySources(m: mapboxgl.Map) {
 
 const AGENCY_CLICK_LAYER_IDS = ['region-overlay-agencias-cir', 'structure-agencies-point'] as const;
 const LOJA_CLICK_LAYER_IDS = ['region-overlay-lojas-cir'] as const;
+/** Bolinhas de gerentes — sempre acima de agências/lojas no mapa. */
+const MANAGER_CIRCLE_LAYER_IDS = [
+  'region-overlay-supervisores-cir',
+  'structure-people-circles',
+] as const;
 
 /** Bolinha de agência no overlay regional (sempre maior que loja no mesmo zoom). */
 const OVERLAY_AGENCIA_CIRCLE_RADIUS: mapboxgl.ExpressionSpecification = [
@@ -1075,7 +1205,7 @@ function cityLabelLayerIds(m: mapboxgl.Map): string[] {
     .map((layer) => layer.id);
 }
 
-type MapStyleMode = 'default' | 'satellite' | 'dark' | 'standardWarm' | 'standardCool';
+type MapStyleMode = 'default' | 'satellite' | 'dark' | 'standardWarm' | 'standardCool' | 'custom';
 
 const MAP_STYLE_URL: Record<MapStyleMode, string> = {
   default: MAPBOX_CONFIG.styles.default,
@@ -1083,6 +1213,7 @@ const MAP_STYLE_URL: Record<MapStyleMode, string> = {
   dark: MAPBOX_CONFIG.styles.dark,
   standardWarm: MAPBOX_CONFIG.styles.standardWarm,
   standardCool: MAPBOX_CONFIG.styles.standardCool,
+  custom: MAPBOX_CONFIG.styles.custom,
 };
 
 /**
@@ -1144,6 +1275,12 @@ const MAP_LAYOUT_OPTIONS: {
     caption: 'Cool',
     previewImage: buildStylePreviewUrl('mapbox://styles/mapbox/streets-v12'),
     tintClass: 'bg-sky-400/25',
+  },
+  {
+    id: 'custom',
+    label: 'Bradesco',
+    caption: 'Bradesco',
+    previewImage: buildStylePreviewUrl('mapbox://styles/igralencar/cmoc8sp33003601s58ijjhro4'),
   },
 ];
 
@@ -1336,9 +1473,10 @@ function pruneOverlayCacheFarFromBbox(
   }
 }
 
-function overlayPointsSignature(points: Array<{ id: string }>): string {
+function overlayPointsSignature(points: Array<{ id: string; seatColor?: string }>): string {
   if (points.length === 0) return '0';
-  const ids = points.map((p) => p.id).sort();
+  // Inclui a cor: só o id não detecta mudança de paleta (ex.: variação por GC III).
+  const ids = points.map((p) => `${p.id}#${p.seatColor ?? ''}`).sort();
   return `${points.length}|${ids.join('|')}`;
 }
 
@@ -1358,6 +1496,8 @@ interface MapComponentProps {
   onCompareSupervisionAreasChange?: (active: boolean) => void;
   /** Incrementado pelo painel Navegar a cada "Comparar áreas no mapa" (pipeline único). */
   compareApplyTick?: number;
+  /** "Todos" em GG e GC III no painel: compara as áreas de toda a estrutura. */
+  compareAllTerritory?: boolean;
   /** Painéis flutuantes do Navegar (abaixo da UI do mapa: busca, AG, lojas, equipe). */
   navigatorOverlays?: React.ReactNode;
 }
@@ -1382,6 +1522,69 @@ function seatBaseHue(chaveGerenciaArea: number | null | undefined): number {
   return (Math.abs(Number(chaveGerenciaArea)) * 47) % 360;
 }
 
+/** Deslocamentos de matiz por GC III dentro da mesma gerência — diferença evidente, mesma família. */
+const SEAT_COORD_HUE_OFFSETS = [0, 32, -32, 58, -58, 84, -84] as const;
+
+function seatCoordHueOffset(coordIndex: number | null | undefined): number {
+  if (coordIndex == null || !Number.isFinite(coordIndex)) return 0;
+  return SEAT_COORD_HUE_OFFSETS[Math.abs(Math.trunc(coordIndex)) % SEAT_COORD_HUE_OFFSETS.length];
+}
+
+/**
+ * Índice estável de cada GC III por gerência (ordenado pela chave),
+ * para atribuir cores distintas dentro da paleta da GG.
+ */
+function buildCoordColorIndexByGa(points: Array<{
+  chaveGerenciaArea?: number | null;
+  chaveCoordenacao?: number | null;
+  chaveEntidade?: number | null;
+  commercialLevel?: string | null;
+}>): Map<string, number> {
+  const byGa = new Map<number, Set<number>>();
+  for (const point of points) {
+    const ga = Number(point.chaveGerenciaArea);
+    if (!Number.isFinite(ga) || ga <= 0) continue;
+    let coord = Number(point.chaveCoordenacao);
+    if ((!Number.isFinite(coord) || coord <= 0) && point.commercialLevel === 'coordenador') {
+      coord = Number(point.chaveEntidade);
+    }
+    if (!Number.isFinite(coord) || coord <= 0) continue;
+    let set = byGa.get(ga);
+    if (!set) {
+      set = new Set();
+      byGa.set(ga, set);
+    }
+    set.add(Math.trunc(coord));
+  }
+  const index = new Map<string, number>();
+  for (const [ga, coords] of byGa) {
+    [...coords]
+      .sort((a, b) => a - b)
+      .forEach((coord, i) => {
+        index.set(`${ga}:${coord}`, i);
+      });
+  }
+  return index;
+}
+
+function resolvePointCoordKey(point: {
+  chaveGerenciaArea?: number | null;
+  chaveCoordenacao?: number | null;
+  chaveEntidade?: number | null;
+  commercialLevel?: string | null;
+}): { ga: number | null; coord: number | null } {
+  const gaRaw = Number(point.chaveGerenciaArea);
+  const ga = Number.isFinite(gaRaw) && gaRaw > 0 ? Math.trunc(gaRaw) : null;
+  let coord = Number(point.chaveCoordenacao);
+  if ((!Number.isFinite(coord) || coord <= 0) && point.commercialLevel === 'coordenador') {
+    coord = Number(point.chaveEntidade);
+  }
+  return {
+    ga,
+    coord: Number.isFinite(coord) && coord > 0 ? Math.trunc(coord) : null,
+  };
+}
+
 function hslToHex(h: number, s: number, l: number): string {
   const sat = Math.max(0, Math.min(100, s)) / 100;
   const light = Math.max(0, Math.min(100, l)) / 100;
@@ -1402,14 +1605,32 @@ function hslToHex(h: number, s: number, l: number): string {
   return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
 }
 
+/**
+ * Cor da sede: matiz base da gerência + variação por GC III.
+ * GG usa só a cor da gerência; GC III sempre varia por coordenação.
+ * GC (supervisor) só herda a variante do GC III quando o detalhe da coordenação está ativo.
+ */
 function seatColorByLevel(
   chaveGerenciaArea: number | null | undefined,
-  level: CommercialTeamLevel | string | null | undefined
+  level: CommercialTeamLevel | string | null | undefined,
+  chaveCoordenacao?: number | null,
+  coordIndex?: number | null,
+  options?: { varySupervisorByCoord?: boolean }
 ): string {
-  const hue = seatBaseHue(chaveGerenciaArea);
-  const sat = 72;
+  const baseHue = seatBaseHue(chaveGerenciaArea);
+  const varySupervisor = options?.varySupervisorByCoord === true;
+  const useCoordShift =
+    level === 'coordenador' || (level === 'supervisor' && varySupervisor);
+  const hue = useCoordShift
+    ? (baseHue + seatCoordHueOffset(coordIndex) + 360) % 360
+    : baseHue;
+  // Saturação um pouco maior nas variantes de GC III para reforçar a diferença visual.
+  const sat =
+    useCoordShift && coordIndex != null && coordIndex > 0
+      ? 78
+      : 72;
   const light =
-    level === 'gerente_area' ? 44 : level === 'coordenador' ? 56 : level === 'supervisor' ? 68 : 60;
+    level === 'gerente_area' ? 44 : level === 'coordenador' ? 52 : level === 'supervisor' ? 66 : 60;
   return hslToHex(hue, sat, light);
 }
 
@@ -1439,6 +1660,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
   compareSupervisionAreas: compareSupervisionAreasProp = false,
   onCompareSupervisionAreasChange,
   compareApplyTick = 0,
+  compareAllTerritory = false,
   navigatorOverlays,
 }) => {
   const mapContainer = useRef<HTMLDivElement>(null);
@@ -1542,6 +1764,9 @@ const MapComponent: React.FC<MapComponentProps> = ({
   const lastOverlayFcSignatureRef = useRef<Record<string, string>>({});
   const [viewportBoundsTick, setViewportBoundsTick] = useState(0);
   const [overlaySeatFilterKey, setOverlaySeatFilterKey] = useState<string | null>(null);
+  /** Histórico de filtros da legenda para o botão Voltar (GG → GC III → GC). */
+  const seatLegendHistoryRef = useRef<Array<string | null>>([]);
+  const overlaySeatFilterKeyRef = useRef<string | null>(null);
   const mapTransitionTimerRef = useRef<number | null>(null);
   const mapTransitionStartRef = useRef<number>(Date.now());
   const [mapReadyVersion, setMapReadyVersion] = useState(0);
@@ -1553,7 +1778,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
   const [stateSearchOptions, setStateSearchOptions] = useState<SearchOption[]>([]);
   const [municipalitySearchOptions, setMunicipalitySearchOptions] = useState<SearchOption[]>([]);
   const [allMunicipalityNames, setAllMunicipalityNames] = useState<string[]>([]);
-  const [mapStyleMode, setMapStyleMode] = useState<MapStyleMode>('default');
+  const [mapStyleMode, setMapStyleMode] = useState<MapStyleMode>('standardWarm');
   /** Abre o seletor de layout ao clicar (útil sem hover, ex.: touch). Combinado com hover no botão Layers. */
   const [mapLayoutMenuPinned, setMapLayoutMenuPinned] = useState(false);
   const [mapLayoutFlyoutHover, setMapLayoutFlyoutHover] = useState(false);
@@ -1704,20 +1929,110 @@ const MapComponent: React.FC<MapComponentProps> = ({
     overlayScopeIsViewportExploration,
     visibleViewportBbox,
   ]);
+  const seatCoordColorIndex = useMemo(
+    () => buildCoordColorIndexByGa(sqlSeatPoints),
+    [sqlSeatPoints]
+  );
+
+  /** Filtro de sede ativo (clique na legenda/mapa ou painel): GG, GC III ou GC. */
+  const activeSeatScope = useMemo(() => {
+    const fromOverlay = parseOverlaySeatHierarchyKey(overlaySeatFilterKey);
+    const parse = (value: unknown) => {
+      const n = Number(value);
+      return Number.isFinite(n) && n > 0 ? Math.trunc(n) : null;
+    };
+    return {
+      ga: parse(fromOverlay?.chaveGerenciaArea) ?? parse(hierarchyFilter?.chaveGerenciaArea),
+      coord: parse(fromOverlay?.chaveCoordenacao) ?? parse(hierarchyFilter?.chaveCoordenacao),
+      sup: parse(fromOverlay?.chaveSupervisao) ?? parse(hierarchyFilter?.chaveSupervisao),
+    };
+  }, [
+    overlaySeatFilterKey,
+    hierarchyFilter?.chaveGerenciaArea,
+    hierarchyFilter?.chaveCoordenacao,
+    hierarchyFilter?.chaveSupervisao,
+  ]);
+
+  /**
+   * Na visão geral (sem seleção), GC ficam com cor uniforme da gerência.
+   * Com GG/GC III/GC selecionado, os GC herdam a variante de cor do seu GC III.
+   */
+  const varySupervisorSeatColorByCoord =
+    activeSeatScope.ga != null || activeSeatScope.coord != null || activeSeatScope.sup != null;
+
   const filteredRegionSupervisores = useMemo(
     () => {
       const visibleLevels = new Set(selectedCommercialTeamLevels);
-      // Quando o painel restringe a uma GA, removemos pontos de outras GAs que possam
-      // ter sobrado em cache. Coordenação não tem o campo no ponto (o backend já filtra).
-      const activeGa = Number(hierarchyFilter?.chaveGerenciaArea);
-      const hasGa = Number.isFinite(activeGa) && activeGa > 0;
+      const { ga: scopeGa, coord: scopeCoord, sup: scopeSup } = activeSeatScope;
+
+      // Dados do GC selecionado (para manter GC III/GG pais visíveis quando um GC está ativo).
+      const selectedSupPoint =
+        scopeSup != null
+          ? sqlSeatPoints.find(
+              (p) => p.commercialLevel === 'supervisor' && Number(p.chaveEntidade) === scopeSup
+            )
+          : undefined;
+      const supParentCoord = selectedSupPoint ? Number(selectedSupPoint.chaveCoordenacao) : NaN;
+      const supParentGa = selectedSupPoint ? Number(selectedSupPoint.chaveGerenciaArea) : NaN;
+      const selectedCoordPoint =
+        scopeCoord != null
+          ? sqlSeatPoints.find(
+              (p) => p.commercialLevel === 'coordenador' && Number(p.chaveEntidade) === scopeCoord
+            )
+          : undefined;
+      const coordParentGa =
+        scopeGa ?? (selectedCoordPoint ? Number(selectedCoordPoint.chaveGerenciaArea) : NaN);
+
+      /** Mantém só pontos do escopo selecionado — some com bolinhas de outras gerências/coordenações. */
+      const inActiveScope = (point: SqlMapPoint): boolean => {
+        if (scopeSup != null) {
+          if (point.commercialLevel === 'supervisor') {
+            return Number(point.chaveEntidade) === scopeSup;
+          }
+          if (point.commercialLevel === 'coordenador') {
+            return Number(point.chaveEntidade) === supParentCoord;
+          }
+          if (point.commercialLevel === 'gerente_area') {
+            return Number(point.chaveEntidade) === supParentGa;
+          }
+          return true;
+        }
+        if (scopeCoord != null) {
+          if (point.commercialLevel === 'coordenador') {
+            return Number(point.chaveEntidade) === scopeCoord;
+          }
+          if (point.commercialLevel === 'supervisor') {
+            return Number(point.chaveCoordenacao) === scopeCoord;
+          }
+          if (point.commercialLevel === 'gerente_area') {
+            return Number(point.chaveEntidade) === coordParentGa;
+          }
+          return true;
+        }
+        if (scopeGa != null) {
+          return Number(point.chaveGerenciaArea) === scopeGa;
+        }
+        return true;
+      };
+
       const filteredByLevel = sqlSeatPoints
         .filter((point) => !point.commercialLevel || visibleLevels.has(point.commercialLevel))
-        .filter((point) => !hasGa || Number(point.chaveGerenciaArea) === activeGa)
-        .map((point) => ({
-          ...point,
-          seatColor: seatColorByLevel(point.chaveGerenciaArea, point.commercialLevel),
-        }));
+        .filter(inActiveScope)
+        .map((point) => {
+          const { ga, coord } = resolvePointCoordKey(point);
+          const coordIndex =
+            ga != null && coord != null ? seatCoordColorIndex.get(`${ga}:${coord}`) ?? null : null;
+          return {
+            ...point,
+            seatColor: seatColorByLevel(
+              point.chaveGerenciaArea,
+              point.commercialLevel,
+              coord,
+              coordIndex,
+              { varySupervisorByCoord: varySupervisorSeatColorByCoord }
+            ),
+          };
+        });
       return filterRegionMapPoints(filteredByLevel, selectedMunicipalityFeature, selectedStateFeature);
     },
     [
@@ -1725,13 +2040,22 @@ const MapComponent: React.FC<MapComponentProps> = ({
       selectedMunicipalityFeature,
       selectedStateFeature,
       selectedCommercialTeamLevels,
-      hierarchyFilter?.chaveGerenciaArea,
+      activeSeatScope,
+      seatCoordColorIndex,
+      varySupervisorSeatColorByCoord,
     ]
   );
-  const compareScopeHierarchy = useMemo(
-    () => resolveCompareScopeHierarchy(hierarchyFilter, overlaySeatFilterKey),
-    [hierarchyFilter, overlaySeatFilterKey]
-  );
+  const compareScopeHierarchy = useMemo(() => {
+    const resolved = resolveCompareScopeHierarchy(hierarchyFilter, overlaySeatFilterKey);
+    if (resolved) return resolved;
+    // "Todos" em GG e GC III no painel: escopo vazio = estrutura inteira,
+    // desde que não haja uma supervisão única filtrada.
+    const supKey = Number(hierarchyFilter?.chaveSupervisao);
+    if (compareAllTerritory && !(Number.isFinite(supKey) && supKey > 0)) {
+      return {} as SqlHierarchyFilter;
+    }
+    return null;
+  }, [hierarchyFilter, overlaySeatFilterKey, compareAllTerritory]);
 
   /**
    * Lista de supervisões filhas da GA/Coord ativa para o modo "Comparar áreas".
@@ -1770,9 +2094,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
         (p) => p.commercialLevel === 'coordenador' && Number(p.chaveEntidade) === coord
       );
       const nome = String(coordPoint?.nome ?? '').trim();
-      return nome
-        ? `${COMMERCIAL_TEAM_LEVEL_LABEL.coordenador} — ${nome}`
-        : `${COMMERCIAL_TEAM_LEVEL_LABEL.coordenador} ${coord}`;
+      return nome || `${COMMERCIAL_TEAM_LEVEL_LABEL.coordenador} ${coord}`;
     }
     const ga = Number(scope.chaveGerenciaArea);
     if (Number.isFinite(ga) && ga > 0) {
@@ -1780,33 +2102,207 @@ const MapComponent: React.FC<MapComponentProps> = ({
         (p) => p.commercialLevel === 'gerente_area' && Number(p.chaveEntidade) === ga
       );
       const nome = String(gaPoint?.nome ?? '').trim();
-      return nome
-        ? `${COMMERCIAL_TEAM_LEVEL_LABEL.gerente_area} — ${nome}`
-        : `${COMMERCIAL_TEAM_LEVEL_LABEL.gerente_area} ${ga}`;
+      return nome || `${COMMERCIAL_TEAM_LEVEL_LABEL.gerente_area} ${ga}`;
     }
-    return '';
+    return 'Toda a estrutura';
   }, [compareScopeHierarchy, sqlSeatPoints]);
 
+  const seatLegendSupervisorFilter = useMemo(() => {
+    const fromOverlay = parseOverlaySeatHierarchyKey(overlaySeatFilterKey);
+    const chave =
+      Number(fromOverlay?.chaveSupervisao) ||
+      Number(hierarchyFilter?.chaveSupervisao) ||
+      NaN;
+    return Number.isFinite(chave) && chave > 0 ? Math.trunc(chave) : null;
+  }, [overlaySeatFilterKey, hierarchyFilter?.chaveSupervisao]);
+
+  const seatLegendCoordenacaoFilter = useMemo(() => {
+    if (seatLegendSupervisorFilter != null) return null;
+    const fromOverlay = parseOverlaySeatHierarchyKey(overlaySeatFilterKey);
+    const chave =
+      Number(fromOverlay?.chaveCoordenacao) ||
+      Number(hierarchyFilter?.chaveCoordenacao) ||
+      NaN;
+    return Number.isFinite(chave) && chave > 0 ? Math.trunc(chave) : null;
+  }, [
+    seatLegendSupervisorFilter,
+    overlaySeatFilterKey,
+    hierarchyFilter?.chaveCoordenacao,
+  ]);
+
+  const seatLegendGerenciaFilter = useMemo(() => {
+    if (seatLegendSupervisorFilter != null || seatLegendCoordenacaoFilter != null) return null;
+    const fromOverlay = parseOverlaySeatHierarchyKey(overlaySeatFilterKey);
+    const chave =
+      Number(fromOverlay?.chaveGerenciaArea) ||
+      Number(hierarchyFilter?.chaveGerenciaArea) ||
+      NaN;
+    return Number.isFinite(chave) && chave > 0 ? Math.trunc(chave) : null;
+  }, [
+    seatLegendSupervisorFilter,
+    seatLegendCoordenacaoFilter,
+    overlaySeatFilterKey,
+    hierarchyFilter?.chaveGerenciaArea,
+  ]);
+
+  /** Com GC selecionado: só nome + chave da supervisão (sem coluna GC). */
+  const seatLegendSelectedGc = useMemo(() => {
+    if (seatLegendSupervisorFilter == null) return null;
+    const point =
+      sqlSeatPoints.find(
+        (p) =>
+          p.commercialLevel === 'supervisor' &&
+          Number(p.chaveEntidade) === seatLegendSupervisorFilter
+      ) ??
+      sqlSeatPoints.find((p) => Number(p.chaveEntidade) === seatLegendSupervisorFilter) ??
+      null;
+    if (!point) {
+      return {
+        chave: String(seatLegendSupervisorFilter),
+        nome: `${COMMERCIAL_TEAM_LEVEL_LABEL.supervisor} ${seatLegendSupervisorFilter}`,
+        color: seatColorByLevel(null, 'supervisor'),
+        lngLat: null as [number, number] | null,
+      };
+    }
+    const { ga, coord } = resolvePointCoordKey(point);
+    const coordIndex =
+      ga != null && coord != null ? seatCoordColorIndex.get(`${ga}:${coord}`) ?? null : null;
+    return {
+      chave: String(seatLegendSupervisorFilter),
+      nome:
+        String(point.nome ?? '').trim() ||
+        `${COMMERCIAL_TEAM_LEVEL_LABEL.supervisor} ${seatLegendSupervisorFilter}`,
+      color: seatColorByLevel(ga, 'supervisor', coord, coordIndex, {
+        varySupervisorByCoord: true,
+      }),
+      lngLat: point.lngLat,
+    };
+  }, [seatLegendSupervisorFilter, sqlSeatPoints, seatCoordColorIndex]);
+
+  /** Com GC III selecionado: lista todos os GC da coordenação. */
+  const seatLegendGcEntries = useMemo(() => {
+    if (seatLegendCoordenacaoFilter == null) return [];
+    const coord = seatLegendCoordenacaoFilter;
+    const entries: Array<{
+      chave: string;
+      nome: string;
+      color: string;
+      lngLat: [number, number] | null;
+    }> = [];
+
+    for (const point of sqlSeatPoints) {
+      if (point.commercialLevel !== 'supervisor') continue;
+      const pointCoord = Number(point.chaveCoordenacao);
+      if (pointCoord !== coord) continue;
+      const chave = Number(point.chaveEntidade);
+      if (!Number.isFinite(chave) || chave <= 0) continue;
+      const { ga } = resolvePointCoordKey(point);
+      const coordIndex =
+        ga != null ? seatCoordColorIndex.get(`${ga}:${coord}`) ?? null : null;
+      entries.push({
+        chave: String(chave),
+        nome:
+          String(point.nome ?? '').trim() ||
+          `${COMMERCIAL_TEAM_LEVEL_LABEL.supervisor} ${chave}`,
+        color: seatColorByLevel(ga, 'supervisor', coord, coordIndex, {
+          varySupervisorByCoord: true,
+        }),
+        lngLat: point.lngLat,
+      });
+    }
+
+    return entries.sort((a, b) => Number(a.chave) - Number(b.chave));
+  }, [seatLegendCoordenacaoFilter, sqlSeatPoints, seatCoordColorIndex]);
+
+  /** Com GG selecionado: lista GC III da gerência + quantidade de GC em cada um. */
+  const seatLegendGc3Entries = useMemo(() => {
+    if (seatLegendGerenciaFilter == null) return [];
+    const ga = seatLegendGerenciaFilter;
+    const map = new Map<
+      number,
+      { chave: string; nome: string; color: string; gcCount: number; lngLat: [number, number] | null }
+    >();
+
+    for (const point of sqlSeatPoints) {
+      if (Number(point.chaveGerenciaArea) !== ga) continue;
+      if (point.commercialLevel === 'coordenador') {
+        const chave = Number(point.chaveEntidade ?? point.chaveCoordenacao);
+        if (!Number.isFinite(chave) || chave <= 0) continue;
+        const existing = map.get(chave);
+        const coordIndex = seatCoordColorIndex.get(`${ga}:${chave}`) ?? null;
+        map.set(chave, {
+          chave: String(chave),
+          nome:
+            String(point.nome ?? '').trim() ||
+            `${COMMERCIAL_TEAM_LEVEL_LABEL.coordenador} ${chave}`,
+          color: seatColorByLevel(ga, 'coordenador', chave, coordIndex),
+          gcCount: existing?.gcCount ?? 0,
+          lngLat: point.lngLat ?? existing?.lngLat ?? null,
+        });
+        continue;
+      }
+      if (point.commercialLevel === 'supervisor') {
+        const chave = Number(point.chaveCoordenacao);
+        if (!Number.isFinite(chave) || chave <= 0) continue;
+        const existing = map.get(chave);
+        const coordIndex = seatCoordColorIndex.get(`${ga}:${chave}`) ?? null;
+        if (existing) {
+          existing.gcCount += 1;
+        } else {
+          map.set(chave, {
+            chave: String(chave),
+            nome: `${COMMERCIAL_TEAM_LEVEL_LABEL.coordenador} ${chave}`,
+            color: seatColorByLevel(ga, 'coordenador', chave, coordIndex),
+            gcCount: 1,
+            lngLat: null,
+          });
+        }
+      }
+    }
+
+    return [...map.values()].sort((a, b) => Number(a.chave) - Number(b.chave));
+  }, [seatLegendGerenciaFilter, sqlSeatPoints, seatCoordColorIndex]);
+
+  const seatLegendGc3Total = useMemo(
+    () => seatLegendGc3Entries.reduce((sum, entry) => sum + entry.gcCount, 0),
+    [seatLegendGc3Entries]
+  );
+
   const seatLegendEntries = useMemo(() => {
-    const map = new Map<number, { ga: string; gaNome: string; gerente: string; coord: string; sup: string }>();
+    const map = new Map<
+      number,
+      { ga: string; gaNome: string; color: string; gcCount: number }
+    >();
     for (const point of sqlSeatPoints) {
       const ga = Number(point.chaveGerenciaArea);
       if (!Number.isFinite(ga)) continue;
-      if (map.has(ga)) continue;
-      const gaNome =
-        point.commercialLevel === 'gerente_area'
-          ? String(point.nome ?? '').trim()
-          : `${COMMERCIAL_TEAM_LEVEL_LABEL.gerente_area} ${ga}`;
-      map.set(ga, {
-        ga: String(ga),
-        gaNome,
-        gerente: seatColorByLevel(ga, 'gerente_area'),
-        coord: seatColorByLevel(ga, 'coordenador'),
-        sup: seatColorByLevel(ga, 'supervisor'),
-      });
+      let entry = map.get(ga);
+      if (!entry) {
+        entry = {
+          ga: String(ga),
+          gaNome: `${COMMERCIAL_TEAM_LEVEL_LABEL.gerente_area} ${ga}`,
+          color: seatColorByLevel(ga, 'gerente_area'),
+          gcCount: 0,
+        };
+        map.set(ga, entry);
+      }
+      if (point.commercialLevel === 'gerente_area') {
+        const nome = String(point.nome ?? '').trim();
+        if (nome) entry.gaNome = nome;
+      }
+      if (point.commercialLevel === 'supervisor') {
+        entry.gcCount += 1;
+      }
     }
     return [...map.values()].sort((a, b) => Number(a.ga) - Number(b.ga)).slice(0, 8);
   }, [sqlSeatPoints]);
+  const seatLegendGcTotal = useMemo(
+    () => seatLegendEntries.reduce((sum, entry) => sum + entry.gcCount, 0),
+    [seatLegendEntries]
+  );
+  const seatLegendCompact = seatLegendSelectedGc != null;
+  const seatLegendGc3Detail = seatLegendCoordenacaoFilter != null;
+  const seatLegendGgDetail = seatLegendGerenciaFilter != null;
   const filteredRegionLojas = useMemo(() => {
     const visibleSegments = new Set(selectedStoreSegments);
     const applySegmentFilter = (points: SqlMapPoint[]) =>
@@ -1912,6 +2408,96 @@ const MapComponent: React.FC<MapComponentProps> = ({
     }
   };
 
+  /** Clique na legenda: aplica filtro hierárquico + zoom (troca o conteúdo da legenda). */
+  const applySeatLegendHierarchy = (
+    hierarchy: SqlHierarchyFilter | null,
+    zoomPoints: Array<{ lngLat: [number, number] }>,
+    options?: { fromBack?: boolean }
+  ) => {
+    if (!options?.fromBack) {
+      seatLegendHistoryRef.current.push(overlaySeatFilterKeyRef.current);
+    }
+    if (!hierarchy) {
+      overlaySeatHierarchyRef.current = null;
+      overlaySeatFilterKeyRef.current = null;
+      setOverlaySeatFilterKey(null);
+    } else {
+      const nextKey = JSON.stringify(hierarchy);
+      overlaySeatHierarchyRef.current = hierarchy;
+      overlaySeatFilterKeyRef.current = nextKey;
+      setOverlaySeatFilterKey(nextKey);
+    }
+    // Navegação na legenda não deve ligar os overlays de agências/lojas:
+    // preserva o que o usuário escolheu nos toggles e só limpa o pin de agência.
+    clearOverlayViewportCaches();
+    setStoreFilterCodAg(null);
+    setStoreFilterAgencyName(null);
+    setPinnedAgencyPoint(null);
+    storeFilterCodAgRef.current = null;
+    if (zoomPoints.length > 0) fitMapToLngLatPoints(zoomPoints);
+  };
+
+  const focusSeatLegendGerencia = (chaveGerenciaArea: string, options?: { fromBack?: boolean }) => {
+    const ga = Number(chaveGerenciaArea);
+    if (!Number.isFinite(ga) || ga <= 0) return;
+    const points = sqlSeatPoints.filter((p) => Number(p.chaveGerenciaArea) === ga);
+    applySeatLegendHierarchy({ chaveGerenciaArea: Math.trunc(ga) }, points, options);
+  };
+
+  const focusSeatLegendSelectedGc = () => {
+    if (!seatLegendSelectedGc?.lngLat) return;
+    fitMapToLngLatPoints([{ lngLat: seatLegendSelectedGc.lngLat }]);
+  };
+
+  // Zoom automático da legenda acontece apenas no nível gerente de gestão:
+  // GC III e GC mantêm a câmera onde está (zoomPoints vazio).
+  const focusSeatLegendGc3 = (chaveCoordenacao: string, options?: { fromBack?: boolean }) => {
+    const coord = Number(chaveCoordenacao);
+    if (!Number.isFinite(coord) || coord <= 0) return;
+    applySeatLegendHierarchy({ chaveCoordenacao: Math.trunc(coord) }, [], options);
+  };
+
+  const focusSeatLegendGc = (chaveSupervisao: string, _lngLat: [number, number] | null) => {
+    const chave = Number(chaveSupervisao);
+    if (!Number.isFinite(chave) || chave <= 0) return;
+    applySeatLegendHierarchy({ chaveSupervisao: Math.trunc(chave) }, []);
+  };
+
+  /** Volta ao estado anterior da legenda (histórico de cliques). */
+  const goBackSeatLegend = () => {
+    const previousKey =
+      seatLegendHistoryRef.current.length > 0
+        ? seatLegendHistoryRef.current.pop() ?? null
+        : null;
+    const previous = parseOverlaySeatHierarchyKey(previousKey);
+
+    if (!previous) {
+      // Voltar à visão geral não mexe na câmera (zoom só no nível GG).
+      applySeatLegendHierarchy(null, [], { fromBack: true });
+      return;
+    }
+
+    if (previous.chaveSupervisao != null) {
+      const chave = Math.trunc(Number(previous.chaveSupervisao));
+      applySeatLegendHierarchy({ chaveSupervisao: chave }, [], { fromBack: true });
+      return;
+    }
+
+    if (previous.chaveCoordenacao != null) {
+      focusSeatLegendGc3(String(Math.trunc(Number(previous.chaveCoordenacao))), { fromBack: true });
+      return;
+    }
+
+    if (previous.chaveGerenciaArea != null) {
+      focusSeatLegendGerencia(String(Math.trunc(Number(previous.chaveGerenciaArea))), {
+        fromBack: true,
+      });
+    }
+  };
+
+  const seatLegendCanGoBack =
+    seatLegendCompact || seatLegendGc3Detail || seatLegendGgDetail;
+
   const loadStoreOverlayPoints = useCallback(
     async (options?: {
       codAg?: string | null;
@@ -1968,6 +2554,8 @@ const MapComponent: React.FC<MapComponentProps> = ({
   const resetAgencyStoreFilterSync = useCallback(() => {
     storeFilterCodAgRef.current = null;
     overlaySeatHierarchyRef.current = null;
+    seatLegendHistoryRef.current = [];
+    overlaySeatFilterKeyRef.current = null;
     setOverlaySeatFilterKey(null);
     setStoreFilterCodAg(null);
     setStoreFilterAgencyName(null);
@@ -2003,6 +2591,8 @@ const MapComponent: React.FC<MapComponentProps> = ({
 
       storeFilterCodAgRef.current = normalized;
       overlaySeatHierarchyRef.current = null;
+      seatLegendHistoryRef.current = [];
+      overlaySeatFilterKeyRef.current = null;
       setOverlaySeatFilterKey(null);
       setStoreFilterCodAg(normalized);
       setStoreFilterAgencyName(agencyLabel);
@@ -2161,6 +2751,8 @@ const MapComponent: React.FC<MapComponentProps> = ({
     supervisionsCompareSource?.setData(emptyFc);
 
     overlaySeatHierarchyRef.current = null;
+    seatLegendHistoryRef.current = [];
+    overlaySeatFilterKeyRef.current = null;
     setOverlaySeatFilterKey(null);
     setOverlayMarkerSelection(null);
     overlayAgencyCacheRef.current.clear();
@@ -2344,6 +2936,10 @@ const MapComponent: React.FC<MapComponentProps> = ({
   }, [hierarchyFilter]);
 
   useEffect(() => {
+    overlaySeatFilterKeyRef.current = overlaySeatFilterKey;
+  }, [overlaySeatFilterKey]);
+
+  useEffect(() => {
     storeFilterCodAgRef.current = storeFilterCodAg;
   }, [storeFilterCodAg]);
 
@@ -2425,23 +3021,29 @@ const MapComponent: React.FC<MapComponentProps> = ({
 
   const handleToggleAgencias = async () => {
     if (overlayAgencias) {
-      overlaySeatHierarchyRef.current = null;
-      setOverlaySeatFilterKey(null);
+      // Desligar o overlay não pode apagar a seleção da legenda (equipe comercial):
+      // só limpa os pontos de agência e o toggle.
       overlayAgencyCacheRef.current.clear();
+      overlayFetchedBboxCacheRef.current = null;
+      overlayLastFetchZoomRef.current = null;
       if (!overlayLojas) {
-        clearOverlayViewportCaches();
-      } else {
-        overlayFetchedBboxCacheRef.current = null;
-        overlayLastFetchZoomRef.current = null;
+        lastViewportOverlayBboxKeyRef.current = null;
       }
       setSqlAgencyPoints([]);
       setOverlayAgencias(false);
       return;
     }
 
+    // Prioriza a hierarquia selecionada na legenda (ex.: gerente comercial em foco);
+    // sem seleção, cai no filtro do painel ou no viewport.
+    const seatHierarchy = overlaySeatHierarchyRef.current;
+    const activeHierarchy = seatHierarchy ?? hierarchyFilter ?? null;
+    const useHierarchyOnly =
+      Boolean(seatHierarchy) || hasPanelHierarchyFilter(hierarchyFilter);
+
     const viewport = getCurrentMapBbox();
     const fetchBbox = viewport ? expandBbox(viewport) : null;
-    if (fetchBbox && map.current) {
+    if (!useHierarchyOnly && fetchBbox && map.current) {
       overlayFetchedBboxCacheRef.current = fetchBbox;
       overlayLastFetchZoomRef.current = map.current.getZoom();
     }
@@ -2449,10 +3051,10 @@ const MapComponent: React.FC<MapComponentProps> = ({
     setOverlayAgencias(true);
     try {
       const points = await fetchAgencyPoints({
-        bbox: hasPanelHierarchyFilter(hierarchyFilter) ? null : fetchBbox ?? viewport,
-        hierarchy: hierarchyFilter,
+        bbox: useHierarchyOnly ? null : fetchBbox ?? viewport,
+        hierarchy: activeHierarchy,
       });
-      if (hasPanelHierarchyFilter(hierarchyFilter)) {
+      if (useHierarchyOnly) {
         applyAgencyFetchResult(points, 'replace');
       } else if (fetchBbox) {
         applyAgencyFetchResult(points, 'merge', fetchBbox);
@@ -2536,18 +3138,17 @@ const MapComponent: React.FC<MapComponentProps> = ({
 
   const handleToggleLojas = async () => {
     if (overlayLojas) {
+      // Desligar o overlay não pode apagar a seleção da legenda (equipe comercial):
+      // só limpa filtro de agência-pin, pontos de loja e o toggle.
       storeFilterCodAgRef.current = null;
-      overlaySeatHierarchyRef.current = null;
-      setOverlaySeatFilterKey(null);
       setStoreFilterCodAg(null);
       setStoreFilterAgencyName(null);
       setPinnedAgencyPoint(null);
       overlayStoreCacheRef.current.clear();
+      overlayFetchedBboxCacheRef.current = null;
+      overlayLastFetchZoomRef.current = null;
       if (!overlayAgencias) {
-        clearOverlayViewportCaches();
-      } else {
-        overlayFetchedBboxCacheRef.current = null;
-        overlayLastFetchZoomRef.current = null;
+        lastViewportOverlayBboxKeyRef.current = null;
       }
       setSqlStorePoints([]);
       setOverlayLojas(false);
@@ -2556,19 +3157,23 @@ const MapComponent: React.FC<MapComponentProps> = ({
     }
 
     setStoreFilterCodAg(null);
+    // Com um gerente selecionado na legenda, busca as lojas da hierarquia dele
+    // (loadStoreOverlayPoints resolve via overlaySeatHierarchyRef quando bbox não é passado).
+    const seatHierarchy = overlaySeatHierarchyRef.current;
     const viewport = getCurrentMapBbox();
     const fetchBbox = viewport ? expandBbox(viewport) : null;
-    if (fetchBbox && map.current) {
+    if (!seatHierarchy && fetchBbox && map.current) {
       overlayFetchedBboxCacheRef.current = fetchBbox;
       overlayLastFetchZoomRef.current = map.current.getZoom();
     }
     setOverlayLojas(true);
     setStoreSegmentMenuOpen(true);
     try {
-      await loadStoreOverlayPoints({
-        codAg: null,
-        bbox: fetchBbox ?? viewport,
-      });
+      await loadStoreOverlayPoints(
+        seatHierarchy
+          ? { codAg: null }
+          : { codAg: null, bbox: fetchBbox ?? viewport }
+      );
     } catch (error) {
       console.error('Falha ao carregar lojas SQL:', error);
       setOverlayLojas(false);
@@ -2676,6 +3281,9 @@ const MapComponent: React.FC<MapComponentProps> = ({
             show3dObjects: true,
             lightPreset: 'day',
             showClouds: MAPBOX_CONFIG.standardBasemap.showClouds,
+            // Standard não permite esconder só o rótulo de país ("Brazil");
+            // desligamos todos e desenhamos estados/cidades com camadas próprias.
+            showPlaceLabels: false,
           },
         };
       }
@@ -2841,7 +3449,10 @@ const MapComponent: React.FC<MapComponentProps> = ({
           }
 
           overlaySeatHierarchyRef.current = hierarchy;
-          setOverlaySeatFilterKey(JSON.stringify(hierarchy));
+          seatLegendHistoryRef.current.push(overlaySeatFilterKeyRef.current);
+          const nextKey = JSON.stringify(hierarchy);
+          overlaySeatFilterKeyRef.current = nextKey;
+          setOverlaySeatFilterKey(nextKey);
           overlayFetchedBboxCacheRef.current = null;
           overlayLastFetchZoomRef.current = null;
           lastViewportOverlayBboxKeyRef.current = null;
@@ -2882,6 +3493,31 @@ const MapComponent: React.FC<MapComponentProps> = ({
         };
 
         const tryOverlayMarkerClickFirst = (point: mapboxgl.Point, lngLat: mapboxgl.LngLatLike): boolean => {
+          // Prioriza gerentes (camada visual acima) quando há sobreposição com agência/loja.
+          const seatLayers = MANAGER_CIRCLE_LAYER_IDS.filter((id) => m.getLayer(id));
+          if (seatLayers.length > 0) {
+            const seatHits = m.queryRenderedFeatures(
+              [
+                [point.x - 10, point.y - 10],
+                [point.x + 10, point.y + 10],
+              ],
+              { layers: [...seatLayers] }
+            );
+            const seatFeature = seatHits[0] as GeoJSON.Feature | undefined;
+            if (seatFeature?.properties) {
+              const cargo = String(seatFeature.properties.cargo ?? '').trim().toLowerCase();
+              const isManagerSeat =
+                String(seatFeature.properties.kind ?? '') === 'supervisor' ||
+                cargo === 'supervisor' ||
+                cargo === 'coordenador' ||
+                cargo === 'gerente_area';
+              if (isManagerSeat) {
+                void handleCommercialSeatClick(seatFeature, lngLat);
+                return true;
+              }
+            }
+          }
+
           const agencyFeature = pickAgencyFeatureAtPoint(m, point);
           if (agencyFeature) {
             handleAgencyFeatureClick(agencyFeature, lngLat);
@@ -2894,18 +3530,6 @@ const MapComponent: React.FC<MapComponentProps> = ({
             return true;
           }
 
-          const seatHits = m.queryRenderedFeatures(
-            [
-              [point.x - 6, point.y - 6],
-              [point.x + 6, point.y + 6],
-            ],
-            { layers: ['region-overlay-supervisores-cir'] }
-          );
-          const seatFeature = seatHits[0] as GeoJSON.Feature | undefined;
-          if (seatFeature?.properties) {
-            void handleCommercialSeatClick(seatFeature, lngLat);
-            return true;
-          }
           return false;
         };
 
@@ -3007,7 +3631,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
             if (applied) {
               syncOutsideMaskColorState();
               disableBasemapClouds(map.current!);
-              applyBrazilBasemapLabelTweaks(map.current!);
+              scheduleBrazilBasemapLabelTweaks(map.current!);
               repositionBrazilCutoutLayers(map.current!);
             }
           })();
@@ -3671,7 +4295,8 @@ const MapComponent: React.FC<MapComponentProps> = ({
           m.on('mouseleave', layerId, clearStructPointer);
         }
 
-        for (const layerId of AGENCY_CLICK_LAYER_IDS) {
+        // Ordem visual: agências/lojas abaixo; bolinhas de gerentes sempre no topo.
+        for (const layerId of MANAGER_CIRCLE_LAYER_IDS) {
           if (!m.getLayer(layerId)) continue;
           try {
             m.moveLayer(layerId);
@@ -3714,6 +4339,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
           'region-overlay-agencias-cir',
           'region-overlay-lojas-cir',
           'region-overlay-supervisores-cir',
+          'structure-people-circles',
         ] as const;
         overlayMarkerHoverLayersRef.current = overlayHoverLayerIds.filter((id) => Boolean(m.getLayer(id)));
 
@@ -4014,16 +4640,28 @@ const MapComponent: React.FC<MapComponentProps> = ({
 
   useEffect(() => {
     const m = map.current;
-    if (!m?.isStyleLoaded()) return;
-    const visibility = compareSupervisionAreas ? 'visible' : 'none';
-    for (const layerId of ['supervisions-compare-fill', 'supervisions-compare-line'] as const) {
-      if (!m.getLayer(layerId)) continue;
-      try {
-        m.setLayoutProperty(layerId, 'visibility', visibility);
-      } catch {
-        /* estilo recarregando */
+    if (!m) return;
+    const applyVisibility = () => {
+      const visibility = compareSupervisionAreas ? 'visible' : 'none';
+      for (const layerId of ['supervisions-compare-fill', 'supervisions-compare-line'] as const) {
+        if (!m.getLayer(layerId)) continue;
+        try {
+          m.setLayoutProperty(layerId, 'visibility', visibility);
+        } catch {
+          /* estilo recarregando */
+        }
       }
+    };
+    // isStyleLoaded() fica false com qualquer mudança pendente (setData, tiles);
+    // se desistíssemos aqui, o desligamento nunca seria aplicado. Reagenda no idle.
+    if (m.isStyleLoaded()) {
+      applyVisibility();
+      return;
     }
+    m.once('idle', applyVisibility);
+    return () => {
+      m.off('idle', applyVisibility);
+    };
   }, [compareSupervisionAreas, mapReadyVersion]);
 
   useEffect(() => {
@@ -4331,12 +4969,6 @@ const MapComponent: React.FC<MapComponentProps> = ({
     }
   }, [compareSupervisionAreas, compareScopeHierarchy, setCompareSupervisionAreas]);
 
-  useEffect(() => {
-    if (compareSupervisionAreas && !showCompareSupervisionAreasButton) {
-      setCompareSupervisionAreas(false);
-    }
-  }, [compareSupervisionAreas, showCompareSupervisionAreasButton, setCompareSupervisionAreas]);
-
   /**
    * Modo "Comparar áreas das supervisões": carrega o GeoJSON sob demanda, monta uma
    * FeatureCollection com `compare_color` por feature e despeja na source
@@ -4344,32 +4976,46 @@ const MapComponent: React.FC<MapComponentProps> = ({
    */
   useEffect(() => {
     const m = map.current;
-    if (!m?.isStyleLoaded()) return;
-    const source = m.getSource('supervisions-compare') as mapboxgl.GeoJSONSource | undefined;
-    if (!source) return;
-
-    if (!compareSupervisionAreas) {
-      try {
-        source.setData({ type: 'FeatureCollection', features: [] });
-      } catch {
-        /* estilo recarregando */
-      }
-      return;
-    }
-
-    if (compareSupervisionsList.length === 0) {
-      return;
-    }
+    if (!m) return;
 
     let cancelled = false;
-    void writeCompareSupervisionsToMap(m, compareSupervisionsList).catch((error) => {
-      if (!cancelled) {
-        console.warn('Falha ao carregar áreas das supervisões para comparação:', error);
+
+    const syncCompareSource = () => {
+      if (cancelled) return;
+      const source = m.getSource('supervisions-compare') as mapboxgl.GeoJSONSource | undefined;
+      if (!source) return;
+
+      if (!compareSupervisionAreas) {
+        try {
+          source.setData({ type: 'FeatureCollection', features: [] });
+        } catch {
+          /* estilo recarregando */
+        }
+        return;
       }
-    });
+
+      if (compareSupervisionsList.length === 0) {
+        return;
+      }
+
+      void writeCompareSupervisionsToMap(m, compareSupervisionsList).catch((error) => {
+        if (!cancelled) {
+          console.warn('Falha ao carregar áreas das supervisões para comparação:', error);
+        }
+      });
+    };
+
+    // Mesmo racional do efeito de visibilidade: não desistir quando isStyleLoaded()
+    // estiver false por mudanças pendentes; reagenda a sincronização no idle.
+    if (m.isStyleLoaded()) {
+      syncCompareSource();
+    } else {
+      m.once('idle', syncCompareSource);
+    }
 
     return () => {
       cancelled = true;
+      m.off('idle', syncCompareSource);
     };
   }, [compareSupervisionAreas, compareSupervisionsList, mapReadyVersion]);
 
@@ -4513,47 +5159,6 @@ const MapComponent: React.FC<MapComponentProps> = ({
             <div className="mt-2 h-1 overflow-hidden rounded-full bg-white/35">
               <div className="h-full w-1/2 animate-pulse rounded-full bg-slate-700/70" />
             </div>
-          </div>
-        </div>
-      )}
-      {compareSupervisionAreas && compareSupervisionsList.length > 0 && (
-        <div className="absolute bottom-3 left-3 z-20 w-[min(280px,60vw)] rounded-xl border border-slate-200/70 bg-white/90 shadow-lg shadow-slate-900/10 backdrop-blur-sm">
-          <div className="flex items-start justify-between gap-2 px-3 pt-2.5 pb-1.5">
-            <div className="min-w-0">
-              <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
-                Áreas dos {COMMERCIAL_TEAM_LEVEL_LABEL_PLURAL.supervisor}
-              </p>
-              <p className="truncate text-xs font-medium text-slate-800" title={compareScopeLabel}>
-                {compareScopeLabel}
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={() => setCompareSupervisionAreas(false)}
-              title={`Ocultar áreas dos ${COMMERCIAL_TEAM_LEVEL_LABEL_PLURAL.supervisor}`}
-              aria-label={`Ocultar áreas dos ${COMMERCIAL_TEAM_LEVEL_LABEL_PLURAL.supervisor}`}
-              className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-900"
-            >
-              <X className="h-3.5 w-3.5" />
-            </button>
-          </div>
-          <div className="max-h-52 overflow-auto px-3 pb-2.5">
-            <ul className="space-y-1">
-              {compareSupervisionsList.map((item) => (
-                <li
-                  key={item.chaveSupervisao}
-                  className="flex items-center gap-2 text-[11px] text-slate-700"
-                >
-                  <span
-                    className="inline-flex h-2.5 w-2.5 shrink-0 rounded-full border border-white shadow-sm"
-                    style={{ backgroundColor: item.color }}
-                  />
-                  <span className="truncate" title={item.nome}>
-                    {item.nome}
-                  </span>
-                </li>
-              ))}
-            </ul>
           </div>
         </div>
       )}
@@ -4891,50 +5496,237 @@ const MapComponent: React.FC<MapComponentProps> = ({
             </Button>
           </div>
         </div>
-        {visitRoute ? <RouteLegend /> : null}
       </div>
       <div
         className={`absolute bottom-4 z-20 flex max-w-[min(96vw,calc(100%-2rem))] items-end gap-3 overflow-visible pb-[env(safe-area-inset-bottom,0px)] transition-[right] duration-500 ease-out ${
           statePanelExpanded ? 'right-[calc(min(96vw,480px)+0.75rem)]' : 'right-4'
         }`}
       >
-        {overlaySupervisores && seatLegendEntries.length > 0 ? (
-          <div className="pointer-events-none min-w-0 max-w-[min(280px,calc(100vw-7rem))] shrink rounded-lg border border-slate-200/60 bg-white/90 px-2.5 py-2 text-[10px] text-slate-600 shadow-md shadow-slate-900/5 backdrop-blur-sm">
-            <p className="mb-1 font-medium uppercase tracking-wide text-slate-500">
-              Paleta por {COMMERCIAL_TEAM_LEVEL_LABEL.gerente_area}
-            </p>
-            <div className="mb-1 grid grid-cols-[minmax(0,1fr)_20px_20px_20px] items-center gap-1.5 text-[9px] uppercase tracking-wide text-slate-400">
-              <span>{COMMERCIAL_TEAM_LEVEL_LABEL.gerente_area}</span>
-              <span className="text-center">GG</span>
-              <span className="text-center">GC3</span>
-              <span className="text-center">GC</span>
-            </div>
-            <div className="max-h-40 space-y-1.5 overflow-y-auto">
-              {seatLegendEntries.map((entry) => (
-                <div
-                  key={entry.ga}
-                  className="grid grid-cols-[minmax(0,1fr)_20px_20px_20px] items-center gap-1.5"
+        {overlaySupervisores &&
+        (seatLegendCompact ||
+          seatLegendGc3Detail ||
+          seatLegendGgDetail ||
+          seatLegendEntries.length > 0) ? (
+          <div className="pointer-events-auto min-w-0 max-w-[min(280px,calc(100vw-7rem))] shrink rounded-lg border border-slate-200/60 bg-white/90 px-2.5 py-2 text-[10px] text-slate-600 shadow-md shadow-slate-900/5 backdrop-blur-sm">
+            <div className="mb-1 flex items-center gap-1.5">
+              {seatLegendCanGoBack ? (
+                <button
+                  type="button"
+                  onClick={goBackSeatLegend}
+                  className="inline-flex h-5 shrink-0 items-center gap-0.5 rounded px-1 text-[9px] font-medium uppercase tracking-wide text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-800 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-slate-400"
+                  title="Voltar ao nível anterior"
+                  aria-label="Voltar ao nível anterior da legenda"
                 >
-                  <span
-                    className="truncate text-[10px] text-slate-500"
-                    title={`${entry.gaNome} (${entry.ga})`}
-                  >
-                    {entry.gaNome}
+                  <ChevronLeft className="h-3 w-3" aria-hidden />
+                  Voltar
+                </button>
+              ) : null}
+              <p className="min-w-0 flex-1 font-medium uppercase tracking-wide text-slate-500">
+                Equipe Comercial
+              </p>
+            </div>
+            {seatLegendCompact && seatLegendSelectedGc ? (
+              <button
+                type="button"
+                onClick={focusSeatLegendSelectedGc}
+                className="flex w-full min-w-0 items-center gap-1.5 rounded text-left transition-colors hover:text-slate-800 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-slate-400"
+                title={`Zoom em ${seatLegendSelectedGc.nome}`}
+              >
+                <span
+                  className="inline-flex h-3 w-1 shrink-0 rounded-[1px]"
+                  style={{ backgroundColor: seatLegendSelectedGc.color }}
+                  aria-hidden
+                />
+                <span className="min-w-0 flex-1 truncate text-[10px] text-slate-500 hover:text-slate-800">
+                  {seatLegendSelectedGc.nome}
+                </span>
+                <span className="shrink-0 tabular-nums text-[10px] text-slate-400">
+                  {seatLegendSelectedGc.chave}
+                </span>
+              </button>
+            ) : seatLegendGc3Detail ? (
+              <>
+                <div className="mb-1 text-[9px] uppercase tracking-wide text-slate-400">
+                  {COMMERCIAL_TEAM_LEVEL_LABEL.supervisor}
+                </div>
+                <div className="max-h-40 space-y-1.5 overflow-y-auto">
+                  {seatLegendGcEntries.length > 0 ? (
+                    seatLegendGcEntries.map((entry) => (
+                      <button
+                        key={entry.chave}
+                        type="button"
+                        onClick={() => focusSeatLegendGc(entry.chave, entry.lngLat)}
+                        className="flex w-full min-w-0 items-center gap-1.5 rounded text-left transition-colors hover:text-slate-800 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-slate-400"
+                        title={`Zoom em ${entry.nome}`}
+                      >
+                        <span
+                          className="inline-flex h-3 w-1 shrink-0 rounded-[1px]"
+                          style={{ backgroundColor: entry.color }}
+                          aria-hidden
+                        />
+                        <span className="min-w-0 flex-1 truncate text-[10px] text-slate-500 hover:text-slate-800">
+                          {entry.nome}
+                        </span>
+                        <span className="shrink-0 tabular-nums text-[10px] text-slate-400">
+                          {entry.chave}
+                        </span>
+                      </button>
+                    ))
+                  ) : (
+                    <p className="text-[10px] text-slate-400">Carregando gerentes comerciais…</p>
+                  )}
+                </div>
+                {seatLegendGcEntries.length > 0 ? (
+                  <div className="mt-1.5 border-t border-slate-200/80 pt-1.5 text-[10px] font-semibold uppercase tracking-wide text-slate-600">
+                    Total{' '}
+                    <span className="tabular-nums text-slate-700">{seatLegendGcEntries.length}</span>
+                  </div>
+                ) : null}
+              </>
+            ) : seatLegendGgDetail ? (
+              <>
+                <div className="mb-1 grid grid-cols-[minmax(0,1fr)_28px] items-center gap-1.5 text-[9px] uppercase tracking-wide text-slate-400">
+                  <span>{COMMERCIAL_TEAM_LEVEL_LABEL.coordenador}</span>
+                  <span className="text-center">GC</span>
+                </div>
+                <div className="max-h-40 space-y-1.5 overflow-y-auto">
+                  {seatLegendGc3Entries.length > 0 ? (
+                    seatLegendGc3Entries.map((entry) => (
+                      <div
+                        key={entry.chave}
+                        className="grid grid-cols-[minmax(0,1fr)_28px] items-center gap-1.5"
+                      >
+                        <button
+                          type="button"
+                          onClick={() => focusSeatLegendGc3(entry.chave)}
+                          className="flex min-w-0 items-center gap-1.5 rounded text-left transition-colors hover:text-slate-800 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-slate-400"
+                          title={`Ver ${COMMERCIAL_TEAM_LEVEL_LABEL_PLURAL.supervisor} de ${entry.nome}`}
+                        >
+                          <span
+                            className="inline-flex h-3 w-1 shrink-0 rounded-[1px]"
+                            style={{ backgroundColor: entry.color }}
+                            aria-hidden
+                          />
+                          <span className="truncate text-[10px] text-slate-500 hover:text-slate-800">
+                            {entry.nome}
+                          </span>
+                        </button>
+                        <span
+                          className="text-center text-[10px] font-medium tabular-nums text-slate-600"
+                          title={`${entry.gcCount} ${COMMERCIAL_TEAM_LEVEL_LABEL_PLURAL.supervisor}`}
+                        >
+                          {entry.gcCount}
+                        </span>
+                      </div>
+                    ))
+                  ) : (
+                    <p className="text-[10px] text-slate-400">Carregando gerentes comerciais III…</p>
+                  )}
+                </div>
+                {seatLegendGc3Entries.length > 0 ? (
+                  <div className="mt-1.5 grid grid-cols-[minmax(0,1fr)_28px] items-center gap-1.5 border-t border-slate-200/80 pt-1.5">
+                    <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-600">
+                      Total
+                    </span>
+                    <span
+                      className="text-center text-[10px] font-semibold tabular-nums text-slate-700"
+                      title={`${seatLegendGc3Total} ${COMMERCIAL_TEAM_LEVEL_LABEL_PLURAL.supervisor}`}
+                    >
+                      {seatLegendGc3Total}
+                    </span>
+                  </div>
+                ) : null}
+              </>
+            ) : (
+              <>
+                <div className="mb-1 grid grid-cols-[minmax(0,1fr)_28px] items-center gap-1.5 text-[9px] uppercase tracking-wide text-slate-400">
+                  <span>{COMMERCIAL_TEAM_LEVEL_LABEL.gerente_area}</span>
+                  <span className="text-center">GC</span>
+                </div>
+                <div className="max-h-40 space-y-1.5 overflow-y-auto">
+                  {seatLegendEntries.map((entry) => (
+                    <div
+                      key={entry.ga}
+                      className="grid grid-cols-[minmax(0,1fr)_28px] items-center gap-1.5"
+                    >
+                      <button
+                        type="button"
+                        onClick={() => focusSeatLegendGerencia(entry.ga)}
+                        className="flex min-w-0 items-center gap-1.5 rounded text-left transition-colors hover:text-slate-800 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-slate-400"
+                        title={`Ver ${COMMERCIAL_TEAM_LEVEL_LABEL_PLURAL.coordenador} de ${entry.gaNome}`}
+                      >
+                        <span
+                          className="inline-flex h-3 w-1 shrink-0 rounded-[1px]"
+                          style={{ backgroundColor: entry.color }}
+                          aria-hidden
+                        />
+                        <span className="truncate text-[10px] text-slate-500 hover:text-slate-800">
+                          {entry.gaNome}
+                        </span>
+                      </button>
+                      <span
+                        className="text-center text-[10px] font-medium tabular-nums text-slate-600"
+                        title={`${entry.gcCount} ${COMMERCIAL_TEAM_LEVEL_LABEL_PLURAL.supervisor}`}
+                      >
+                        {entry.gcCount}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+                <div className="mt-1.5 grid grid-cols-[minmax(0,1fr)_28px] items-center gap-1.5 border-t border-slate-200/80 pt-1.5">
+                  <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-600">
+                    Total
                   </span>
                   <span
-                    className="mx-auto inline-flex h-2.5 w-2.5 rounded-full"
-                    style={{ backgroundColor: entry.gerente }}
-                  />
-                  <span
-                    className="mx-auto inline-flex h-2.5 w-2.5 rounded-full"
-                    style={{ backgroundColor: entry.coord }}
-                  />
-                  <span
-                    className="mx-auto inline-flex h-2.5 w-2.5 rounded-full"
-                    style={{ backgroundColor: entry.sup }}
-                  />
+                    className="text-center text-[10px] font-semibold tabular-nums text-slate-700"
+                    title={`${seatLegendGcTotal} ${COMMERCIAL_TEAM_LEVEL_LABEL_PLURAL.supervisor}`}
+                  >
+                    {seatLegendGcTotal}
+                  </span>
                 </div>
-              ))}
+              </>
+            )}
+          </div>
+        ) : null}
+        {visitRoute ? <RouteLegend /> : null}
+        {compareSupervisionAreas && compareSupervisionsList.length > 0 ? (
+          <div className="pointer-events-auto min-w-0 w-[min(280px,60vw)] shrink rounded-xl border border-slate-200/70 bg-white/90 shadow-lg shadow-slate-900/10 backdrop-blur-sm">
+            <div className="flex items-start justify-between gap-2 px-3 pt-2.5 pb-1.5">
+              <div className="min-w-0">
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                  Áreas dos {COMMERCIAL_TEAM_LEVEL_LABEL_PLURAL.supervisor}
+                </p>
+                <p className="truncate text-xs font-medium text-slate-800" title={compareScopeLabel}>
+                  {compareScopeLabel}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setCompareSupervisionAreas(false)}
+                title={`Ocultar áreas dos ${COMMERCIAL_TEAM_LEVEL_LABEL_PLURAL.supervisor}`}
+                aria-label={`Ocultar áreas dos ${COMMERCIAL_TEAM_LEVEL_LABEL_PLURAL.supervisor}`}
+                className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-900"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+            <div className="max-h-52 overflow-auto px-3 pb-2.5">
+              <ul className="space-y-1">
+                {compareSupervisionsList.map((item) => (
+                  <li
+                    key={item.chaveSupervisao}
+                    className="flex items-center gap-2 text-[11px] text-slate-700"
+                  >
+                    <span
+                      className="inline-flex h-2.5 w-2.5 shrink-0 rounded-full border border-white shadow-sm"
+                      style={{ backgroundColor: item.color }}
+                    />
+                    <span className="truncate" title={item.nome}>
+                      {item.nome}
+                    </span>
+                  </li>
+                ))}
+              </ul>
             </div>
           </div>
         ) : null}

@@ -9,6 +9,8 @@ export const MAPBOX_CONFIG = {
     /** Mapbox Standard — tema/luz via `config.basemap` no GL JS v3+. */
     standardWarm: 'mapbox://styles/mapbox/standard',
     standardCool: 'mapbox://styles/mapbox/standard',
+    /** Estilo customizado criado no Mapbox Studio. */
+    custom: 'mapbox://styles/igralencar/cmoc8sp33003601s58ijjhro4',
   },
   /** Mapa plano (Web Mercator). Estilos v11+ podem usar `globe` no JSON — isso força visão plana. */
   projection: { name: 'mercator' as const },
@@ -42,16 +44,17 @@ export const MAPBOX_CONFIG = {
     terrainEnabled: false,
     terrainDemSourceId: 'mapbox-dem',
     terrainExaggeration: 1.35,
-    /** Inclinação ao focar agência/loja (clique no pin). */
+    /** Inclinação ao focar pin (gerente/agência/loja) — mais baixo = movimento mais suave. */
     focusPitch: 50,
-    focusZoomStreet: 10,
-    focusZoomMin: 10,
-    focusDurationMs: 1400,
-    flatDurationMs: 900,
+    /** Zoom alvo ao clicar no pin: região, sem aproximar demais. */
+    focusZoomStreet: 9,
+    focusZoomMin: 8.8,
+    focusDurationMs: 1800,
+    flatDurationMs: 1100,
     /** Desloca o centro na tela para o popup não cobrir o pin [x, y] em px. */
     focusOffset: [0, -90] as [number, number],
     /** Usa flyTo em vez de easeTo se |zoom atual − alvo| > este valor. */
-    focusFlyToZoomDelta: 1.5,
+    focusFlyToZoomDelta: 2.2,
   },
   /** Cobre com cor sólida tudo fora do contorno do Brasil (o mapa só “aparece” dentro do país). */
   maskOutsideBrazil: true,

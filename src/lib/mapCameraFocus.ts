@@ -87,9 +87,10 @@ export function restoreMapCamera(m: mapboxgl.Map, camera: SavedMapCamera): void 
 }
 
 function resolveFocusZoom(currentZoom: number): number {
+  // Incremento leve (+0.6) para não “pular” o zoom quando já está perto da região.
   const target = Math.max(
     interactive3d.focusZoomMin,
-    Math.min(zoomConfig.max, Math.max(currentZoom + 1.2, interactive3d.focusZoomStreet))
+    Math.min(zoomConfig.max, Math.max(currentZoom + 0.6, interactive3d.focusZoomStreet))
   );
   return target;
 }
