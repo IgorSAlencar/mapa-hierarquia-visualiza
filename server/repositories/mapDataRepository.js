@@ -49,10 +49,14 @@ const AGENCY_CONS_MATCH_SQL = `
 
 export async function fetchAgencyCoordinates({ bbox = null, limit = null, hierarchy = null } = {}) {
   const request = pool.request();
-  request.input('bank', 'BANCO BRADESCO S.A.');
   const hasLimit = Number.isFinite(limit) && Number(limit) > 0;
   if (hasLimit) request.input('limit', Math.round(limit));
-  const bboxSql = applyBboxFilter(request, bbox, 'CAST(a.lon AS float)', 'CAST(a.lat AS float)');
+  const bboxSql = applyBboxFilter(
+    request,
+    bbox,
+    'CAST(a.LONGITUDE AS float)',
+    'CAST(a.LATITUDE AS float)'
+  );
   const hierarchySql = applyHierarchyFilter(request, hierarchy, 'esc');
   const topSql = hasLimit ? 'TOP (@limit)' : '';
   const hierarchyFilterSql = hierarchySql
@@ -69,19 +73,17 @@ export async function fetchAgencyCoordinates({ bbox = null, limit = null, hierar
   const query = `
     SELECT ${topSql}
       a.COD_AG AS COD_AG,
-      a.NOME_AGENCIA AS NOME,
-      CAST(a.lon AS float) AS lon,
-      CAST(a.lat AS float) AS lat,
+      a.NOME_AG AS NOME,
+      CAST(a.LONGITUDE AS float) AS lon,
+      CAST(a.LATITUDE AS float) AS lat,
       a.ENDERECO,
       a.BAIRRO,
       a.CEP,
       a.MUNICIPIO,
-      a.UF,
-      a.BANCO AS banco
-    FROM TESTE..COORDENADAS_AGENCIAS AS a
-    WHERE a.BANCO = @bank
-      AND a.lon IS NOT NULL
-      AND a.lat IS NOT NULL
+      a.UF
+    FROM TESTE..TB_COORD_AG_IGOR AS a
+    WHERE a.LONGITUDE IS NOT NULL
+      AND a.LATITUDE IS NOT NULL
       ${bboxSql}
       ${hierarchyFilterSql}
   `;
@@ -104,8 +106,8 @@ export async function fetchStoreCoordinates({ bbox = null, limit = null, codAg =
     : applyBboxFilter(
         request,
         bbox,
-        'CAST(l.geolocation_lng AS float)',
-        'CAST(l.geolocation_lat AS float)'
+        'CAST(l.LONGITUDE AS float)',
+        'CAST(l.LATITUDE AS float)'
       );
   const codAgSql = hasCodAg
     ? ` AND TRY_CAST(l.COD_AG AS BIGINT) = TRY_CAST(@codAg AS BIGINT)`
@@ -132,12 +134,13 @@ export async function fetchStoreCoordinates({ bbox = null, limit = null, codAg =
 
   const query = `
     SELECT ${topSql}
+      l.CHAVE_LOJA,
       l.COD_AG,
-      CAST(l.geolocation_lng AS float) AS lon,
-      CAST(l.geolocation_lat AS float) AS lat
-    FROM TESTE..COORDENADAS_LOJAS AS l
-    WHERE l.geolocation_lng IS NOT NULL
-      AND l.geolocation_lat IS NOT NULL
+      CAST(l.LONGITUDE AS float) AS lon,
+      CAST(l.LATITUDE AS float) AS lat
+    FROM TESTE..TB_COORD_BE_IGOR AS l
+    WHERE l.LONGITUDE IS NOT NULL
+      AND l.LATITUDE IS NOT NULL
       ${codAgSql}
       ${hierarchyFilterSql}
       ${bboxSql}

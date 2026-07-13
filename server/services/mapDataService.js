@@ -79,8 +79,9 @@ export async function getStoreMapPoints({ bbox = null, limit = null, codAg = nul
       const lngLat = validCoordinate(row);
       if (!lngLat) return null;
       const rowCodAg = normalizeCodAg(row.COD_AG);
+      const chaveLoja = normalizeText(row.CHAVE_LOJA);
       return {
-        id: `sql-loja-${rowCodAg ?? 'x'}-${index}`,
+        id: `sql-loja-${chaveLoja ?? `${rowCodAg ?? 'x'}-${index}`}`,
         nome: 'Loja',
         kind: 'loja',
         lngLat,

@@ -65,6 +65,20 @@ const PRIORITIES: Array<{ id: PlanningPriority; title: string; description: stri
   { id: 'equilibrado', title: 'Misturar tudo automaticamente', description: 'Equilibrar todos os critérios', icon: Sparkles },
 ];
 
+const ROUTE_PLANNER_HERO_IMG_CLASS =
+  'mx-auto block w-full max-h-[clamp(180px,34vh,260px)] object-contain object-bottom';
+
+/** Esmaece cantos superior, inferior, esquerdo e direito (interseção dos gradientes).
+ *  Intensidade do fade: percentuais do meio (ex. 18% / 82%) — quanto mais perto de 50%, mais forte. */
+const ROUTE_PLANNER_HERO_EDGE_FADE: React.CSSProperties = {
+  maskImage:
+    'linear-gradient(to right, transparent 0%, black 18%, black 82%, transparent 100%), linear-gradient(to bottom, transparent 0%, black 16%, black 84%, transparent 100%)',
+  WebkitMaskImage:
+    'linear-gradient(to right, transparent 0%, black 18%, black 82%, transparent 100%), linear-gradient(to bottom, transparent 0%, black 16%, black 84%, transparent 100%)',
+  maskComposite: 'intersect',
+  WebkitMaskComposite: 'source-in',
+};
+
 const RoutePlanningJourney: React.FC<Props> = ({ agencies, originId, destination, onClose, onComplete, onOriginAgencySelect, onDestinationAgencySelect, headerDragProps }) => {
   const [screen, setScreen] = useState(0);
   const [intention, setIntention] = useState('rotina');
@@ -107,15 +121,26 @@ const RoutePlanningJourney: React.FC<Props> = ({ agencies, originId, destination
   if (screen === 0) {
     return (
       <JourneyShell title="Montar meu roteiro" onClose={onClose} headerDragProps={headerDragProps}>
-        <div className="flex min-h-0 flex-1 flex-col overflow-hidden px-5 pb-4 pt-4 sm:px-7 sm:pb-5 sm:pt-5">
-          <div className="mx-auto h-40 w-full max-w-[330px] overflow-hidden rounded-xl bg-slate-50">
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden px-4 pb-4 pt-1 sm:px-6 sm:pb-5 sm:pt-2">
+          <div className="relative mx-auto w-full max-w-[400px] shrink-0 sm:max-w-[420px]">
             <img
-              src="/IMG_ROTEIRO"
+              aria-hidden
+              src="/IMG_ROTEIRO.png"
+              alt=""
+              style={ROUTE_PLANNER_HERO_EDGE_FADE}
+              className={cn(
+                'pointer-events-none absolute inset-0 z-0 scale-[.01] opacity-[0.10] blur-md',
+                ROUTE_PLANNER_HERO_IMG_CLASS,
+              )}
+            />
+            <img
+              src="/IMG_ROTEIRO.png"
               alt="Ilustração de planejamento de roteiro"
-              className="h-full w-full object-contain object-center"
+              style={ROUTE_PLANNER_HERO_EDGE_FADE}
+              className={cn('relative z-[1]', ROUTE_PLANNER_HERO_IMG_CLASS)}
             />
           </div>
-          <div className="mt-6 text-center">
+          <div className="mt-4 text-center">
             <h2 className="text-lg font-semibold text-slate-900">Para onde vamos hoje?</h2>
             <p className="mx-auto mt-3 max-w-[320px] text-xs leading-relaxed text-slate-500">Vamos montar o melhor roteiro de visitas com base na sua intenção.</p>
           </div>

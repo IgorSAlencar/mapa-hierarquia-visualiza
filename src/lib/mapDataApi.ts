@@ -29,7 +29,7 @@ interface FetchPointsOptions {
   bbox?: BboxQuery | null;
   limit?: number;
   hierarchy?: SqlHierarchyFilter | null;
-  /** Filtra lojas vinculadas à agência (COD_AG em COORDENADAS_LOJAS). */
+  /** Filtra lojas vinculadas à agência (COD_AG em TB_COORD_BE_IGOR). */
   codAg?: string | null;
 }
 

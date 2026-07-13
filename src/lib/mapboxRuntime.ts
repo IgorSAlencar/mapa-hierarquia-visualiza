@@ -57,11 +57,15 @@ function persistStyle(styleUrl: string, style: StyleSpecification): void {
 }
 
 /**
- * Styles com `imports` (Mapbox Standard) devem continuar como URL:
- * o GL JS aplica `config.basemap` e resolve fragmentos dinamicamente.
+ * Estilos com `imports` devem continuar como URL para que o GL JS resolva os
+ * fragmentos na versão compatível. O estilo Bradesco importa o Standard, mesmo
+ * que isso não seja visível no identificador da URL.
  */
 export function styleSupportsObjectCache(styleUrl: string): boolean {
-  return !styleUrl.includes('mapbox/standard');
+  return (
+    !styleUrl.includes('mapbox/standard') &&
+    styleUrl !== MAPBOX_CONFIG.styles.custom
+  );
 }
 
 /** Token, workers e limites — chamar cedo (main) e antes de criar o mapa. */
