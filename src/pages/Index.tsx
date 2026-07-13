@@ -8,6 +8,7 @@ import { HIERARCHY_ALL } from '@/components/navigator/HierarchyScopeSelect';
 import VisitasRoteirosPanel from '@/components/navigator/VisitasRoteirosPanel';
 import VisitStopDetailCard from '@/components/navigator/VisitStopDetailCard';
 import RouteDetailsPanel from '@/components/navigator/RouteDetailsPanel';
+import RoutePlannerPanel from '@/components/navigator/RoutePlannerPanel';
 import type { VisitRoute } from '@/data/visitRoutesMock';
 import { usePanelDrag } from '@/hooks/usePanelDrag';
 import {
@@ -21,6 +22,14 @@ import { Button } from '@/components/ui/button';
 
 const NAVIGATOR_PANEL_DOCK = { x: 16, y: 150 } as const;
 
+interface PlannerAgencyEndpoint {
+  id: string;
+  nome: string;
+  codAg: string;
+  lngLat: [number, number];
+  enderecoFormatado?: string;
+}
+
 const Index = () => {
   const [filters, setFilters] = useState<FiltrosEstrutura>(FILTROS_INICIAIS);
   const [filtersPanelOpen, setFiltersPanelOpen] = useState(false);
@@ -31,6 +40,10 @@ const Index = () => {
   const [routeDetailsOpen, setRouteDetailsOpen] = useState(false);
   const [selectedStopId, setSelectedStopId] = useState<number | null>(null);
   const [visitFocus, setVisitFocus] = useState<{ tick: number; stopId: number | null } | null>(null);
+  const [plannerTerritory, setPlannerTerritory] = useState<string | null>(null);
+  const [plannerAgencyFocus, setPlannerAgencyFocus] = useState<(PlannerAgencyEndpoint & { tick: number }) | null>(null);
+  const [plannerOriginAgency, setPlannerOriginAgency] = useState<PlannerAgencyEndpoint | null>(null);
+  const [plannerDestinationAgency, setPlannerDestinationAgency] = useState<PlannerAgencyEndpoint | null>(null);
   const [compareSupervisionAreas, setCompareSupervisionAreas] = useState(false);
   const [compareApplyTick, setCompareApplyTick] = useState(0);
   /** "Todos" em GG e GC III: compara as áreas de toda a estrutura. */
@@ -38,6 +51,7 @@ const Index = () => {
 
   const navigatorDrag = usePanelDrag(NAVIGATOR_PANEL_DOCK);
   const visitasDrag = usePanelDrag({ x: 332, y: 150 });
+  const plannerDrag = usePanelDrag(NAVIGATOR_PANEL_DOCK);
   const compararDrag = usePanelDrag({ x: 332, y: 150 });
   // Abre encostado à direita, antes da coluna de controles do mapa, com o topo
   // alinhado ao dock de controles (top-4 = 16px). Offset = 16 (margem à direita)
@@ -70,6 +84,39 @@ const Index = () => {
     [activeRoute, selectedStopId]
   );
 
+  const plannerPreviewRoute = useMemo<VisitRoute | null>(() => {
+    if (!plannerOriginAgency || activeSection !== 'planejar') return null;
+    return {
+      id: `planner-preview-${plannerOriginAgency.id}-${plannerDestinationAgency?.id ?? 'origem'}`,
+      chaveSupervisao: 0,
+      gerenteComercial: 'Meu roteiro',
+      nome: plannerDestinationAgency
+        ? `${plannerOriginAgency.nome} → ${plannerDestinationAgency.nome}`
+        : `Saída: ${plannerOriginAgency.nome}`,
+      data: 'Prévia do roteiro',
+      distanciaKm: 0,
+      duracaoEstimada: 'Calculando...',
+      stops: [],
+      origin: {
+        nome: plannerOriginAgency.nome,
+        lng: plannerOriginAgency.lngLat[0],
+        lat: plannerOriginAgency.lngLat[1],
+      },
+      destination: plannerDestinationAgency
+        ? {
+            nome: plannerDestinationAgency.nome,
+            lng: plannerDestinationAgency.lngLat[0],
+            lat: plannerDestinationAgency.lngLat[1],
+          }
+        : undefined,
+    };
+  }, [activeSection, plannerOriginAgency, plannerDestinationAgency]);
+
+  const plannerRouteAgencies = useMemo(() => {
+    if (!plannerOriginAgency || !plannerDestinationAgency || activeSection !== 'planejar') return null;
+    return { origin: plannerOriginAgency, destination: plannerDestinationAgency };
+  }, [activeSection, plannerOriginAgency, plannerDestinationAgency]);
+
   const clearVisitState = () => {
     setActiveRoute(null);
     setRouteDetailsOpen(false);
@@ -91,7 +138,13 @@ const Index = () => {
   const handleSelectSection = (section: NavigatorSection | null) => {
     const leavingComparar = activeSection === 'comparar' && section !== 'comparar';
     setActiveSection(section);
-    if (section !== 'visitas') clearVisitState();
+    if (section !== 'planejar') {
+      setPlannerTerritory(null);
+      setPlannerAgencyFocus(null);
+      setPlannerOriginAgency(null);
+      setPlannerDestinationAgency(null);
+    }
+    if (section !== 'visitas' && section !== 'planejar') clearVisitState();
     if (leavingComparar) clearCompareState();
   };
 
@@ -116,6 +169,10 @@ const Index = () => {
   };
 
   const handleRouteChange = (route: VisitRoute | null) => {
+    if (route) {
+      setPlannerOriginAgency(null);
+      setPlannerDestinationAgency(null);
+    }
     setActiveRoute(route);
     setRouteDetailsOpen(route != null);
     setSelectedStopId(null);
@@ -161,6 +218,45 @@ const Index = () => {
               onRouteChange={handleRouteChange}
               shellStyle={visitasDrag.shellStyle}
               headerDragProps={visitasDrag.headerDragProps}
+            />
+          )}
+          {activeSection === 'planejar' && (
+            <RoutePlannerPanel
+              onBack={() => handleSelectSection(null)}
+              onClose={() => handleSelectSection(null)}
+              onRouteChange={handleRouteChange}
+              onAgencyFocus={(agency) => {
+                const codAg = String(agency.codAg ?? '').trim();
+                if (!codAg) return;
+                const endpoint: PlannerAgencyEndpoint = {
+                  id: agency.id,
+                  nome: agency.nome,
+                  codAg,
+                  lngLat: agency.lngLat,
+                  enderecoFormatado: agency.enderecoFormatado,
+                };
+                setPlannerOriginAgency(endpoint);
+                setPlannerDestinationAgency(null);
+                setPlannerAgencyFocus({
+                  tick: Date.now(),
+                  ...endpoint,
+                });
+              }}
+              onDestinationAgencyFocus={(agency) => {
+                const codAg = String(agency.codAg ?? '').trim();
+                if (!codAg) return;
+                setPlannerDestinationAgency({
+                  id: agency.id,
+                  nome: agency.nome,
+                  codAg,
+                  lngLat: agency.lngLat,
+                  enderecoFormatado: agency.enderecoFormatado,
+                });
+                setVisitFocus({ tick: Date.now(), stopId: null });
+              }}
+              territory={plannerTerritory}
+              shellStyle={plannerDrag.shellStyle}
+              headerDragProps={plannerDrag.headerDragProps}
             />
           )}
           {activeSection === 'comparar' && (
@@ -233,10 +329,14 @@ const Index = () => {
           hierarchyFilter={buildSqlHierarchyFilterFromUi(filters)}
           filtersPanelOpen={filtersPanelOpen}
           onOpenFilters={() => setFiltersPanelOpen(true)}
-          visitRoute={activeRoute}
+          visitRoute={plannerPreviewRoute ?? activeRoute}
           selectedVisitStopId={selectedStopId}
           onVisitStopSelect={setSelectedStopId}
           visitFocus={visitFocus}
+          plannerMode={activeSection === 'planejar'}
+          onPlannerTerritorySelect={setPlannerTerritory}
+          plannerAgencyFocus={plannerAgencyFocus}
+          plannerRouteAgencies={plannerRouteAgencies}
           compareSupervisionAreas={compareSupervisionAreas}
           onCompareSupervisionAreasChange={handleCompareActiveChange}
           compareApplyTick={compareApplyTick}

@@ -49,8 +49,12 @@ function buildFeatureCollection(
   route: VisitRoute,
   lineCoordinates?: [number, number][]
 ): GeoJSON.FeatureCollection {
-  const coordinates =
-    lineCoordinates ?? route.stops.map((stop) => [stop.lng, stop.lat] as [number, number]);
+  const stopCoordinates = route.stops.map((stop) => [stop.lng, stop.lat] as [number, number]);
+  const coordinates = lineCoordinates ?? [
+    ...(route.origin ? [[route.origin.lng, route.origin.lat] as [number, number]] : []),
+    ...stopCoordinates,
+    ...(route.destination ? [[route.destination.lng, route.destination.lat] as [number, number]] : []),
+  ];
   const line: GeoJSON.Feature = {
     type: 'Feature',
     geometry: { type: 'LineString', coordinates },
@@ -66,7 +70,24 @@ function buildFeatureCollection(
       status: stop.status,
     },
   }));
-  return { type: 'FeatureCollection', features: [line, ...points] };
+  if (route.origin) {
+    points.unshift({
+      type: 'Feature',
+      geometry: { type: 'Point', coordinates: [route.origin.lng, route.origin.lat] },
+      properties: { kind: 'route-origin', ordem: 'I', status: 'origem', nome: route.origin.nome },
+    });
+  }
+  if (route.destination) {
+    points.push({
+      type: 'Feature',
+      geometry: { type: 'Point', coordinates: [route.destination.lng, route.destination.lat] },
+      properties: { kind: 'route-destination', ordem: 'F', status: 'destino', nome: route.destination.nome },
+    });
+  }
+  return {
+    type: 'FeatureCollection',
+    features: [...(coordinates.length >= 2 ? [line] : []), ...points],
+  };
 }
 
 function ensureLayers(m: mapboxgl.Map): void {
@@ -104,12 +125,20 @@ function ensureLayers(m: mapboxgl.Map): void {
         'circle-radius': 10,
         'circle-color': [
           'match',
-          ['get', 'status'],
-          'concluida',
-          STATUS_COLOR.concluida,
-          'pendente',
-          STATUS_COLOR.pendente,
-          ROUTE_LINE_COLOR,
+          ['get', 'kind'],
+          'route-origin',
+          '#2563eb',
+          'route-destination',
+          '#10b981',
+          [
+            'match',
+            ['get', 'status'],
+            'concluida',
+            STATUS_COLOR.concluida,
+            'pendente',
+            STATUS_COLOR.pendente,
+            ROUTE_LINE_COLOR,
+          ],
         ],
         'circle-stroke-color': '#ffffff',
         'circle-stroke-width': 2,
@@ -164,7 +193,11 @@ function ensureInteractions(m: mapboxgl.Map): void {
  * o resultado é descartado.
  */
 function applyStreetGeometry(m: mapboxgl.Map, route: VisitRoute): void {
-  const stops = route.stops.map((stop) => [stop.lng, stop.lat] as [number, number]);
+  const stops = [
+    ...(route.origin ? [[route.origin.lng, route.origin.lat] as [number, number]] : []),
+    ...route.stops.map((stop) => [stop.lng, stop.lat] as [number, number]),
+    ...(route.destination ? [[route.destination.lng, route.destination.lat] as [number, number]] : []),
+  ];
   void fetchDrivingGeometry(route.id, stops).then((geometry) => {
     // Sem rota de carro possível: mantém a linha reta já desenhada.
     if (!geometry) return;
@@ -219,20 +252,31 @@ export function syncVisitRouteOnMap(
     // Usa a geometria das ruas do cache se já disponível; senão, linha reta
     // imediata enquanto a Directions API responde (uma única vez por roteiro).
     const cachedGeometry = getCachedDrivingGeometry(route.id);
-    const dataKey = `${route.id}:${cachedGeometry ? 'street' : 'straight'}`;
+    const dataKey = `${route.id}:${cachedGeometry ? 'street' : 'pending'}`;
 
     if (renderedDataKeys.get(m) !== dataKey) {
       const src = m.getSource(SOURCE_ID) as mapboxgl.GeoJSONSource | undefined;
-      src?.setData(buildFeatureCollection(route, cachedGeometry ?? undefined));
+      // Sem geometria em cache, envia uma lista vazia para desenhar apenas
+      // os markers. A linha aparece somente com o trajeto real das ruas.
+      src?.setData(buildFeatureCollection(route, cachedGeometry ?? []));
       renderedDataKeys.set(m, dataKey);
     }
 
     if (!cachedGeometry) applyStreetGeometry(m, route);
 
+    const baseRadius: mapboxgl.ExpressionSpecification = [
+      'match',
+      ['get', 'kind'],
+      'route-origin',
+      12,
+      'route-destination',
+      12,
+      10,
+    ];
     const highlight: number | mapboxgl.ExpressionSpecification =
       selectedStopId == null
-        ? 10
-        : ['case', ['==', ['get', 'stopId'], selectedStopId], 14, 10];
+        ? baseRadius
+        : ['case', ['==', ['get', 'stopId'], selectedStopId], 14, baseRadius];
     m.setPaintProperty(STOP_CIRCLE_LAYER_ID, 'circle-radius', highlight);
     const strokeWidth: number | mapboxgl.ExpressionSpecification =
       selectedStopId == null
@@ -246,7 +290,8 @@ export function syncVisitRouteOnMap(
 
 /** Bounds das paradas, para fitBounds da câmera. */
 export function getVisitRouteBounds(route: VisitRoute): [[number, number], [number, number]] | null {
-  if (route.stops.length === 0) return null;
+  const pointCount = route.stops.length + (route.origin ? 1 : 0) + (route.destination ? 1 : 0);
+  if (pointCount < 2) return null;
   let minLng = Infinity;
   let minLat = Infinity;
   let maxLng = -Infinity;
@@ -257,6 +302,8 @@ export function getVisitRouteBounds(route: VisitRoute): [[number, number], [numb
     maxLng = Math.max(maxLng, stop.lng);
     maxLat = Math.max(maxLat, stop.lat);
   }
+  if (route.origin) { minLng = Math.min(minLng, route.origin.lng); minLat = Math.min(minLat, route.origin.lat); maxLng = Math.max(maxLng, route.origin.lng); maxLat = Math.max(maxLat, route.origin.lat); }
+  if (route.destination) { minLng = Math.min(minLng, route.destination.lng); minLat = Math.min(minLat, route.destination.lat); maxLng = Math.max(maxLng, route.destination.lng); maxLat = Math.max(maxLat, route.destination.lat); }
   return [
     [minLng, minLat],
     [maxLng, maxLat],

@@ -1,16 +1,12 @@
 import React from 'react';
 import type { CSSProperties } from 'react';
 import {
-  BarChart3,
-  Bell,
   Building2,
   ChevronRight,
   ClipboardList,
   CreditCard,
   HandCoins,
   Layers,
-  Lightbulb,
-  Megaphone,
   Minus,
   Route,
   Shield,
@@ -19,7 +15,7 @@ import { cn } from '@/lib/utils';
 import type { PanelHeaderDragProps } from '@/hooks/usePanelDrag';
 import { mergeHeaderDrag } from '@/components/navigator/mergeHeaderDrag';
 
-export type NavigatorSection = 'visitas' | 'comparar';
+export type NavigatorSection = 'visitas' | 'planejar' | 'comparar';
 
 interface ProductItem {
   id: string;
@@ -45,12 +41,9 @@ interface SubjectItem {
 }
 
 const SUBJECTS: SubjectItem[] = [
-  { id: 'acoes', label: 'Ações e Campanhas', icon: Megaphone, accent: 'text-blue-600' },
   { id: 'comparar', label: 'Território de Atuação', icon: Layers, accent: 'text-emerald-600', section: 'comparar' },
   { id: 'visitas', label: 'Visitas e Roteiros', icon: Route, accent: 'text-violet-600', section: 'visitas' },
-  { id: 'oportunidades', label: 'Oportunidades', icon: Lightbulb, accent: 'text-amber-500' },
-  { id: 'alertas', label: 'Alertas e Pendências', icon: Bell, accent: 'text-rose-600' },
-  { id: 'relatorios', label: 'Relatórios', icon: BarChart3, accent: 'text-sky-600' },
+  { id: 'planejar', label: 'Montar meu roteiro', icon: ClipboardList, accent: 'text-blue-600', section: 'planejar' },
 ];
 
 interface NavigatorPanelProps {
@@ -155,7 +148,9 @@ const NavigatorPanel: React.FC<NavigatorPanelProps> = ({
                 className={cn(
                   'flex w-full items-center gap-2.5 rounded-lg border px-2.5 py-2 text-left transition-colors',
                   isActive
-                    ? 'border-violet-200 bg-violet-50 text-slate-900'
+                    ? subject.section === 'planejar'
+                      ? 'border-blue-300 bg-blue-50 text-slate-900'
+                      : 'border-violet-200 bg-violet-50 text-slate-900'
                     : 'border-slate-200 bg-white text-slate-700',
                   isClickable ? 'hover:border-slate-300 hover:bg-slate-50' : 'cursor-default opacity-80'
                 )}
@@ -169,6 +164,23 @@ const NavigatorPanel: React.FC<NavigatorPanelProps> = ({
           })}
         </div>
       </div>
+      {activeSection === 'planejar' && (
+        <div className="border-t border-slate-100 p-3">
+          <button
+            type="button"
+            data-panel-drag-ignore
+            onClick={onMinimize}
+            className="flex w-full items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-left text-[10px] font-bold text-slate-700 shadow-sm shadow-slate-900/[0.03] transition-colors hover:bg-slate-50"
+            aria-label="Recolher menu"
+          >
+            <span className="flex h-5 w-5 items-center justify-center rounded-full bg-slate-50 text-slate-600">
+              <ChevronRight className="h-3.5 w-3.5 rotate-180" aria-hidden />
+            </span>
+            <span className="flex-1">Recolher menu</span>
+            <ChevronRight className="h-3.5 w-3.5 text-slate-500" aria-hidden />
+          </button>
+        </div>
+      )}
     </div>
   );
 };

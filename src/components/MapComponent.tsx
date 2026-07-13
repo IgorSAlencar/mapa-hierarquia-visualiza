@@ -29,6 +29,12 @@ import { buildOutsideBrazilMaskFeature } from '@/lib/brazilOutsideMask';
 import { attachMapPointerGestureGuard } from '@/lib/mapPointerGestures';
 import { MAPBOX_CONFIG } from '@/lib/mapbox-config';
 import {
+  ensureMapboxRuntime,
+  prefetchMapboxStyle,
+  resolveMapStyleForInit,
+  runWhenMapStyleReady,
+} from '@/lib/mapboxRuntime';
+import {
   animateToFlatView,
   animateToPointFocus,
   captureMapCamera,
@@ -191,6 +197,12 @@ function resolveOutsideBrazilMaskColor(m: mapboxgl.Map, styleUrl: string): strin
     return '#98d5f5';
   }
 
+  // streets-v12 expõe `land` como expressão (varia por zoom) e tem camadas
+  // coloridas que "vazam" no recorte: usa cinza sólido fixo em vez de casar `land`.
+  if (styleUrl.includes('streets')) {
+    return MAPBOX_CONFIG.outsideBrazilMaskColor;
+  }
+
   return resolveLandMatchMaskColor(m);
 }
 
@@ -284,11 +296,19 @@ const BRAZIL_CUTOUT_LAYER_IDS = [
   'brazil-boundary-line',
 ] as const;
 
+/**
+ * Tints de contexto que ficam propositalmente no meio do basemap (abaixo dos
+ * símbolos) e NÃO devem ancorar a máscara — senão ela cai abaixo das linhas de
+ * estrada/fronteira do estilo e o mapa base "vaza" por cima do recorte.
+ */
+const BRAZIL_CONTEXT_TINT_LAYER_IDS = ['brasil-context-fill'] as const;
+
 /** Primeira camada de dados do app (máscara/clip ficam logo abaixo). */
 function findFirstAppDataLayerId(m: mapboxgl.Map): string | undefined {
   const cutout = new Set<string>(BRAZIL_CUTOUT_LAYER_IDS);
+  const contextTints = new Set<string>(BRAZIL_CONTEXT_TINT_LAYER_IDS);
   for (const layer of m.getStyle().layers ?? []) {
-    if (cutout.has(layer.id)) continue;
+    if (cutout.has(layer.id) || contextTints.has(layer.id)) continue;
     if (
       layer.id.startsWith('brazil-') ||
       layer.id.startsWith('brasil-') ||
@@ -1034,38 +1054,161 @@ const MANAGER_CIRCLE_LAYER_IDS = [
   'structure-people-circles',
 ] as const;
 
-/** Bolinha de agência no overlay regional (sempre maior que loja no mesmo zoom). */
-const OVERLAY_AGENCIA_CIRCLE_RADIUS: mapboxgl.ExpressionSpecification = [
-  'interpolate',
-  ['linear'],
-  ['zoom'],
-  3,
-  6,
-  7,
-  8,
-  11,
+/**
+ * Preferência visual e de clique (topo → base):
+ * Gerente de Gestão → GC III → GC → Agência → Lojas.
+ */
+const MARKER_LAYER_STACK_BOTTOM_TO_TOP = [
+  'region-overlay-lojas-cir',
+  'structure-agencies-clusters',
+  'structure-agencies-cluster-count',
+  'structure-agencies-point',
+  'region-overlay-agencias-cir',
+  'region-overlay-supervisores-cir',
+  'structure-people-circles',
+] as const;
+
+/** circle-sort-key: maior = desenhado por cima (dentro da mesma layer). */
+const MARKER_CIRCLE_SORT_KEY: mapboxgl.ExpressionSpecification = [
+  'match',
+  [
+    'downcase',
+    [
+      'to-string',
+      [
+        'coalesce',
+        ['get', 'commercial_level'],
+        ['get', 'cargo'],
+        ['get', 'kind'],
+        '',
+      ],
+    ],
+  ],
+  'gerente_area',
+  300,
+  'coordenador',
+  200,
+  'supervisor',
+  100,
+  'agencia',
+  50,
+  'loja',
   10,
-  14,
-  13,
+  0,
 ];
 
-/** Bolinha de loja — ~70% do raio da agência em cada nível de zoom. */
-const OVERLAY_LOJA_CIRCLE_RADIUS: mapboxgl.ExpressionSpecification = [
+function markerPreferenceRank(feature: GeoJSON.Feature | undefined): number {
+  if (!feature?.properties) return -1;
+  const props = feature.properties;
+  const level = String(props.commercial_level ?? props.cargo ?? '')
+    .trim()
+    .toLowerCase();
+  if (level === 'gerente_area') return 300;
+  if (level === 'coordenador') return 200;
+  if (level === 'supervisor') return 100;
+  const kind = String(props.kind ?? '')
+    .trim()
+    .toLowerCase();
+  if (kind === 'agencia' || feature.layer?.id === 'structure-agencies-point') return 50;
+  if (kind === 'loja') return 10;
+  if (kind === 'supervisor') return 100;
+  return 0;
+}
+
+function pickHighestPreferenceFeature(
+  hits: mapboxgl.MapboxGeoJSONFeature[]
+): GeoJSON.Feature | null {
+  if (hits.length === 0) return null;
+  let best = hits[0] as GeoJSON.Feature;
+  let bestRank = markerPreferenceRank(best);
+  for (let i = 1; i < hits.length; i++) {
+    const candidate = hits[i] as GeoJSON.Feature;
+    const rank = markerPreferenceRank(candidate);
+    if (rank > bestRank) {
+      best = candidate;
+      bestRank = rank;
+    }
+  }
+  return best;
+}
+
+/** Empilha markers na ordem de preferência (lojas embaixo → gestão no topo). */
+function ensureMarkerLayerStackOrder(m: mapboxgl.Map): void {
+  for (const layerId of MARKER_LAYER_STACK_BOTTOM_TO_TOP) {
+    if (!m.getLayer(layerId)) continue;
+    try {
+      m.moveLayer(layerId);
+    } catch {
+      /* estilo recarregando */
+    }
+  }
+}
+
+/** Raio dinâmico (agência / gerentes): zoom 3→4px … 14→11px, linear entre stops. */
+const MARKER_CIRCLE_RADIUS: mapboxgl.ExpressionSpecification = [
   'interpolate',
   ['linear'],
   ['zoom'],
   3,
   4,
-  7,
-  5.5,
-  11,
-  7,
+  6,
+  6,
+  10,
+  8,
   14,
-  9,
+  11,
 ];
 
-const OVERLAY_AGENCIA_CIRCLE_RADIUS_HIGHLIGHT = 15;
-const OVERLAY_LOJA_CIRCLE_RADIUS_HIGHLIGHT = 10;
+const MARKER_CIRCLE_RADIUS_HIGHLIGHT: mapboxgl.ExpressionSpecification = [
+  'interpolate',
+  ['linear'],
+  ['zoom'],
+  3,
+  6,
+  6,
+  8,
+  10,
+  11,
+  14,
+  14,
+];
+
+/** Lojas ~70% do raio das agências/gerentes. */
+const OVERLAY_LOJA_CIRCLE_RADIUS: mapboxgl.ExpressionSpecification = [
+  'interpolate',
+  ['linear'],
+  ['zoom'],
+  3,
+  3,
+  6,
+  4,
+  10,
+  5.5,
+  14,
+  8,
+];
+
+/** interpolate no topo; case só nos valores de cada stop (Mapbox não aceita zoom dentro de case). */
+function overlayLojaCircleRadiusForRouteRole(): mapboxgl.ExpressionSpecification {
+  const isCorridor: mapboxgl.ExpressionSpecification = [
+    '==',
+    ['get', 'route_role'],
+    'corridor',
+  ];
+  return [
+    'interpolate',
+    ['linear'],
+    ['zoom'],
+    3,
+    ['case', isCorridor, 2.25, 3],
+    6,
+    ['case', isCorridor, 3, 4],
+    10,
+    ['case', isCorridor, 4, 5.5],
+    14,
+    ['case', isCorridor, 5.5, 8],
+  ];
+}
 
 function normalizeCodAgKey(value: string | null | undefined): string {
   const raw = String(value ?? '').trim();
@@ -1073,6 +1216,41 @@ function normalizeCodAgKey(value: string | null | undefined): string {
   const n = Number(raw.replace(',', '.'));
   if (Number.isFinite(n)) return String(Math.trunc(n));
   return raw;
+}
+
+function buildOverlayLojaCirclePaint(
+  styleUrl: string,
+  _agencyHighlightKey: string | null
+): CirclePaint {
+  const base = {
+    'circle-radius': overlayLojaCircleRadiusForRouteRole(),
+    'circle-color': [
+      'match',
+      ['get', 'route_role'],
+      'origin',
+      '#2563eb',
+      'destination',
+      '#10b981',
+      'corridor',
+      '#94a3b8',
+      '#0d9488',
+    ] as mapboxgl.ExpressionSpecification,
+    'circle-stroke-width': [
+      'case',
+      ['==', ['get', 'route_role'], 'corridor'],
+      1,
+      2,
+    ] as mapboxgl.ExpressionSpecification,
+    'circle-stroke-color': '#ffffff',
+    'circle-opacity': [
+      'case',
+      ['==', ['get', 'route_role'], 'corridor'],
+      0.38,
+      0.96,
+    ] as mapboxgl.ExpressionSpecification,
+  } satisfies CirclePaint;
+
+  return circlePaintForStandard(styleUrl, base);
 }
 
 /** Raio de toque em px — maior com zoom distante (bolinha pequena na tela). */
@@ -1216,71 +1394,47 @@ const MAP_STYLE_URL: Record<MapStyleMode, string> = {
   custom: MAPBOX_CONFIG.styles.custom,
 };
 
-/**
- * Centro/zoom da pré-visualização — área natural de litoral (Lençóis Maranhenses).
- * Sem cidades/rodovias → o estilo não renderiza rótulos, mas mantém contraste terra/água.
- */
-const STYLE_PREVIEW_VIEW = { lon: -42.78, lat: -2.55, zoom: 10.5 } as const;
-
-/** Miniatura real do estilo via Mapbox Static Images API (usa o token já configurado). */
-function buildStylePreviewUrl(styleUrl: string): string {
-  const styleId = styleUrl.replace('mapbox://styles/', '');
-  const { lon, lat, zoom } = STYLE_PREVIEW_VIEW;
-  const params = new URLSearchParams({
-    access_token: MAPBOX_CONFIG.accessToken,
-    attribution: 'false',
-    logo: 'false',
-  });
-  // 64px @2x = imagem leve e nítida em telas retina.
-  return `https://api.mapbox.com/styles/v1/${styleId}/static/${lon},${lat},${zoom},0/64x64@2x?${params.toString()}`;
-}
-
 const MAP_LAYOUT_OPTIONS: {
   id: MapStyleMode;
   label: string;
   caption: string;
-  previewImage: string;
-  /** Leve matiz sobre a miniatura para distinguir warm/cool (mesmo style URL Standard). */
-  tintClass?: string;
+  previewClass: string;
 }[] = [
   {
     id: 'default',
     label: 'Mapa claro (Light)',
     caption: 'Claro',
-    previewImage: buildStylePreviewUrl(MAPBOX_CONFIG.styles.default),
+    previewClass: 'bg-gradient-to-br from-sky-100 via-emerald-100 to-blue-200',
   },
   {
     id: 'dark',
     label: 'Mapa escuro (Dark)',
     caption: 'Dark',
-    previewImage: buildStylePreviewUrl(MAPBOX_CONFIG.styles.dark),
+    previewClass: 'bg-gradient-to-br from-slate-950 via-slate-700 to-blue-950',
   },
   {
     id: 'satellite',
     label: 'Satélite com ruas',
     caption: 'Sat.',
-    previewImage: buildStylePreviewUrl(MAPBOX_CONFIG.styles.satellite),
+    previewClass: 'bg-gradient-to-br from-emerald-950 via-lime-800 to-sky-900',
   },
   {
     id: 'standardWarm',
     label: 'Mapbox Standard (tema warm)',
     caption: 'Warm',
-    // A Static Images API não suporta o estilo `mapbox/standard`; usa um clássico + matiz.
-    previewImage: buildStylePreviewUrl('mapbox://styles/mapbox/streets-v12'),
-    tintClass: 'bg-amber-400/25',
+    previewClass: 'bg-gradient-to-br from-amber-100 via-orange-100 to-sky-200',
   },
   {
     id: 'standardCool',
     label: 'Mapbox Standard (tema cool)',
     caption: 'Cool',
-    previewImage: buildStylePreviewUrl('mapbox://styles/mapbox/streets-v12'),
-    tintClass: 'bg-sky-400/25',
+    previewClass: 'bg-gradient-to-br from-cyan-100 via-blue-100 to-slate-200',
   },
   {
     id: 'custom',
     label: 'Bradesco',
     caption: 'Bradesco',
-    previewImage: buildStylePreviewUrl('mapbox://styles/igralencar/cmoc8sp33003601s58ijjhro4'),
+    previewClass: 'bg-gradient-to-br from-blue-700 via-sky-400 to-rose-500',
   },
 ];
 
@@ -1373,9 +1527,12 @@ function fitMapToRegionFeature(
 }
 
 const OVERLAY_BBOX_FETCH_PADDING_RATIO = 0.4;
+/** Padding ao desenhar pontos já em cache — maior = menos “sumiço” nas bordas ao pan. */
+const OVERLAY_VIEWPORT_DRAW_PADDING_RATIO = 0.35;
 const OVERLAY_ZOOM_REFETCH_DELTA = 0.4;
-const OVERLAY_MOVEEND_DEBOUNCE_MS = 820;
-const OVERLAY_VIEWPORT_DRAW_DEBOUNCE_MS = 120;
+/** Debounce do fetch após pan/zoom; baixo o suficiente para o viewport não ficar vazio. */
+const OVERLAY_MOVEEND_DEBOUNCE_MS = 320;
+const OVERLAY_VIEWPORT_DRAW_DEBOUNCE_MS = 80;
 
 function hasPanelHierarchyFilter(filter: SqlHierarchyFilter | null | undefined): boolean {
   if (!filter) return false;
@@ -1439,6 +1596,43 @@ function pointInBbox(lngLat: [number, number], bbox: BboxQuery): boolean {
   return lng >= bbox.minLng && lng <= bbox.maxLng && lat >= bbox.minLat && lat <= bbox.maxLat;
 }
 
+const PLANNER_ROUTE_CORRIDOR_KM = 15;
+
+function plannerCorridorBbox(
+  from: [number, number],
+  to: [number, number],
+  radiusKm: number
+): BboxQuery {
+  const meanLatRad = (((from[1] + to[1]) / 2) * Math.PI) / 180;
+  const latPad = radiusKm / 111;
+  const lngPad = radiusKm / Math.max(20, 111 * Math.cos(meanLatRad));
+  return {
+    minLng: Math.min(from[0], to[0]) - lngPad,
+    minLat: Math.min(from[1], to[1]) - latPad,
+    maxLng: Math.max(from[0], to[0]) + lngPad,
+    maxLat: Math.max(from[1], to[1]) + latPad,
+  };
+}
+
+function distanceToPlannerSegmentKm(
+  point: [number, number],
+  from: [number, number],
+  to: [number, number]
+): number {
+  const meanLatRad = (((from[1] + to[1] + point[1]) / 3) * Math.PI) / 180;
+  const kmPerLng = 111 * Math.cos(meanLatRad);
+  const project = ([lng, lat]: [number, number]) => [lng * kmPerLng, lat * 111] as [number, number];
+  const p = project(point);
+  const a = project(from);
+  const b = project(to);
+  const dx = b[0] - a[0];
+  const dy = b[1] - a[1];
+  const lengthSquared = dx * dx + dy * dy;
+  if (lengthSquared === 0) return Math.hypot(p[0] - a[0], p[1] - a[1]);
+  const t = Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / lengthSquared));
+  return Math.hypot(p[0] - (a[0] + t * dx), p[1] - (a[1] + t * dy));
+}
+
 function overlayPointCacheKey(point: SqlMapPoint): string {
   const id = String(point.id ?? '').trim();
   if (id) return id;
@@ -1498,6 +1692,32 @@ interface MapComponentProps {
   compareApplyTick?: number;
   /** "Todos" em GG e GC III no painel: compara as áreas de toda a estrutura. */
   compareAllTerritory?: boolean;
+  plannerMode?: boolean;
+  onPlannerTerritorySelect?: (territory: string) => void;
+  plannerAgencyFocus?: {
+    tick: number;
+    id: string;
+    nome: string;
+    codAg: string;
+    lngLat: [number, number];
+    enderecoFormatado?: string;
+  } | null;
+  plannerRouteAgencies?: {
+    origin: {
+      id: string;
+      nome: string;
+      codAg: string;
+      lngLat: [number, number];
+      enderecoFormatado?: string;
+    };
+    destination: {
+      id: string;
+      nome: string;
+      codAg: string;
+      lngLat: [number, number];
+      enderecoFormatado?: string;
+    };
+  } | null;
   /** Painéis flutuantes do Navegar (abaixo da UI do mapa: busca, AG, lojas, equipe). */
   navigatorOverlays?: React.ReactNode;
 }
@@ -1661,6 +1881,10 @@ const MapComponent: React.FC<MapComponentProps> = ({
   onCompareSupervisionAreasChange,
   compareApplyTick = 0,
   compareAllTerritory = false,
+  plannerMode = false,
+  onPlannerTerritorySelect,
+  plannerAgencyFocus = null,
+  plannerRouteAgencies = null,
   navigatorOverlays,
 }) => {
   const mapContainer = useRef<HTMLDivElement>(null);
@@ -1669,6 +1893,8 @@ const MapComponent: React.FC<MapComponentProps> = ({
   mapMarkersRef.current = mapMarkers;
   const onVisitStopSelectRef = useRef(onVisitStopSelect);
   onVisitStopSelectRef.current = onVisitStopSelect;
+  const onPlannerTerritorySelectRef = useRef(onPlannerTerritorySelect);
+  onPlannerTerritorySelectRef.current = onPlannerTerritorySelect;
   const visitRouteFitIdRef = useRef<string | null>(null);
   const { toast } = useToast();
   const clickHandlerRef = useRef<((e: mapboxgl.MapLayerMouseEvent) => void) | null>(null);
@@ -1742,7 +1968,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
   const [loadingAgencyPoints, setLoadingAgencyPoints] = useState(false);
   const [loadingSeatPoints, setLoadingSeatPoints] = useState(false);
   const [loadingStorePoints, setLoadingStorePoints] = useState(false);
-  /** Quando definido, o overlay de lojas mostra só lojas com este COD_AG. */
+  /** Quando definido, destaca no mapa as lojas com este COD_AG (demais ficam esmaecidas). */
   const [storeFilterCodAg, setStoreFilterCodAg] = useState<string | null>(null);
   const [storeFilterAgencyName, setStoreFilterAgencyName] = useState<string | null>(null);
   const [pinnedAgencyPoint, setPinnedAgencyPoint] = useState<SqlMapPoint | null>(null);
@@ -1762,6 +1988,9 @@ const MapComponent: React.FC<MapComponentProps> = ({
   const overlayFetchedBboxCacheRef = useRef<BboxQuery | null>(null);
   const overlayLastFetchZoomRef = useRef<number | null>(null);
   const lastOverlayFcSignatureRef = useRef<Record<string, string>>({});
+  /** Gerações de fetch: ignora respostas antigas e permite pan durante loading. */
+  const overlayAgencyFetchGenRef = useRef(0);
+  const mapInitGenRef = useRef(0);
   const [viewportBoundsTick, setViewportBoundsTick] = useState(0);
   const [overlaySeatFilterKey, setOverlaySeatFilterKey] = useState<string | null>(null);
   /** Histórico de filtros da legenda para o botão Voltar (GG → GC III → GC). */
@@ -1884,11 +2113,8 @@ const MapComponent: React.FC<MapComponentProps> = ({
   const expressoMetrics = sqlExpressoMetrics ?? fallbackExpressoMetrics;
 
   const overlayScopeIsViewportExploration = useMemo(
-    () =>
-      !storeFilterCodAg &&
-      !overlaySeatFilterKey &&
-      !hasPanelHierarchyFilter(hierarchyFilter),
-    [storeFilterCodAg, overlaySeatFilterKey, hierarchyFilter]
+    () => !overlaySeatFilterKey && !hasPanelHierarchyFilter(hierarchyFilter),
+    [overlaySeatFilterKey, hierarchyFilter]
   );
 
   const visibleViewportBbox = useMemo((): BboxQuery | null => {
@@ -1916,7 +2142,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
       selectedStateFeature
     );
     if (overlayScopeIsViewportExploration && visibleViewportBbox) {
-      const drawBbox = expandBbox(visibleViewportBbox, 0.12);
+      const drawBbox = expandBbox(visibleViewportBbox, OVERLAY_VIEWPORT_DRAW_PADDING_RATIO);
       points = points.filter((p) => pointInBbox(p.lngLat, drawBbox));
     }
     return points;
@@ -2304,34 +2530,44 @@ const MapComponent: React.FC<MapComponentProps> = ({
   const seatLegendGc3Detail = seatLegendCoordenacaoFilter != null;
   const seatLegendGgDetail = seatLegendGerenciaFilter != null;
   const filteredRegionLojas = useMemo(() => {
+    const plannerCorridorActive = plannerRouteAgencies != null;
     const visibleSegments = new Set(selectedStoreSegments);
     const applySegmentFilter = (points: SqlMapPoint[]) =>
       points.filter((point) => visibleSegments.has(resolveStoreSegment(point)));
 
-    if (storeFilterCodAg) {
-      if (loadingStorePoints && sqlStorePoints.length === 0) return [];
-      return applySegmentFilter(sqlStorePoints);
-    }
-    let visibleByArea = filterRegionMapPoints(
-      sqlStorePoints,
-      selectedMunicipalityFeature,
-      selectedStateFeature
-    );
-    if (overlayScopeIsViewportExploration && visibleViewportBbox) {
-      const drawBbox = expandBbox(visibleViewportBbox, 0.12);
+    const agencyKey = plannerCorridorActive ? '' : normalizeCodAgKey(storeFilterCodAg);
+    const storesInAgency = agencyKey
+      ? sqlStorePoints.filter((point) => normalizeCodAgKey(point.codAg) === agencyKey)
+      : sqlStorePoints;
+
+    let visibleByArea = plannerCorridorActive
+      ? storesInAgency
+      : filterRegionMapPoints(
+          storesInAgency,
+          selectedMunicipalityFeature,
+          selectedStateFeature
+        );
+    if (!plannerCorridorActive && overlayScopeIsViewportExploration && visibleViewportBbox) {
+      const drawBbox = expandBbox(visibleViewportBbox, OVERLAY_VIEWPORT_DRAW_PADDING_RATIO);
       visibleByArea = visibleByArea.filter((p) => pointInBbox(p.lngLat, drawBbox));
     }
-    return applySegmentFilter(visibleByArea);
+    return plannerCorridorActive ? visibleByArea : applySegmentFilter(visibleByArea);
   }, [
     sqlStorePoints,
     storeFilterCodAg,
-    loadingStorePoints,
+    plannerRouteAgencies,
     selectedMunicipalityFeature,
     selectedStateFeature,
     selectedStoreSegments,
     overlayScopeIsViewportExploration,
     visibleViewportBbox,
   ]);
+
+  const linkedStoreCountForAgency = useMemo(() => {
+    if (!storeFilterCodAg) return sqlStorePoints.length;
+    const key = normalizeCodAgKey(storeFilterCodAg);
+    return filteredRegionLojas.filter((p) => normalizeCodAgKey(p.codAg) === key).length;
+  }, [storeFilterCodAg, sqlStorePoints.length, filteredRegionLojas]);
 
   const getCurrentMapBbox = (): BboxQuery | null => {
     const m = map.current;
@@ -2346,7 +2582,6 @@ const MapComponent: React.FC<MapComponentProps> = ({
   };
 
   const shouldSkipViewportOverlayRefresh = () => {
-    if (storeFilterCodAgRef.current) return true;
     if (overlaySeatHierarchyRef.current) return true;
     if (hasPanelHierarchyFilter(hierarchyFilterRef.current)) return true;
     return false;
@@ -2505,8 +2740,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
       silent?: boolean;
       hierarchy?: SqlHierarchyFilter | null;
     }) => {
-      const codAg =
-        options?.codAg !== undefined ? options.codAg : storeFilterCodAgRef.current;
+      const codAg = options?.codAg !== undefined ? options.codAg : null;
       const seatHierarchy = options?.hierarchy ?? overlaySeatHierarchyRef.current;
       const bbox =
         options?.bbox !== undefined
@@ -2598,17 +2832,14 @@ const MapComponent: React.FC<MapComponentProps> = ({
       setStoreFilterAgencyName(agencyLabel);
       setPinnedAgencyPoint(pinned);
       setOverlayLojas(true);
-      setSqlStorePoints([]);
 
       try {
-        const points = await loadStoreOverlayPoints({ codAg: normalized });
-        if (points.length === 0) {
-          setSqlStorePoints([]);
+        const linked = await loadStoreOverlayPoints({ codAg: normalized });
+        if (linked.length === 0) {
           toast({
             title: 'Nenhuma loja vinculada',
             description: `Não há lojas vinculadas à agência ${normalized} - ${agencyLabel}.`,
           });
-          return;
         }
       } catch (error) {
         console.error('Falha ao carregar lojas da agência:', error);
@@ -2627,6 +2858,104 @@ const MapComponent: React.FC<MapComponentProps> = ({
     selectAgencyForStoresRef.current = selectAgencyForStores;
   }, [selectAgencyForStores]);
 
+  useEffect(() => {
+    if (!plannerAgencyFocus) return;
+    const m = map.current;
+    if (!m) return;
+
+    const agencyPoint: SqlMapPoint = {
+      id: plannerAgencyFocus.id,
+      nome: plannerAgencyFocus.nome,
+      kind: 'agencia',
+      lngLat: plannerAgencyFocus.lngLat,
+      codAg: plannerAgencyFocus.codAg,
+      enderecoFormatado: plannerAgencyFocus.enderecoFormatado ?? null,
+    };
+
+    setOverlayAgencias(true);
+    setOverlayLojas(true);
+    setOverlayMarkerSelection({
+      nome: plannerAgencyFocus.nome,
+      sub: 'Agência',
+      kind: 'agencia',
+      codAg: plannerAgencyFocus.codAg,
+      enderecoFormatado: plannerAgencyFocus.enderecoFormatado ?? '',
+    });
+    void selectAgencyForStoresRef.current(
+      plannerAgencyFocus.codAg,
+      plannerAgencyFocus.nome,
+      agencyPoint
+    );
+    try {
+      m.easeTo({
+        center: plannerAgencyFocus.lngLat,
+        zoom: 10.0,
+        pitch: 45,
+        bearing: m.getBearing(),
+        offset: MAPBOX_CONFIG.interactive3d.focusOffset,
+        duration: 1200,
+        essential: true,
+      });
+    } catch {
+      /* mapa ainda ajustando o estilo */
+    }
+  }, [plannerAgencyFocus]);
+
+  useEffect(() => {
+    if (!plannerRouteAgencies) return;
+    let active = true;
+    const { origin, destination } = plannerRouteAgencies;
+    const corridorBbox = plannerCorridorBbox(
+      origin.lngLat,
+      destination.lngLat,
+      PLANNER_ROUTE_CORRIDOR_KM
+    );
+
+    void Promise.all([
+      fetchStorePoints({ codAg: origin.codAg, hierarchy: null }),
+      fetchStorePoints({ codAg: destination.codAg, hierarchy: null }),
+      fetchStorePoints({ bbox: corridorBbox, limit: 1500, hierarchy: null }),
+    ]).then(([originStores, destinationStores, areaStores]) => {
+      if (!active) return;
+      const originKey = normalizeCodAgKey(origin.codAg);
+      const destinationKey = normalizeCodAgKey(destination.codAg);
+      const pointKey = (point: SqlMapPoint) =>
+        `${normalizeCodAgKey(point.codAg)}|${point.lngLat[0].toFixed(6)}|${point.lngLat[1].toFixed(6)}|${point.nome}`;
+      const visible = new Map<string, SqlMapPoint>();
+
+      for (const point of areaStores) {
+        const codAg = normalizeCodAgKey(point.codAg);
+        if (codAg === originKey || codAg === destinationKey) continue;
+        if (
+          distanceToPlannerSegmentKm(
+            point.lngLat,
+            origin.lngLat,
+            destination.lngLat
+          ) > PLANNER_ROUTE_CORRIDOR_KM
+        ) continue;
+        visible.set(pointKey(point), { ...point, routeRole: 'corridor' });
+        if (visible.size >= 300) break;
+      }
+      for (const point of originStores) {
+        visible.set(pointKey(point), { ...point, routeRole: 'origin' });
+      }
+      for (const point of destinationStores) {
+        visible.set(pointKey(point), {
+          ...point,
+          routeRole: originKey === destinationKey ? 'origin' : 'destination',
+        });
+      }
+
+      setOverlayAgencias(true);
+      setOverlayLojas(true);
+      setSqlStorePoints([...visible.values()]);
+    }).catch((error) => {
+      console.error('Falha ao carregar lojas do corredor do roteiro:', error);
+    });
+
+    return () => { active = false; };
+  }, [plannerRouteAgencies]);
+
   const refreshOverlayDataForViewport = async (options?: { silent?: boolean; force?: boolean }) => {
     const silent = options?.silent === true;
     const force = options?.force === true;
@@ -2638,25 +2967,31 @@ const MapComponent: React.FC<MapComponentProps> = ({
     const m = map.current;
     const panelHierarchy = hierarchyFilterRef.current;
     if (force && hasPanelHierarchyFilter(panelHierarchy)) {
-      if (overlayAgencias && !loadingAgencyPoints) {
+      if (overlayAgencias) {
+        const gen = ++overlayAgencyFetchGenRef.current;
         if (!silent) setLoadingAgencyPoints(true);
         try {
           const points = await fetchAgencyPoints({ hierarchy: panelHierarchy });
+          if (gen !== overlayAgencyFetchGenRef.current) return;
           applyAgencyFetchResult(points, 'replace');
         } catch (error) {
-          console.error('Falha ao carregar agências SQL:', error);
-          if (!silent) {
-            toast({
-              title: 'Falha ao carregar agências',
-              description: 'Não foi possível buscar agências no SQL Server.',
-              variant: 'destructive',
-            });
+          if (gen === overlayAgencyFetchGenRef.current) {
+            console.error('Falha ao carregar agências SQL:', error);
+            if (!silent) {
+              toast({
+                title: 'Falha ao carregar agências',
+                description: 'Não foi possível buscar agências no SQL Server.',
+                variant: 'destructive',
+              });
+            }
           }
         } finally {
-          if (!silent) setLoadingAgencyPoints(false);
+          if (gen === overlayAgencyFetchGenRef.current && !silent) {
+            setLoadingAgencyPoints(false);
+          }
         }
       }
-      if (overlayLojas && (silent || !loadingStorePoints) && !storeFilterCodAgRef.current) {
+      if (overlayLojas) {
         try {
           await loadStoreOverlayPoints({
             codAg: null,
@@ -2694,32 +3029,42 @@ const MapComponent: React.FC<MapComponentProps> = ({
     }
 
     const fetchBbox = expandBbox(viewport);
+    // Reserva o bbox antes do await para pans concorrentes não dispararem o mesmo fetch.
     overlayFetchedBboxCacheRef.current = fetchBbox;
     overlayLastFetchZoomRef.current = zoom;
 
-    if (overlayAgencias && !loadingAgencyPoints) {
+    if (overlayAgencias) {
+      const gen = ++overlayAgencyFetchGenRef.current;
       if (!silent) setLoadingAgencyPoints(true);
       try {
         const points = await fetchAgencyPoints({
           bbox: fetchBbox,
           hierarchy: hierarchyFilterRef.current ?? null,
         });
+        if (gen !== overlayAgencyFetchGenRef.current) return;
         applyAgencyFetchResult(points, 'merge', fetchBbox);
       } catch (error) {
-        console.error('Falha ao carregar agências SQL:', error);
-        if (!silent) {
-          toast({
-            title: 'Falha ao carregar agências',
-            description: 'Não foi possível buscar agências no SQL Server.',
-            variant: 'destructive',
-          });
+        if (gen === overlayAgencyFetchGenRef.current) {
+          if (overlayFetchedBboxCacheRef.current === fetchBbox) {
+            overlayFetchedBboxCacheRef.current = null;
+          }
+          console.error('Falha ao carregar agências SQL:', error);
+          if (!silent) {
+            toast({
+              title: 'Falha ao carregar agências',
+              description: 'Não foi possível buscar agências no SQL Server.',
+              variant: 'destructive',
+            });
+          }
         }
       } finally {
-        if (!silent) setLoadingAgencyPoints(false);
+        if (gen === overlayAgencyFetchGenRef.current && !silent) {
+          setLoadingAgencyPoints(false);
+        }
       }
     }
 
-    if (overlayLojas && (silent || !loadingStorePoints) && !storeFilterCodAgRef.current) {
+    if (overlayLojas) {
       try {
         await loadStoreOverlayPoints({
           codAg: null,
@@ -3009,7 +3354,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
 
   const finishMapTransitionLoading = () => {
     const elapsed = Date.now() - mapTransitionStartRef.current;
-    const remaining = Math.max(0, 900 - elapsed);
+    const remaining = Math.max(0, MAPBOX_CONFIG.styleTransitionMinMs - elapsed);
     if (mapTransitionTimerRef.current != null) {
       window.clearTimeout(mapTransitionTimerRef.current);
     }
@@ -3246,20 +3591,25 @@ const MapComponent: React.FC<MapComponentProps> = ({
 
   const initializeMap = async () => {
     if (!mapContainer.current) return;
+    const initGen = ++mapInitGenRef.current;
 
     try {
-      mapboxgl.accessToken = MAPBOX_CONFIG.accessToken;
+      ensureMapboxRuntime();
+      void prefetchMapboxStyle(activeBaseStyle);
+      const resolvedStyle = await resolveMapStyleForInit(activeBaseStyle);
+      if (!mapContainer.current || initGen !== mapInitGenRef.current) return;
 
       const mapInit: mapboxgl.MapOptions & {
         config?: { basemap: Record<string, string | boolean> };
       } = {
         container: mapContainer.current,
-        style: activeBaseStyle,
+        style: resolvedStyle,
         // Suaviza zoom/pan: evita fade de tiles que gera sensação de "piscar".
         fadeDuration: 0,
         // Evita refresh automático de tiles expirados durante interação.
         refreshExpiredTiles: false,
         renderWorldCopies: false,
+        localIdeographFontFamily: MAPBOX_CONFIG.localIdeographFontFamily,
         projection: MAPBOX_CONFIG.projection,
         center: MAPBOX_CONFIG.initialBrazilView.center,
         zoom: MAPBOX_CONFIG.initialBrazilView.zoom,
@@ -3273,6 +3623,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
         maxZoom: MAPBOX_CONFIG.zoom.max,
         scrollZoom: true,
         attributionControl: false,
+        antialias: false,
       };
       if (activeStandardTheme) {
         mapInit.config = {
@@ -3289,12 +3640,17 @@ const MapComponent: React.FC<MapComponentProps> = ({
       }
 
       map.current = new mapboxgl.Map(mapInit);
+      if (initGen !== mapInitGenRef.current) {
+        map.current.remove();
+        map.current = null;
+        return;
+      }
       applyMapScrollZoomSettings(map.current);
       mapPointerGestureGuardRef.current?.detach();
       mapPointerGestureGuardRef.current = attachMapPointerGestureGuard(map.current);
 
       map.current.on('load', async () => {
-        setMapReadyVersion((v) => v + 1);
+        if (initGen !== mapInitGenRef.current || map.current == null) return;
 
         const m = map.current!;
         if (activeStandardTheme) {
@@ -3503,9 +3859,13 @@ const MapComponent: React.FC<MapComponentProps> = ({
               ],
               { layers: [...seatLayers] }
             );
-            const seatFeature = seatHits[0] as GeoJSON.Feature | undefined;
+            const seatFeature = pickHighestPreferenceFeature(seatHits);
             if (seatFeature?.properties) {
-              const cargo = String(seatFeature.properties.cargo ?? '').trim().toLowerCase();
+              const cargo = String(
+                seatFeature.properties.commercial_level ?? seatFeature.properties.cargo ?? ''
+              )
+                .trim()
+                .toLowerCase();
               const isManagerSeat =
                 String(seatFeature.properties.kind ?? '') === 'supervisor' ||
                 cargo === 'supervisor' ||
@@ -3862,6 +4222,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
             const municipalityIbge = resolveMunicipalityIbgeCode(feature.properties);
             setSelectedMunicipalityFeature(feature);
             setSelectedCityLabel(municipalityName);
+            onPlannerTerritorySelectRef.current?.(municipalityName);
             setSelectedMunicipalityIbge(municipalityIbge);
             setSearchQuery(municipalityName);
             setSearchOpen(false);
@@ -4054,9 +4415,12 @@ const MapComponent: React.FC<MapComponentProps> = ({
           type: 'circle',
           source: 'structure-agencies',
           filter: ['!', ['has', 'point_count']],
-          layout: { visibility: 'none' },
+          layout: {
+            visibility: 'none',
+            'circle-sort-key': MARKER_CIRCLE_SORT_KEY,
+          },
           paint: circlePaintForStandard(activeBaseStyle, {
-            'circle-radius': 10,
+            'circle-radius': MARKER_CIRCLE_RADIUS,
             'circle-color': '#b91c1c',
             'circle-stroke-width': 2,
             'circle-stroke-color': '#ffffff',
@@ -4068,8 +4432,11 @@ const MapComponent: React.FC<MapComponentProps> = ({
           id: 'structure-people-circles',
           type: 'circle',
           source: 'structure-people',
+          layout: {
+            'circle-sort-key': MARKER_CIRCLE_SORT_KEY,
+          },
           paint: circlePaintForStandard(activeBaseStyle, {
-            'circle-radius': 7,
+            'circle-radius': MARKER_CIRCLE_RADIUS,
             'circle-color': [
               'match',
               ['get', 'cargo'],
@@ -4227,8 +4594,11 @@ const MapComponent: React.FC<MapComponentProps> = ({
           id: 'region-overlay-agencias-cir',
           type: 'circle',
           source: 'region-overlay-agencias',
+          layout: {
+            'circle-sort-key': MARKER_CIRCLE_SORT_KEY,
+          },
           paint: circlePaintForStandard(activeBaseStyle, {
-            'circle-radius': OVERLAY_AGENCIA_CIRCLE_RADIUS,
+            'circle-radius': MARKER_CIRCLE_RADIUS,
             'circle-color': '#b91c1c',
             'circle-stroke-width': 2,
             'circle-stroke-color': '#fff',
@@ -4239,8 +4609,11 @@ const MapComponent: React.FC<MapComponentProps> = ({
           id: 'region-overlay-supervisores-cir',
           type: 'circle',
           source: 'region-overlay-supervisores',
+          layout: {
+            'circle-sort-key': MARKER_CIRCLE_SORT_KEY,
+          },
           paint: circlePaintForStandard(activeBaseStyle, {
-            'circle-radius': 7,
+            'circle-radius': MARKER_CIRCLE_RADIUS,
             'circle-color': ['coalesce', ['to-color', ['get', 'seat_color']], '#7c3aed'],
             'circle-stroke-width': 2,
             'circle-stroke-color': '#fff',
@@ -4251,6 +4624,9 @@ const MapComponent: React.FC<MapComponentProps> = ({
           id: 'region-overlay-lojas-cir',
           type: 'circle',
           source: 'region-overlay-lojas',
+          layout: {
+            'circle-sort-key': MARKER_CIRCLE_SORT_KEY,
+          },
           paint: circlePaintForStandard(activeBaseStyle, {
             'circle-radius': OVERLAY_LOJA_CIRCLE_RADIUS,
             'circle-color': '#0d9488',
@@ -4295,15 +4671,8 @@ const MapComponent: React.FC<MapComponentProps> = ({
           m.on('mouseleave', layerId, clearStructPointer);
         }
 
-        // Ordem visual: agências/lojas abaixo; bolinhas de gerentes sempre no topo.
-        for (const layerId of MANAGER_CIRCLE_LAYER_IDS) {
-          if (!m.getLayer(layerId)) continue;
-          try {
-            m.moveLayer(layerId);
-          } catch {
-            /* ignore */
-          }
-        }
+        // Ordem: lojas → agências → GC → GC III → gestão.
+        ensureMarkerLayerStackOrder(m);
 
         const hoverPopup = new mapboxgl.Popup(agencyMapPopupHoverOptions);
         agencyHoverPopupRef.current = hoverPopup;
@@ -4365,6 +4734,10 @@ const MapComponent: React.FC<MapComponentProps> = ({
         } else {
           fitMapToBrazilOverview(m, { duration: 0 });
         }
+
+        if (initGen === mapInitGenRef.current && map.current) {
+          setMapReadyVersion((v) => v + 1);
+        }
       });
 
       map.current.on('error', (e) => {
@@ -4387,46 +4760,53 @@ const MapComponent: React.FC<MapComponentProps> = ({
 
   useEffect(() => {
     const m = map.current;
-    if (!m?.isStyleLoaded()) return;
+    if (!m) return;
 
-    const srcPeople = m.getSource('structure-people') as mapboxgl.GeoJSONSource | undefined;
-    const srcAgencies = m.getSource('structure-agencies') as mapboxgl.GeoJSONSource | undefined;
-    if (srcPeople) {
-      srcPeople.setData(
-        markersToFeatureCollectionByKind(mapMarkers, 'pessoa', hierarchyFilter ?? null)
-      );
-    }
-    if (srcAgencies) srcAgencies.setData(markersToFeatureCollectionByKind(mapMarkers, 'agencia'));
+    const syncStructureSources = () => {
+      const mapInst = map.current;
+      if (!mapInst) return;
+      const srcPeople = mapInst.getSource('structure-people') as mapboxgl.GeoJSONSource | undefined;
+      const srcAgencies = mapInst.getSource('structure-agencies') as mapboxgl.GeoJSONSource | undefined;
+      if (srcPeople) {
+        srcPeople.setData(
+          markersToFeatureCollectionByKind(mapMarkers, 'pessoa', hierarchyFilter ?? null)
+        );
+      }
+      if (srcAgencies) {
+        srcAgencies.setData(markersToFeatureCollectionByKind(mapMarkers, 'agencia'));
+      }
 
-    if (mapMarkers.length === 0) return;
+      if (mapMarkers.length === 0) return;
 
-    const overviewZoom = MAPBOX_CONFIG.initialBrazilView.zoom;
-    if (m.getZoom() > overviewZoom + 0.35) {
-      return;
-    }
+      const overviewZoom = MAPBOX_CONFIG.initialBrazilView.zoom;
+      if (mapInst.getZoom() > overviewZoom + 0.35) {
+        return;
+      }
 
-    const coords = mapMarkers.map((x) => x.lngLat);
-    const lngs = coords.map((c) => c[0]);
-    const lats = coords.map((c) => c[1]);
-    const lngSpan = Math.max(...lngs) - Math.min(...lngs);
-    const latSpan = Math.max(...lats) - Math.min(...lats);
-    /** Filtro nacional: encaixar o país com folga, não só a caixa dos pins. */
-    if (lngSpan > 20 && latSpan > 14) {
-      fitMapToBrazilOverview(m, { duration: 650 });
-      return;
-    }
+      const coords = mapMarkers.map((x) => x.lngLat);
+      const lngs = coords.map((c) => c[0]);
+      const lats = coords.map((c) => c[1]);
+      const lngSpan = Math.max(...lngs) - Math.min(...lngs);
+      const latSpan = Math.max(...lats) - Math.min(...lats);
+      if (lngSpan > 20 && latSpan > 14) {
+        fitMapToBrazilOverview(mapInst, { duration: 650 });
+        return;
+      }
 
-    const b: mapboxgl.LngLatBoundsLike = [
-      [Math.min(...lngs), Math.min(...lats)],
-      [Math.max(...lngs), Math.max(...lats)],
-    ];
+      const b: mapboxgl.LngLatBoundsLike = [
+        [Math.min(...lngs), Math.min(...lats)],
+        [Math.max(...lngs), Math.max(...lats)],
+      ];
 
-    try {
-      m.fitBounds(b, { padding: 72, maxZoom: MAPBOX_CONFIG.zoom.max, duration: 650 });
-    } catch {
-      /* ignore */
-    }
-  }, [mapMarkers, hierarchyFilter]);
+      try {
+        mapInst.fitBounds(b, { padding: 72, maxZoom: MAPBOX_CONFIG.zoom.max, duration: 650 });
+      } catch {
+        /* ignore */
+      }
+    };
+
+    return runWhenMapStyleReady(m, syncStructureSources);
+  }, [mapMarkers, hierarchyFilter, mapReadyVersion]);
 
   useEffect(() => {
     if (!mapContainer.current) return;
@@ -4436,13 +4816,15 @@ const MapComponent: React.FC<MapComponentProps> = ({
       mapStyleSwapPreserveRef.current = true;
     }
     startMapTransitionLoading();
+    void prefetchMapboxStyle(activeBaseStyle);
+    mapInitGenRef.current += 1;
     if (map.current) {
       mapPointerGestureGuardRef.current?.detach();
       mapPointerGestureGuardRef.current = null;
       map.current.remove();
       map.current = null;
     }
-    initializeMap();
+    void initializeMap();
   }, [activeBaseStyle, activeStandardTheme]);
 
   /** Reaplica seleção geográfica e overlays no mapa após troca de estilo (camadas custom são recriadas no load). */
@@ -4524,15 +4906,19 @@ const MapComponent: React.FC<MapComponentProps> = ({
 
   useEffect(() => {
     const m = map.current;
-    if (!m?.isStyleLoaded()) return;
-    const showStructureAgencies =
-      !storeFilterCodAg && mapMarkers.some((x) => x.kind === 'agencia');
-    setAgencyLayersVisibility(m, showStructureAgencies);
-    try {
-      m.resize();
-    } catch {
-      /* ignore */
-    }
+    if (!m) return;
+    return runWhenMapStyleReady(m, () => {
+      const mapInst = map.current;
+      if (!mapInst) return;
+      const showStructureAgencies =
+        !storeFilterCodAg && mapMarkers.some((x) => x.kind === 'agencia');
+      setAgencyLayersVisibility(mapInst, showStructureAgencies);
+      try {
+        mapInst.resize();
+      } catch {
+        /* ignore */
+      }
+    });
   }, [mapMarkers, storeFilterCodAg, mapReadyVersion]);
 
   useEffect(() => {
@@ -4719,31 +5105,37 @@ const MapComponent: React.FC<MapComponentProps> = ({
 
   useEffect(() => {
     const m = map.current;
-    if (!m?.isStyleLoaded()) return;
+    if (!m) return;
     const empty: GeoJSON.FeatureCollection = { type: 'FeatureCollection', features: [] };
-    const apply = (
-      sourceId: string,
-      active: boolean,
-      points: Parameters<typeof regionPointsToFeatureCollection>[0]
-    ) => {
-      const src = m.getSource(sourceId) as mapboxgl.GeoJSONSource | undefined;
-      if (!src) return;
-      if (!active) {
-        lastOverlayFcSignatureRef.current[sourceId] = '';
-        src.setData(empty);
-        return;
-      }
+    const applyOverlaySources = () => {
+      const mapInst = map.current;
+      if (!mapInst) return;
+      const apply = (
+        sourceId: string,
+        active: boolean,
+        points: Parameters<typeof regionPointsToFeatureCollection>[0]
+      ) => {
+        const src = mapInst.getSource(sourceId) as mapboxgl.GeoJSONSource | undefined;
+        if (!src) return;
+        if (!active) {
+          lastOverlayFcSignatureRef.current[sourceId] = '';
+          src.setData(empty);
+          return;
+        }
 
-      const signature = overlayPointsSignature(points);
-      if (lastOverlayFcSignatureRef.current[sourceId] === signature) {
-        return;
-      }
-      lastOverlayFcSignatureRef.current[sourceId] = signature;
-      src.setData(regionPointsToFeatureCollection(points));
+        const signature = overlayPointsSignature(points);
+        if (lastOverlayFcSignatureRef.current[sourceId] === signature) {
+          return;
+        }
+        lastOverlayFcSignatureRef.current[sourceId] = signature;
+        src.setData(regionPointsToFeatureCollection(points));
+      };
+      apply('region-overlay-agencias', overlayAgencias, filteredRegionAgencias);
+      apply('region-overlay-supervisores', overlaySupervisores, filteredRegionSupervisores);
+      apply('region-overlay-lojas', overlayLojas, filteredRegionLojas);
     };
-    apply('region-overlay-agencias', overlayAgencias, filteredRegionAgencias);
-    apply('region-overlay-supervisores', overlaySupervisores, filteredRegionSupervisores);
-    apply('region-overlay-lojas', overlayLojas, filteredRegionLojas);
+
+    return runWhenMapStyleReady(m, applyOverlaySources);
   }, [
     mapReadyVersion,
     overlayAgencias,
@@ -4756,35 +5148,52 @@ const MapComponent: React.FC<MapComponentProps> = ({
 
   useEffect(() => {
     const m = map.current;
-    if (!m?.isStyleLoaded() || !m.getLayer('region-overlay-agencias-cir')) return;
+    if (!m) return;
 
-    try {
-      if (overlayAgencias && storeFilterCodAg) {
-        m.setPaintProperty('region-overlay-agencias-cir', 'circle-opacity', 0.98);
-        m.setPaintProperty('region-overlay-agencias-cir', 'circle-radius', OVERLAY_AGENCIA_CIRCLE_RADIUS_HIGHLIGHT);
-        m.setPaintProperty('region-overlay-agencias-cir', 'circle-stroke-width', 3);
-        m.setPaintProperty('region-overlay-agencias-cir', 'circle-stroke-opacity', 1);
-      } else {
-        m.setPaintProperty('region-overlay-agencias-cir', 'circle-opacity', 0.95);
-        m.setPaintProperty('region-overlay-agencias-cir', 'circle-radius', OVERLAY_AGENCIA_CIRCLE_RADIUS);
-        m.setPaintProperty('region-overlay-agencias-cir', 'circle-stroke-width', 2);
-        m.setPaintProperty('region-overlay-agencias-cir', 'circle-stroke-opacity', 1);
-      }
+    const applyHighlightPaint = () => {
+      const mapInst = map.current;
+      if (!mapInst?.getLayer('region-overlay-agencias-cir')) return;
 
-      if (m.getLayer('region-overlay-lojas-cir')) {
-        if (overlayLojas && storeFilterCodAg) {
-          m.setPaintProperty('region-overlay-lojas-cir', 'circle-opacity', 0.98);
-          m.setPaintProperty('region-overlay-lojas-cir', 'circle-radius', OVERLAY_LOJA_CIRCLE_RADIUS_HIGHLIGHT);
-          m.setPaintProperty('region-overlay-lojas-cir', 'circle-stroke-width', 2);
+      try {
+        if (overlayAgencias && storeFilterCodAg) {
+          mapInst.setPaintProperty('region-overlay-agencias-cir', 'circle-opacity', 0.98);
+          mapInst.setPaintProperty(
+            'region-overlay-agencias-cir',
+            'circle-radius',
+            MARKER_CIRCLE_RADIUS_HIGHLIGHT
+          );
+          mapInst.setPaintProperty('region-overlay-agencias-cir', 'circle-stroke-width', 3);
+          mapInst.setPaintProperty('region-overlay-agencias-cir', 'circle-stroke-opacity', 1);
         } else {
-          m.setPaintProperty('region-overlay-lojas-cir', 'circle-opacity', 0.95);
-          m.setPaintProperty('region-overlay-lojas-cir', 'circle-radius', OVERLAY_LOJA_CIRCLE_RADIUS);
-          m.setPaintProperty('region-overlay-lojas-cir', 'circle-stroke-width', 2);
+          mapInst.setPaintProperty('region-overlay-agencias-cir', 'circle-opacity', 0.95);
+          mapInst.setPaintProperty(
+            'region-overlay-agencias-cir',
+            'circle-radius',
+            MARKER_CIRCLE_RADIUS
+          );
+          mapInst.setPaintProperty('region-overlay-agencias-cir', 'circle-stroke-width', 2);
+          mapInst.setPaintProperty('region-overlay-agencias-cir', 'circle-stroke-opacity', 1);
         }
+
+        if (mapInst.getLayer('region-overlay-lojas-cir')) {
+          const lojaPaint = buildOverlayLojaCirclePaint(
+            activeBaseStyle,
+            overlayLojas && storeFilterCodAg ? normalizeCodAgKey(storeFilterCodAg) : null
+          );
+          for (const [key, value] of Object.entries(lojaPaint)) {
+            mapInst.setPaintProperty(
+              'region-overlay-lojas-cir',
+              key as keyof CirclePaint,
+              value
+            );
+          }
+        }
+      } catch {
+        /* estilo recarregando */
       }
-    } catch {
-      /* estilo recarregando */
-    }
+    };
+
+    return runWhenMapStyleReady(m, applyHighlightPaint);
   }, [overlayAgencias, overlayLojas, storeFilterCodAg, mapReadyVersion, activeBaseStyle]);
 
   useEffect(() => {
@@ -5062,13 +5471,22 @@ const MapComponent: React.FC<MapComponentProps> = ({
       const bounds = getVisitRouteBounds(visitRoute);
       if (bounds) {
         try {
-          m.fitBounds(bounds, { padding: 120, maxZoom: 11, duration: 1100, essential: true });
+          const plannerPreview = plannerMode && visitRoute.origin && visitRoute.destination;
+          const wideViewport = m.getContainer().clientWidth >= 900;
+          m.fitBounds(bounds, {
+            padding: plannerPreview
+              ? { top: 80, bottom: 80, left: wideViewport ? 480 : 70, right: 100 }
+              : 120,
+            maxZoom: plannerPreview ? 8.8 : 11,
+            duration: 1100,
+            essential: true,
+          });
         } catch {
           /* viewport pequena para o padding */
         }
       }
     }
-  }, [visitRoute, selectedVisitStopId, mapReadyVersion]);
+  }, [visitRoute, selectedVisitStopId, mapReadyVersion, plannerMode]);
 
   /** Foco de câmera pedido pelos painéis ("Abrir no mapa" / "Ver roteiro completo"). */
   useEffect(() => {
@@ -5078,7 +5496,16 @@ const MapComponent: React.FC<MapComponentProps> = ({
       const bounds = getVisitRouteBounds(visitRoute);
       if (bounds) {
         try {
-          m.fitBounds(bounds, { padding: 120, maxZoom: 11, duration: 1100, essential: true });
+          const plannerPreview = plannerMode && visitRoute.origin && visitRoute.destination;
+          const wideViewport = m.getContainer().clientWidth >= 900;
+          m.fitBounds(bounds, {
+            padding: plannerPreview
+              ? { top: 80, bottom: 80, left: wideViewport ? 480 : 70, right: 100 }
+              : 120,
+            maxZoom: plannerPreview ? 8.8 : 11,
+            duration: 1100,
+            essential: true,
+          });
         } catch {
           /* viewport pequena para o padding */
         }
@@ -5088,10 +5515,11 @@ const MapComponent: React.FC<MapComponentProps> = ({
     const stop = visitRoute.stops.find((s) => s.id === visitFocus.stopId);
     if (stop) animateToPointFocus(m, [stop.lng, stop.lat]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visitFocus]);
+  }, [visitFocus, visitRoute, plannerMode]);
 
   useEffect(() => {
     return () => {
+      mapInitGenRef.current += 1;
       const m = map.current;
       if (m && clickHandlerRef.current) {
         m.off('click', 'structure-people-circles', clickHandlerRef.current);
@@ -5357,14 +5785,16 @@ const MapComponent: React.FC<MapComponentProps> = ({
             </button>
             ) : null}
           </div>
-          <MapOverlayMarkerInfoPanel
-            storeFilterCodAg={storeFilterCodAg}
-            storeFilterAgencyName={storeFilterAgencyName}
-            overlayMarkerSelection={overlayMarkerSelection}
-            storeCountOnMap={sqlStorePoints.length}
-            overlayLojasActive={overlayLojas}
-            onDismiss={dismissMapMarkerDock}
-          />
+          {!(plannerMode && plannerAgencyFocus) && (
+            <MapOverlayMarkerInfoPanel
+              storeFilterCodAg={storeFilterCodAg}
+              storeFilterAgencyName={storeFilterAgencyName}
+              overlayMarkerSelection={overlayMarkerSelection}
+              storeCountOnMap={linkedStoreCountForAgency}
+              overlayLojasActive={overlayLojas}
+              onDismiss={dismissMapMarkerDock}
+            />
+          )}
         </div>
       </div>
       <div
@@ -5421,16 +5851,9 @@ const MapComponent: React.FC<MapComponentProps> = ({
                         }`}
                         aria-hidden
                       >
-                        <img
-                          src={opt.previewImage}
-                          alt=""
-                          loading="lazy"
-                          draggable={false}
-                          className="h-full w-full rounded-full object-cover"
+                        <span
+                          className={`block h-full w-full rounded-full ${opt.previewClass}`}
                         />
-                        {opt.tintClass ? (
-                          <span className={`pointer-events-none absolute inset-0 rounded-full ${opt.tintClass}`} />
-                        ) : null}
                       </span>
                       <span
                         className={`max-w-[3rem] truncate text-center text-[9px] font-semibold leading-tight ${

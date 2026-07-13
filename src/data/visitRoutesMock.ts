@@ -33,6 +33,8 @@ export interface VisitRoute {
   distanciaKm: number;
   duracaoEstimada: string;
   stops: VisitStop[];
+  origin?: { nome: string; lat: number; lng: number };
+  destination?: { nome: string; lat: number; lng: number };
 }
 
 export const VISIT_ROUTES: VisitRoute[] = [

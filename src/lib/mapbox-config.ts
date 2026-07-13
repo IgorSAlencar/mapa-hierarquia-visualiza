@@ -8,7 +8,7 @@ export const MAPBOX_CONFIG = {
     dark: 'mapbox://styles/mapbox/dark-v11',
     /** Mapbox Standard — tema/luz via `config.basemap` no GL JS v3+. */
     standardWarm: 'mapbox://styles/mapbox/standard',
-    standardCool: 'mapbox://styles/mapbox/standard',
+    standardCool: 'mapbox://styles/mapbox/streets-v12',
     /** Estilo customizado criado no Mapbox Studio. */
     custom: 'mapbox://styles/igralencar/cmoc8sp33003601s58ijjhro4',
   },
@@ -59,9 +59,16 @@ export const MAPBOX_CONFIG = {
   /** Cobre com cor sólida tudo fora do contorno do Brasil (o mapa só “aparece” dentro do país). */
   maskOutsideBrazil: true,
   /** Fallback se o estilo não expuser `fill-color` simples na camada `land`. */
-  outsideBrazilMaskColor: '#f8f4f0',
+  outsideBrazilMaskColor: '#e5e7eb',
   /** Opções do import `basemap` (Mapbox Standard / Warm). */
   standardBasemap: {
     showClouds: false,
   },
+  /**
+   * Usa fonte local para ideogramas CJK em vez de baixar glyphs remotos.
+   * Acelera o primeiro paint (menos requests de fonte) sem afetar PT-BR.
+   */
+  localIdeographFontFamily: '"Arial Unicode MS", "Helvetica Neue", Arial, sans-serif',
+  /** Overlay de transição: tempo mínimo só o necessário para evitar flash. */
+  styleTransitionMinMs: 280,
 } as const;

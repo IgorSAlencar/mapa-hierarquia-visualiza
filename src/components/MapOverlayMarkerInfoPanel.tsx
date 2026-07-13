@@ -40,7 +40,7 @@ const MapOverlayMarkerInfoPanel: React.FC<MapOverlayMarkerInfoPanelProps> = ({
         <div className="flex items-start gap-2">
           <div className="min-w-0 flex-1">
             <p className="text-[10px] font-semibold uppercase tracking-wide text-teal-800">
-              Filtrado por agência
+              Agência selecionada
             </p>
             <p className="mt-1 text-sm font-semibold leading-snug text-slate-900">
               {storeFilterCodAg} - {storeFilterAgencyName ?? 'Agência'}
@@ -52,7 +52,7 @@ const MapOverlayMarkerInfoPanel: React.FC<MapOverlayMarkerInfoPanelProps> = ({
             ) : null}
             {overlayLojasActive && storeCountOnMap > 0 ? (
               <p className="mt-1.5 text-xs text-slate-500">
-                {storeCountOnMap.toLocaleString('pt-BR')} loja(s) no mapa
+                {storeCountOnMap.toLocaleString('pt-BR')} loja(s) vinculada(s) visível(is)
               </p>
             ) : null}
           </div>

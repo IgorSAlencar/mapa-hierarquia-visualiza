@@ -13,6 +13,7 @@ export interface SqlMapPoint {
   chaveCoordenacao?: number | null;
   chaveEntidade?: number | null;
   seatColor?: string | null;
+  routeRole?: 'origin' | 'destination' | 'corridor' | null;
 }
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? '';

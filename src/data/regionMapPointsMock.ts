@@ -34,6 +34,7 @@ export interface RegionMapPoint {
   chaveCoordenacao?: number | null;
   chaveEntidade?: number | null;
   seatColor?: string | null;
+  routeRole?: 'origin' | 'destination' | 'corridor' | null;
 }
 
 type GeoJSONPosition = [number, number];
@@ -89,6 +90,14 @@ export function filterRegionMapPoints<T extends { lngLat: [number, number] }>(
   return points;
 }
 
+function codAgKeyFromValue(value: string | null | undefined): string {
+  const raw = String(value ?? '').trim();
+  if (!raw) return '';
+  const n = Number(raw.replace(',', '.'));
+  if (Number.isFinite(n)) return String(Math.trunc(n));
+  return raw;
+}
+
 export function regionPointsToFeatureCollection(
   points: RegionMapPoint[]
 ): GeoJSON.FeatureCollection {
@@ -101,6 +110,7 @@ export function regionPointsToFeatureCollection(
         nome: p.nome,
         kind: p.kind,
         cod_ag: p.codAg != null && String(p.codAg).trim() !== '' ? String(p.codAg).trim() : '',
+        cod_ag_key: codAgKeyFromValue(p.codAg),
         endereco_formatado: p.enderecoFormatado ?? '',
         subtitulo:
           p.kind === 'agencia'
@@ -115,6 +125,7 @@ export function regionPointsToFeatureCollection(
           Number.isFinite(Number(p.chaveGerenciaArea)) ? Math.trunc(Number(p.chaveGerenciaArea)) : null,
         chave_entidade: Number.isFinite(Number(p.chaveEntidade)) ? Math.trunc(Number(p.chaveEntidade)) : null,
         seat_color: p.seatColor ?? '',
+        route_role: p.routeRole ?? '',
       },
       geometry: {
         type: 'Point' as const,
