@@ -17,6 +17,7 @@ export const agencyMapPopupClickOptions = {
 
 export const agencyMapPopupHoverOptions = {
   ...agencyMapPopupClickOptions,
+  maxWidth: '450px',
   closeButton: false,
   closeOnClick: false,
 } as const;

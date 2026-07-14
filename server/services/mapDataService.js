@@ -26,6 +26,20 @@ function normalizeCodAg(v) {
   return s;
 }
 
+function normalizeBinaryFlag(v) {
+  if (v == null || String(v).trim() === '') return null;
+  const n = Number(v);
+  if (!Number.isFinite(n)) return null;
+  return n === 1;
+}
+
+function normalizeDate(v) {
+  if (v == null || String(v).trim() === '') return null;
+  if (v instanceof Date) return Number.isNaN(v.getTime()) ? null : v.toISOString();
+  const date = new Date(v);
+  return Number.isNaN(date.getTime()) ? String(v).trim() : date.toISOString();
+}
+
 function formatAgencyAddress(row) {
   const endereco = normalizeText(row.ENDERECO);
   const bairro = normalizeText(row.BAIRRO);
@@ -82,10 +96,19 @@ export async function getStoreMapPoints({ bbox = null, limit = null, codAg = nul
       const chaveLoja = normalizeText(row.CHAVE_LOJA);
       return {
         id: `sql-loja-${chaveLoja ?? `${rowCodAg ?? 'x'}-${index}`}`,
-        nome: 'Loja',
+        nome: normalizeText(row.NOME_LOJA) ?? 'Loja',
         kind: 'loja',
         lngLat,
         codAg: rowCodAg,
+        chaveLoja,
+        statusTablet: normalizeText(row.STATUS_TABLET),
+        dataBloqueio: normalizeDate(row.DT_BLOQUEIO),
+        motivoBloqueio: normalizeText(row.MOTIVO_BLOQUEIO),
+        tipoPosto: normalizeText(row.TIPO_POSTO),
+        segmento: normalizeText(row.DESC_SEGTO),
+        dataUltimaTransacao: normalizeDate(row.DT_ULT_TRX),
+        cieloM0: normalizeBinaryFlag(row.CIELO_M0),
+        checklist: normalizeBinaryFlag(row.CHECKLIST),
       };
     })
     .filter(Boolean);

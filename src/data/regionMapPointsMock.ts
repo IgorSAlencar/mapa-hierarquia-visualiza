@@ -35,6 +35,15 @@ export interface RegionMapPoint {
   chaveEntidade?: number | null;
   seatColor?: string | null;
   routeRole?: 'origin' | 'destination' | 'corridor' | null;
+  chaveLoja?: string | null;
+  statusTablet?: string | null;
+  dataBloqueio?: string | null;
+  motivoBloqueio?: string | null;
+  tipoPosto?: string | null;
+  segmento?: string | null;
+  dataUltimaTransacao?: string | null;
+  cieloM0?: boolean | null;
+  checklist?: boolean | null;
 }
 
 type GeoJSONPosition = [number, number];
@@ -126,6 +135,15 @@ export function regionPointsToFeatureCollection(
         chave_entidade: Number.isFinite(Number(p.chaveEntidade)) ? Math.trunc(Number(p.chaveEntidade)) : null,
         seat_color: p.seatColor ?? '',
         route_role: p.routeRole ?? '',
+        chave_loja: p.chaveLoja ?? '',
+        status_tablet: p.statusTablet ?? '',
+        dt_bloqueio: p.dataBloqueio ?? '',
+        motivo_bloqueio: p.motivoBloqueio ?? '',
+        tipo_posto: p.tipoPosto ?? '',
+        desc_segto: p.segmento ?? '',
+        dt_ult_trx: p.dataUltimaTransacao ?? '',
+        cielo_m0: p.cieloM0 == null ? '' : p.cieloM0 ? '1' : '0',
+        checklist: p.checklist == null ? '' : p.checklist ? '1' : '0',
       },
       geometry: {
         type: 'Point' as const,

@@ -37,12 +37,15 @@ import { mergeHeaderDrag } from './mergeHeaderDrag';
 import RoutePlanningJourney, { type PlanningPriority } from './RoutePlanningJourney';
 import { fetchAgencyPoints } from '@/lib/mapDataApi';
 import type { RegionMapPoint } from '@/data/regionMapPointsMock';
+import type { DeviceLocation } from '@/lib/deviceGeolocation';
 
 interface Props {
   onBack: () => void;
   onClose: () => void;
   onRouteChange: (route: VisitRoute | null) => void;
   onAgencyFocus?: (agency: RegionMapPoint) => void;
+  onOriginLocationFocus?: (location: DeviceLocation) => void;
+  onOriginClear?: () => void;
   onDestinationAgencyFocus?: (agency: RegionMapPoint) => void;
   territory: string | null;
   shellStyle?: CSSProperties;
@@ -70,6 +73,8 @@ const RoutePlannerPanel: React.FC<Props> = ({
   onClose,
   onRouteChange,
   onAgencyFocus,
+  onOriginLocationFocus,
+  onOriginClear,
   onDestinationAgencyFocus,
   territory,
   shellStyle,
@@ -85,6 +90,7 @@ const RoutePlannerPanel: React.FC<Props> = ({
   const [view, setView] = useState<View>('table');
   const [onlyOnPath, setOnlyOnPath] = useState(true);
   const [query, setQuery] = useState('');
+  const [originLocation, setOriginLocation] = useState<DeviceLocation | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -145,7 +151,16 @@ const RoutePlannerPanel: React.FC<Props> = ({
   const toggle = (id: string) => setSelectedIds((items) => items.includes(id) ? items.filter((item) => item !== id) : [...items, id]);
   const optimize = () => {
     const route = createSuggestedRoute(date, originId, destination, selectedIds, agencies);
-    if (route) onRouteChange(route);
+    if (!route) return;
+    if (originLocation) {
+      route.id = `${route.id}-device-location`;
+      route.origin = {
+        nome: originLocation.label ?? 'Minha localização',
+        lng: originLocation.longitude,
+        lat: originLocation.latitude,
+      };
+    }
+    onRouteChange(route);
   };
   const header = mergeHeaderDrag(
     'flex shrink-0 items-center gap-2 border-b border-slate-200 px-3 py-2',
@@ -153,7 +168,14 @@ const RoutePlannerPanel: React.FC<Props> = ({
   );
 
   if (!journeyComplete) {
-    return <div style={{ ...shellStyle, maxHeight: undefined }}><RoutePlanningJourney agencies={agencies} originId={originId} destination={destination} onClose={onClose} onOriginAgencySelect={onAgencyFocus} onDestinationAgencySelect={onDestinationAgencyFocus} headerDragProps={headerDragProps} onComplete={(result) => {
+    return <div style={shellStyle} className="max-w-[calc(100vw-32px)]"><RoutePlanningJourney agencies={agencies} originId={originId} destination={destination} onClose={onClose} onOriginAgencySelect={(agency) => {
+      setOriginLocation(null);
+      onAgencyFocus?.(agency);
+    }} onOriginLocationSelect={(location) => {
+      setOriginLocation(location);
+      if (location) onOriginLocationFocus?.(location);
+      else onOriginClear?.();
+    }} onDestinationAgencySelect={onDestinationAgencyFocus} headerDragProps={headerDragProps} onComplete={(result) => {
       setOriginId(result.originId);
       setDestination(result.destination);
       setPlanningPriority(result.priority);
@@ -164,7 +186,7 @@ const RoutePlannerPanel: React.FC<Props> = ({
   return (
     <section
       style={shellStyle}
-      className="pointer-events-auto flex h-[calc(100vh-120px)] w-[calc(100vw-32px)] min-w-0 flex-col overflow-hidden rounded-xl border border-slate-200/90 bg-white/95 font-sans text-slate-700 shadow-2xl shadow-slate-900/15 backdrop-blur-md lg:h-[min(820px,calc(100vh-230px))] lg:w-[min(940px,calc(100vw-348px))]"
+      className="pointer-events-auto flex h-[min(820px,calc(100dvh-166px))] max-h-[calc(100dvh-166px)] w-[calc(100vw-32px)] min-w-0 flex-col overflow-hidden rounded-xl border border-slate-200/90 bg-white/95 font-sans text-slate-700 shadow-2xl shadow-slate-900/15 backdrop-blur-md lg:w-[min(940px,calc(100vw-348px))]"
     >
       <header className={header.className} style={header.dragStyle} {...header.dragHandlers} title="Arraste para mover o painel">
         <button type="button" data-panel-drag-ignore onClick={onBack} className="rounded-lg p-1.5 text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-700" aria-label="Voltar">
@@ -183,7 +205,7 @@ const RoutePlannerPanel: React.FC<Props> = ({
         <section data-planner-territory className="grid grid-cols-1 divide-y divide-slate-100 rounded-xl border border-slate-200 bg-white sm:grid-cols-3 sm:divide-x sm:divide-y-0">
           <button type="button" onClick={() => setJourneyComplete(false)} className="flex items-center gap-2.5 px-4 py-3 text-left transition-colors hover:bg-slate-50">
             <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-blue-50 text-blue-700"><Navigation className="h-4 w-4" /></span>
-            <span className="min-w-0"><span className="block text-[10px] font-medium text-slate-500">Origem</span><span className="block truncate text-xs font-bold text-slate-800">{origin?.nome ?? 'Não definida'}</span></span>
+            <span className="min-w-0"><span className="block text-[10px] font-medium text-slate-500">Origem</span><span className="block truncate text-xs font-bold text-slate-800">{originLocation?.label ?? (originLocation ? 'Minha localização' : origin?.nome ?? 'Não definida')}</span></span>
           </button>
           <button type="button" onClick={() => setJourneyComplete(false)} className="flex items-center gap-2.5 px-4 py-3 text-left transition-colors hover:bg-slate-50">
             <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-violet-50 text-violet-700"><MapPin className="h-4 w-4" /></span>
@@ -212,7 +234,7 @@ const RoutePlannerPanel: React.FC<Props> = ({
             <button type="button" className="flex items-center gap-1 rounded-lg border border-slate-200 px-2 py-1.5 text-[10px] font-semibold text-slate-600"><SlidersHorizontal className="h-3 w-3" />Filtros</button>
             <button type="button" onClick={() => setOnlyOnPath((value) => !value)} className={cn('flex items-center gap-1 rounded-lg px-2 py-1.5 text-[10px] font-semibold', onlyOnPath ? 'bg-violet-50 text-violet-700' : 'text-slate-500')}><span className={cn('h-3 w-5 rounded-full p-0.5', onlyOnPath ? 'bg-violet-600' : 'bg-slate-300')}><span className={cn('block h-2 w-2 rounded-full bg-white transition-transform', onlyOnPath && 'translate-x-2')} /></span>Apenas no caminho</button>
           </div>
-          {view === 'cards' ? <div className="grid grid-cols-2 gap-2 p-3">{suggestions.map((store) => <OpportunityCard key={store.id} store={store} selected={selectedIds.includes(store.id)} onToggle={() => toggle(store.id)} />)}</div> : view === 'map' ? <div className="p-8 text-center"><MapPin className="mx-auto h-7 w-7 text-violet-500" /><p className="mt-2 text-xs font-semibold text-slate-700">Use o mapa ao lado para explorar o território</p><p className="mt-1 text-[10px] text-slate-500">Clique nos municípios da malha para atualizar o contexto.</p></div> : <OpportunityTable stores={suggestions} selectedIds={selectedIds} onToggle={toggle} />}
+          {view === 'cards' ? <div className="grid grid-cols-1 gap-2 p-3 sm:grid-cols-2">{suggestions.map((store) => <OpportunityCard key={store.id} store={store} selected={selectedIds.includes(store.id)} onToggle={() => toggle(store.id)} />)}</div> : view === 'map' ? <div className="p-8 text-center"><MapPin className="mx-auto h-7 w-7 text-violet-500" /><p className="mt-2 text-xs font-semibold text-slate-700">Use o mapa ao lado para explorar o território</p><p className="mt-1 text-[10px] text-slate-500">Clique nos municípios da malha para atualizar o contexto.</p></div> : <OpportunityTable stores={suggestions} selectedIds={selectedIds} onToggle={toggle} />}
         </section>
 
         <section className="mt-3 rounded-xl border border-slate-200 bg-slate-50/60 p-3">
@@ -225,7 +247,7 @@ const RoutePlannerPanel: React.FC<Props> = ({
         </section>
       </main>
 
-      <footer className="border-t border-slate-200 bg-white p-3">
+      <footer className="max-h-[45%] shrink-0 overflow-y-auto border-t border-slate-200 bg-white p-3">
         <div className="flex flex-wrap items-center gap-4 rounded-xl border border-slate-200 bg-slate-50/80 px-4 py-2.5">
           <div className="flex items-center gap-2 border-r border-slate-200 pr-4"><span className="flex h-7 w-7 items-center justify-center rounded-full bg-violet-100 text-violet-700"><Check className="h-4 w-4" /></span><p className="text-xs font-bold text-slate-800">{selected.length} visitas selecionadas</p></div>
           <Metric label="Distância total" value={`${routeKm} km`} />

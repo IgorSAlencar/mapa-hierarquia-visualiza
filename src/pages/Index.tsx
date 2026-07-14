@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import { flushSync } from 'react-dom';
 import MapComponent from '@/components/MapComponent';
 import CommercialStructureFilters from '@/components/CommercialStructureFilters';
@@ -10,6 +10,8 @@ import VisitStopDetailCard from '@/components/navigator/VisitStopDetailCard';
 import RouteDetailsPanel from '@/components/navigator/RouteDetailsPanel';
 import RoutePlannerPanel from '@/components/navigator/RoutePlannerPanel';
 import type { VisitRoute } from '@/data/visitRoutesMock';
+import type { RegionMapPoint } from '@/data/regionMapPointsMock';
+import type { DeviceLocation } from '@/lib/deviceGeolocation';
 import { usePanelDrag } from '@/hooks/usePanelDrag';
 import {
   FILTROS_INICIAIS,
@@ -22,12 +24,16 @@ import { Button } from '@/components/ui/button';
 
 const NAVIGATOR_PANEL_DOCK = { x: 16, y: 150 } as const;
 
-interface PlannerAgencyEndpoint {
+interface PlannerRouteEndpoint {
   id: string;
   nome: string;
-  codAg: string;
+  codAg?: string;
   lngLat: [number, number];
   enderecoFormatado?: string;
+}
+
+interface PlannerAgencyEndpoint extends PlannerRouteEndpoint {
+  codAg: string;
 }
 
 const Index = () => {
@@ -42,7 +48,7 @@ const Index = () => {
   const [visitFocus, setVisitFocus] = useState<{ tick: number; stopId: number | null } | null>(null);
   const [plannerTerritory, setPlannerTerritory] = useState<string | null>(null);
   const [plannerAgencyFocus, setPlannerAgencyFocus] = useState<(PlannerAgencyEndpoint & { tick: number }) | null>(null);
-  const [plannerOriginAgency, setPlannerOriginAgency] = useState<PlannerAgencyEndpoint | null>(null);
+  const [plannerOriginAgency, setPlannerOriginAgency] = useState<PlannerRouteEndpoint | null>(null);
   const [plannerDestinationAgency, setPlannerDestinationAgency] = useState<PlannerAgencyEndpoint | null>(null);
   const [compareSupervisionAreas, setCompareSupervisionAreas] = useState(false);
   const [compareApplyTick, setCompareApplyTick] = useState(0);
@@ -112,10 +118,52 @@ const Index = () => {
     };
   }, [activeSection, plannerOriginAgency, plannerDestinationAgency]);
 
-  const plannerRouteAgencies = useMemo(() => {
-    if (!plannerOriginAgency || !plannerDestinationAgency || activeSection !== 'planejar') return null;
-    return { origin: plannerOriginAgency, destination: plannerDestinationAgency };
-  }, [activeSection, plannerOriginAgency, plannerDestinationAgency]);
+  const handlePlannerOriginAgencyFocus = useCallback((agency: RegionMapPoint) => {
+    const codAg = String(agency.codAg ?? '').trim();
+    if (!codAg) return;
+    const endpoint: PlannerAgencyEndpoint = {
+      id: agency.id,
+      nome: agency.nome,
+      codAg,
+      lngLat: agency.lngLat,
+      enderecoFormatado: agency.enderecoFormatado,
+    };
+    setPlannerOriginAgency(endpoint);
+    setPlannerDestinationAgency(null);
+    setPlannerAgencyFocus({ tick: Date.now(), ...endpoint });
+  }, []);
+
+  const handlePlannerDestinationAgencyFocus = useCallback((agency: RegionMapPoint) => {
+    const codAg = String(agency.codAg ?? '').trim();
+    if (!codAg) return;
+    setPlannerDestinationAgency({
+      id: agency.id,
+      nome: agency.nome,
+      codAg,
+      lngLat: agency.lngLat,
+      enderecoFormatado: agency.enderecoFormatado,
+    });
+    setVisitFocus({ tick: Date.now(), stopId: null });
+  }, []);
+
+  const handlePlannerOriginLocationFocus = useCallback((location: DeviceLocation) => {
+    const lngLat: [number, number] = [location.longitude, location.latitude];
+    setPlannerOriginAgency({
+      id: `device-location-${location.longitude.toFixed(6)}-${location.latitude.toFixed(6)}`,
+      nome: location.label ?? 'Minha localização',
+      lngLat,
+    });
+    setPlannerDestinationAgency(null);
+    setPlannerAgencyFocus(null);
+    setVisitFocus({ tick: Date.now(), stopId: null });
+  }, []);
+
+  const clearPlannerOrigin = useCallback(() => {
+    setPlannerOriginAgency(null);
+    setPlannerDestinationAgency(null);
+    setPlannerAgencyFocus(null);
+    setVisitFocus(null);
+  }, []);
 
   const clearVisitState = () => {
     setActiveRoute(null);
@@ -225,35 +273,10 @@ const Index = () => {
               onBack={() => handleSelectSection(null)}
               onClose={() => handleSelectSection(null)}
               onRouteChange={handleRouteChange}
-              onAgencyFocus={(agency) => {
-                const codAg = String(agency.codAg ?? '').trim();
-                if (!codAg) return;
-                const endpoint: PlannerAgencyEndpoint = {
-                  id: agency.id,
-                  nome: agency.nome,
-                  codAg,
-                  lngLat: agency.lngLat,
-                  enderecoFormatado: agency.enderecoFormatado,
-                };
-                setPlannerOriginAgency(endpoint);
-                setPlannerDestinationAgency(null);
-                setPlannerAgencyFocus({
-                  tick: Date.now(),
-                  ...endpoint,
-                });
-              }}
-              onDestinationAgencyFocus={(agency) => {
-                const codAg = String(agency.codAg ?? '').trim();
-                if (!codAg) return;
-                setPlannerDestinationAgency({
-                  id: agency.id,
-                  nome: agency.nome,
-                  codAg,
-                  lngLat: agency.lngLat,
-                  enderecoFormatado: agency.enderecoFormatado,
-                });
-                setVisitFocus({ tick: Date.now(), stopId: null });
-              }}
+              onAgencyFocus={handlePlannerOriginAgencyFocus}
+              onOriginLocationFocus={handlePlannerOriginLocationFocus}
+              onOriginClear={clearPlannerOrigin}
+              onDestinationAgencyFocus={handlePlannerDestinationAgencyFocus}
               territory={plannerTerritory}
               shellStyle={plannerDrag.shellStyle}
               headerDragProps={plannerDrag.headerDragProps}
@@ -336,7 +359,7 @@ const Index = () => {
           plannerMode={activeSection === 'planejar'}
           onPlannerTerritorySelect={setPlannerTerritory}
           plannerAgencyFocus={plannerAgencyFocus}
-          plannerRouteAgencies={plannerRouteAgencies}
+          plannerRouteAgencies={null}
           compareSupervisionAreas={compareSupervisionAreas}
           onCompareSupervisionAreasChange={handleCompareActiveChange}
           compareApplyTick={compareApplyTick}

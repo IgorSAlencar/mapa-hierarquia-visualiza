@@ -22,6 +22,10 @@ import {
   readAgencyPopupInfoFromProperties,
   type AgencyPopupInfo,
 } from '@/components/AgencyInfoPopup';
+import {
+  buildStorePopupHtml,
+  readStorePopupInfoFromProperties,
+} from '@/components/StoreInfoPopup';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { useToast } from '@/hooks/use-toast';
@@ -79,6 +83,7 @@ import {
 import { fetchExpressoProductivityRows, fetchExpressoStateMetrics } from '@/lib/expressoApi';
 import { loadSupervisionAreas } from '@/lib/supervisionAreas';
 import { getVisitRouteBounds, syncVisitRouteOnMap } from '@/lib/visitRouteMapLayer';
+import { fetchDrivingGeometry } from '@/lib/mapboxDirections';
 import RouteLegend from '@/components/navigator/RouteLegend';
 import { isCompareScopeHierarchy } from '@/lib/compareAreasScope';
 import {
@@ -124,7 +129,6 @@ const UF_TO_IBGE_CODE: Record<string, string> = {
   TO: '17',
 };
 
-type GeoJSONPosition = [number, number];
 type Bounds = [[number, number], [number, number]];
 
 let cachedBrazilBoundaryFeature: GeoJSON.Feature | null = null;
@@ -466,6 +470,60 @@ function keepOnlyStateAndCityLabels(m: mapboxgl.Map) {
   }
 }
 
+/**
+ * Nomes de cidades geram bastante trabalho de colisão e renderização. Eles só
+ * agregam informação quando o usuário já está numa visão regional próxima.
+ */
+const CITY_LABEL_MIN_ZOOM = 9;
+
+function isCityLabelLayer(layer: mapboxgl.LayerSpecification): boolean {
+  if (layer.type !== 'symbol') return false;
+
+  const id = layer.id.toLowerCase();
+  if (
+    id.includes('state') ||
+    id.includes('province') ||
+    id.includes('admin-1') ||
+    id.includes('admin1')
+  ) {
+    return false;
+  }
+
+  if (
+    id.includes('city') ||
+    id.includes('settlement') ||
+    id.includes('town') ||
+    id.includes('village')
+  ) {
+    return true;
+  }
+
+  // Alguns estilos usam IDs genéricos para place labels, mas separam as
+  // classes por filtro. Nesses casos, identifica apenas filtros municipais.
+  const filter = JSON.stringify((layer as mapboxgl.SymbolLayerSpecification).filter ?? '').toLowerCase();
+  return (
+    filter.includes('settlement') ||
+    filter.includes('city') ||
+    filter.includes('town') ||
+    filter.includes('village')
+  );
+}
+
+function applyCityLabelZoomThreshold(m: mapboxgl.Map): void {
+  for (const layer of m.getStyle().layers ?? []) {
+    if (!isCityLabelLayer(layer)) continue;
+    try {
+      m.setLayerZoomRange(
+        layer.id,
+        Math.max(layer.minzoom ?? 0, CITY_LABEL_MIN_ZOOM),
+        layer.maxzoom ?? 24
+      );
+    } catch {
+      /* estilo recarregando */
+    }
+  }
+}
+
 const BR_ISO_FILTER: FilterSpecification = ['==', ['get', 'iso_3166_1'], 'BR'];
 /** Remove rótulos de país (ex.: "Brazil") mantendo estados e cidades. */
 const HIDE_COUNTRY_PLACE_FILTER: FilterSpecification = [
@@ -578,19 +636,35 @@ function applyBrazilBasemapLabelTweaks(m: mapboxgl.Map) {
   keepOnlyStateAndCityLabels(m);
   restrictSymbolLayersToBrazil(m);
   hideCountryLabelsOnPlaceSymbolLayers(m);
+  applyCityLabelZoomThreshold(m);
 }
+
+const labelTweaksSchedules = new WeakMap<
+  mapboxgl.Map,
+  { idleHandler: () => void; timers: number[] }
+>();
 
 /** Standard carrega rótulos em fragmentos assíncronos — reaplica a remoção de "Brazil". */
 function scheduleBrazilBasemapLabelTweaks(m: mapboxgl.Map) {
+  const previous = labelTweaksSchedules.get(m);
+  if (previous) {
+    m.off('idle', previous.idleHandler);
+    for (const timer of previous.timers) window.clearTimeout(timer);
+  }
+
   applyBrazilBasemapLabelTweaks(m);
   const reapply = () => {
-    if (!m.getStyle()) return;
-    applyBrazilBasemapLabelTweaks(m);
+    try {
+      if (!m.getStyle()) return;
+      applyBrazilBasemapLabelTweaks(m);
+    } catch {
+      /* mapa removido durante troca de estilo */
+    }
   };
   m.once('idle', reapply);
   // Fragmentos do Standard podem chegar depois do primeiro idle.
-  window.setTimeout(reapply, 400);
-  window.setTimeout(reapply, 1200);
+  const timers = [window.setTimeout(reapply, 400), window.setTimeout(reapply, 1200)];
+  labelTweaksSchedules.set(m, { idleHandler: reapply, timers });
 }
 
 function firstSymbolLayerId(m: mapboxgl.Map): string | undefined {
@@ -685,7 +759,7 @@ function ensureCustomBrazilPlaceLabels(m: mapboxgl.Map) {
         type: 'symbol',
         source: BR_PLACES_SOURCE_ID,
         'source-layer': 'place_label',
-        minzoom: 4,
+        minzoom: CITY_LABEL_MIN_ZOOM,
         filter: [
           'all',
           ['==', ['get', 'iso_3166_1'], 'BR'],
@@ -915,69 +989,6 @@ function featureBounds(feature: GeoJSON.Feature): Bounds | null {
     [sw.lng, sw.lat],
     [ne.lng, ne.lat],
   ];
-}
-
-type GeoJSONRing = GeoJSONPosition[];
-
-function pointInRing(point: GeoJSONPosition, ring: GeoJSONRing): boolean {
-  let inside = false;
-  const [x, y] = point;
-  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
-    const [xi, yi] = ring[i];
-    const [xj, yj] = ring[j];
-    const intersects =
-      yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / ((yj - yi) || Number.EPSILON) + xi;
-    if (intersects) inside = !inside;
-  }
-  return inside;
-}
-
-function pointInPolygonRings(point: GeoJSONPosition, rings: GeoJSONRing[]): boolean {
-  if (rings.length === 0) return false;
-  if (!pointInRing(point, rings[0])) return false;
-  for (let i = 1; i < rings.length; i += 1) {
-    if (pointInRing(point, rings[i])) return false;
-  }
-  return true;
-}
-
-function pointInGeometryLngLat(lngLat: mapboxgl.LngLat, geometry: GeoJSON.Geometry): boolean {
-  const point: GeoJSONPosition = [lngLat.lng, lngLat.lat];
-  if (geometry.type === 'Polygon') {
-    return pointInPolygonRings(point, geometry.coordinates as GeoJSONRing[]);
-  }
-  if (geometry.type === 'MultiPolygon') {
-    return geometry.coordinates.some((poly) =>
-      pointInPolygonRings(point, poly as GeoJSONRing[])
-    );
-  }
-  return false;
-}
-
-/** Escolhe o município cujo polígono contém o clique (GeoJSON do estado), não o hit de camada. */
-function findMunicipalityFeatureContainingLngLat(
-  fc: GeoJSON.FeatureCollection,
-  lngLat: mapboxgl.LngLat
-): GeoJSON.Feature | null {
-  if (!fc.features.length) return null;
-  const inside = fc.features.filter(
-    (f) => f.geometry && pointInGeometryLngLat(lngLat, f.geometry as GeoJSON.Geometry)
-  );
-  if (inside.length === 0) return null;
-  if (inside.length === 1) return inside[0];
-  let best = inside[0];
-  let bestArea = Infinity;
-  for (const f of inside) {
-    const b = featureBounds(f);
-    if (!b) continue;
-    const [[w, s], [e, n]] = b;
-    const area = Math.abs(e - w) * Math.abs(n - s);
-    if (area < bestArea) {
-      bestArea = area;
-      best = f;
-    }
-  }
-  return best;
 }
 
 function resetMunicipalityVisuals(
@@ -1232,20 +1243,20 @@ function buildOverlayLojaCirclePaint(
       'destination',
       '#10b981',
       'corridor',
-      '#94a3b8',
+      '#475569',
       '#0d9488',
     ] as mapboxgl.ExpressionSpecification,
     'circle-stroke-width': [
       'case',
       ['==', ['get', 'route_role'], 'corridor'],
-      1,
+      1.5,
       2,
     ] as mapboxgl.ExpressionSpecification,
     'circle-stroke-color': '#ffffff',
     'circle-opacity': [
       'case',
       ['==', ['get', 'route_role'], 'corridor'],
-      0.38,
+      0.78,
       0.96,
     ] as mapboxgl.ExpressionSpecification,
   } satisfies CirclePaint;
@@ -1351,6 +1362,33 @@ function resolveMunicipalityIbgeCode(props?: GeoJSON.GeoJsonProperties): number 
   return null;
 }
 
+/**
+ * O hit renderizado define qual município o usuário enxergou. Depois recupera
+ * a feature completa do GeoJSON bruto, pois o Mapbox pode devolver geometria
+ * recortada por tile em `queryRenderedFeatures`.
+ */
+function resolveFullMunicipalityFromRenderedHit(
+  rendered: GeoJSON.Feature,
+  fullCollection: GeoJSON.FeatureCollection
+): GeoJSON.Feature {
+  const renderedCode = resolveMunicipalityIbgeCode(rendered.properties);
+  if (renderedCode != null) {
+    const byCode = fullCollection.features.find(
+      (feature) => resolveMunicipalityIbgeCode(feature.properties) === renderedCode
+    );
+    if (byCode) return byCode;
+  }
+
+  const renderedName = normalizeText(municipalityNameFromProperties(rendered.properties));
+  if (renderedName) {
+    const byName = fullCollection.features.find(
+      (feature) => normalizeText(municipalityNameFromProperties(feature.properties)) === renderedName
+    );
+    if (byName) return byName;
+  }
+  return rendered;
+}
+
 function parseUfFromShortCode(shortCode: unknown): string | null {
   const raw = String(shortCode ?? '').toUpperCase();
   const m = raw.match(/^BR-([A-Z]{2})/);
@@ -1369,17 +1407,7 @@ function resolveStateCode(props?: GeoJSON.GeoJsonProperties): string | null {
 function cityLabelLayerIds(m: mapboxgl.Map): string[] {
   const layers = m.getStyle().layers ?? [];
   return layers
-    .filter((layer) => {
-      if (layer.type !== 'symbol') return false;
-      const id = layer.id.toLowerCase();
-      const sourceLayer = String((layer as mapboxgl.SymbolLayerSpecification)['source-layer'] ?? '').toLowerCase();
-      return (
-        id.includes('settlement') ||
-        id.includes('place-label') ||
-        id.includes('city') ||
-        sourceLayer.includes('place_label')
-      );
-    })
+    .filter(isCityLabelLayer)
     .map((layer) => layer.id);
 }
 
@@ -1526,14 +1554,6 @@ function fitMapToRegionFeature(
   }
 }
 
-const OVERLAY_BBOX_FETCH_PADDING_RATIO = 0.4;
-/** Padding ao desenhar pontos já em cache — maior = menos “sumiço” nas bordas ao pan. */
-const OVERLAY_VIEWPORT_DRAW_PADDING_RATIO = 0.35;
-const OVERLAY_ZOOM_REFETCH_DELTA = 0.4;
-/** Debounce do fetch após pan/zoom; baixo o suficiente para o viewport não ficar vazio. */
-const OVERLAY_MOVEEND_DEBOUNCE_MS = 320;
-const OVERLAY_VIEWPORT_DRAW_DEBOUNCE_MS = 80;
-
 function hasPanelHierarchyFilter(filter: SqlHierarchyFilter | null | undefined): boolean {
   if (!filter) return false;
   return Object.values(filter).some((v) => v != null && Number.isFinite(Number(v)) && Number(v) > 0);
@@ -1569,48 +1589,23 @@ function resolveSeatPointsFetchHierarchy(
   return panel ?? null;
 }
 
-function expandBbox(bbox: BboxQuery, paddingRatio = OVERLAY_BBOX_FETCH_PADDING_RATIO): BboxQuery {
-  const lngSpan = bbox.maxLng - bbox.minLng;
-  const latSpan = bbox.maxLat - bbox.minLat;
-  const padLng = lngSpan * paddingRatio;
-  const padLat = latSpan * paddingRatio;
-  return {
-    minLng: bbox.minLng - padLng,
-    minLat: bbox.minLat - padLat,
-    maxLng: bbox.maxLng + padLng,
-    maxLat: bbox.maxLat + padLat,
-  };
-}
-
-function bboxContains(outer: BboxQuery, inner: BboxQuery): boolean {
-  return (
-    inner.minLng >= outer.minLng &&
-    inner.maxLng <= outer.maxLng &&
-    inner.minLat >= outer.minLat &&
-    inner.maxLat <= outer.maxLat
-  );
-}
-
-function pointInBbox(lngLat: [number, number], bbox: BboxQuery): boolean {
-  const [lng, lat] = lngLat;
-  return lng >= bbox.minLng && lng <= bbox.maxLng && lat >= bbox.minLat && lat <= bbox.maxLat;
-}
-
 const PLANNER_ROUTE_CORRIDOR_KM = 15;
 
 function plannerCorridorBbox(
-  from: [number, number],
-  to: [number, number],
+  coordinates: [number, number][],
   radiusKm: number
 ): BboxQuery {
-  const meanLatRad = (((from[1] + to[1]) / 2) * Math.PI) / 180;
+  const lngs = coordinates.map(([lng]) => lng);
+  const lats = coordinates.map(([, lat]) => lat);
+  const meanLat = lats.reduce((sum, lat) => sum + lat, 0) / Math.max(1, lats.length);
+  const meanLatRad = (meanLat * Math.PI) / 180;
   const latPad = radiusKm / 111;
   const lngPad = radiusKm / Math.max(20, 111 * Math.cos(meanLatRad));
   return {
-    minLng: Math.min(from[0], to[0]) - lngPad,
-    minLat: Math.min(from[1], to[1]) - latPad,
-    maxLng: Math.max(from[0], to[0]) + lngPad,
-    maxLat: Math.max(from[1], to[1]) + latPad,
+    minLng: Math.min(...lngs) - lngPad,
+    minLat: Math.min(...lats) - latPad,
+    maxLng: Math.max(...lngs) + lngPad,
+    maxLat: Math.max(...lats) + latPad,
   };
 }
 
@@ -1633,6 +1628,20 @@ function distanceToPlannerSegmentKm(
   return Math.hypot(p[0] - (a[0] + t * dx), p[1] - (a[1] + t * dy));
 }
 
+function distanceToPlannerRouteKm(
+  point: [number, number],
+  routeCoordinates: [number, number][]
+): number {
+  let shortest = Infinity;
+  for (let index = 1; index < routeCoordinates.length; index += 1) {
+    shortest = Math.min(
+      shortest,
+      distanceToPlannerSegmentKm(point, routeCoordinates[index - 1], routeCoordinates[index])
+    );
+  }
+  return shortest;
+}
+
 function overlayPointCacheKey(point: SqlMapPoint): string {
   const id = String(point.id ?? '').trim();
   if (id) return id;
@@ -1647,31 +1656,44 @@ function mergeOverlayPointsIntoCache(cache: Map<string, SqlMapPoint>, incoming: 
   }
 }
 
-function pruneOverlayCacheFarFromBbox(
-  cache: Map<string, SqlMapPoint>,
-  centerBbox: BboxQuery,
-  maxSpanMultiplier = 2
-): void {
-  const lngSpan = centerBbox.maxLng - centerBbox.minLng;
-  const latSpan = centerBbox.maxLat - centerBbox.minLat;
-  const padLng = lngSpan * maxSpanMultiplier;
-  const padLat = latSpan * maxSpanMultiplier;
-  const pruneBox: BboxQuery = {
-    minLng: centerBbox.minLng - padLng,
-    minLat: centerBbox.minLat - padLat,
-    maxLng: centerBbox.maxLng + padLng,
-    maxLat: centerBbox.maxLat + padLat,
-  };
-  for (const [key, p] of cache) {
-    if (!pointInBbox(p.lngLat, pruneBox)) cache.delete(key);
-  }
-}
-
-function overlayPointsSignature(points: Array<{ id: string; seatColor?: string }>): string {
+function overlayPointsSignature(points: SqlMapPoint[]): string {
   if (points.length === 0) return '0';
   // Inclui a cor: só o id não detecta mudança de paleta (ex.: variação por GC III).
-  const ids = points.map((p) => `${p.id}#${p.seatColor ?? ''}`).sort();
+  const ids = points
+    .map((p) =>
+      [
+        p.id,
+        p.nome,
+        p.seatColor,
+        p.statusTablet,
+        p.dataBloqueio,
+        p.motivoBloqueio,
+        p.tipoPosto,
+        p.segmento,
+        p.dataUltimaTransacao,
+        p.cieloM0,
+        p.checklist,
+      ].join('#')
+    )
+    .sort();
   return `${points.length}|${ids.join('|')}`;
+}
+
+function hierarchyFilterSignature(filter: SqlHierarchyFilter | null | undefined): string {
+  if (!filter) return '';
+  return [
+    filter.chaveGerenciaArea,
+    filter.chaveCoordenacao,
+    filter.chaveSupervisao,
+    filter.direReg,
+    filter.codGerReg,
+    filter.codGerArea,
+    filter.codCoord,
+    filter.codSupervisao,
+    filter.codAg,
+  ]
+    .map((value) => value ?? '')
+    .join('|');
 }
 
 interface MapComponentProps {
@@ -1706,7 +1728,7 @@ interface MapComponentProps {
     origin: {
       id: string;
       nome: string;
-      codAg: string;
+      codAg?: string;
       lngLat: [number, number];
       enderecoFormatado?: string;
     };
@@ -1855,6 +1877,15 @@ function seatColorByLevel(
 }
 
 function resolveStoreSegment(point: SqlMapPoint): StoreSegmentKey {
+  const tipoPosto = normalizeText(point.tipoPosto);
+  if (tipoPosto.includes('casas bahia')) return 'casas_bahia';
+  if (tipoPosto.includes('grandes redes') || tipoPosto.includes('grande rede')) {
+    return 'grandes_redes';
+  }
+  if (tipoPosto.includes('exclusivo')) return 'exclusivo';
+  if (tipoPosto.includes('varejo')) return 'varejo';
+
+  // Compatibilidade com pontos antigos/mock que ainda não possuem TIPO_POSTO.
   const cod = String(point.codAg ?? '').trim();
   const id = point.id.trim().toLowerCase();
   const nome = point.nome.trim().toLowerCase();
@@ -1870,7 +1901,7 @@ function resolveStoreSegment(point: SqlMapPoint): StoreSegmentKey {
 
 const MapComponent: React.FC<MapComponentProps> = ({
   mapMarkers,
-  hierarchyFilter = null,
+  hierarchyFilter: hierarchyFilterProp = null,
   filtersPanelOpen = false,
   onOpenFilters,
   visitRoute = null,
@@ -1887,6 +1918,25 @@ const MapComponent: React.FC<MapComponentProps> = ({
   plannerRouteAgencies = null,
   navigatorOverlays,
 }) => {
+  // O pai pode recriar o objeto em qualquer render (por exemplo, ao arrastar um
+  // painel). Mantém a referência estável enquanto os valores reais não mudarem,
+  // evitando efeitos de mapa, setData e fetches redundantes.
+  const hierarchyFilterStableRef = useRef<{
+    signature: string;
+    value: SqlHierarchyFilter | null;
+  }>({
+    signature: hierarchyFilterSignature(hierarchyFilterProp),
+    value: hierarchyFilterProp,
+  });
+  const nextHierarchyFilterSignature = hierarchyFilterSignature(hierarchyFilterProp);
+  if (hierarchyFilterStableRef.current.signature !== nextHierarchyFilterSignature) {
+    hierarchyFilterStableRef.current = {
+      signature: nextHierarchyFilterSignature,
+      value: hierarchyFilterProp,
+    };
+  }
+  const hierarchyFilter = hierarchyFilterStableRef.current.value;
+
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<mapboxgl.Map | null>(null);
   const mapMarkersRef = useRef(mapMarkers);
@@ -1909,6 +1959,10 @@ const MapComponent: React.FC<MapComponentProps> = ({
     features: [],
   });
   const loadingAllMunicipalitiesRef = useRef(false);
+  const loadAllMunicipalitiesRef = useRef<() => Promise<GeoJSON.FeatureCollection>>(async () => ({
+    type: 'FeatureCollection',
+    features: [],
+  }));
   /** Municípios do UF atual (mesmo dado da fonte municipalities-context) para hit-test por polígono. */
   const municipalitiesFcRef = useRef<GeoJSON.FeatureCollection>({
     type: 'FeatureCollection',
@@ -1980,18 +2034,27 @@ const MapComponent: React.FC<MapComponentProps> = ({
   const selectAgencyForStoresRef = useRef<
     (codAg: string, agencyName?: string | null, agencyPoint?: SqlMapPoint | null) => Promise<void>
   >(async () => {});
-  const refreshTimerRef = useRef<number | null>(null);
-  const viewportBoundsTickTimerRef = useRef<number | null>(null);
-  const lastViewportOverlayBboxKeyRef = useRef<string | null>(null);
   const overlayAgencyCacheRef = useRef(new Map<string, SqlMapPoint>());
   const overlayStoreCacheRef = useRef(new Map<string, SqlMapPoint>());
-  const overlayFetchedBboxCacheRef = useRef<BboxQuery | null>(null);
-  const overlayLastFetchZoomRef = useRef<number | null>(null);
+  const plannerRouteAgenciesRef = useRef(plannerRouteAgencies);
+  const plannerOverlayActiveRef = useRef(false);
+  plannerRouteAgenciesRef.current = plannerRouteAgencies;
+  const loadedAgencyScopeRef = useRef<string | null>(null);
+  const loadedStoreScopeRef = useRef<string | null>(null);
   const lastOverlayFcSignatureRef = useRef<Record<string, string>>({});
+  const clearPreparedOverlaySource = useCallback((sourceId: string) => {
+    const source = map.current?.getSource(sourceId) as mapboxgl.GeoJSONSource | undefined;
+    try {
+      source?.setData({ type: 'FeatureCollection', features: [] });
+      lastOverlayFcSignatureRef.current[sourceId] = '';
+    } catch {
+      /* estilo recarregando */
+    }
+  }, []);
   /** Gerações de fetch: ignora respostas antigas e permite pan durante loading. */
   const overlayAgencyFetchGenRef = useRef(0);
+  const overlayStoreFetchGenRef = useRef(0);
   const mapInitGenRef = useRef(0);
-  const [viewportBoundsTick, setViewportBoundsTick] = useState(0);
   const [overlaySeatFilterKey, setOverlaySeatFilterKey] = useState<string | null>(null);
   /** Histórico de filtros da legenda para o botão Voltar (GG → GC III → GC). */
   const seatLegendHistoryRef = useRef<Array<string | null>>([]);
@@ -2112,48 +2175,23 @@ const MapComponent: React.FC<MapComponentProps> = ({
   );
   const expressoMetrics = sqlExpressoMetrics ?? fallbackExpressoMetrics;
 
-  const overlayScopeIsViewportExploration = useMemo(
-    () => !overlaySeatFilterKey && !hasPanelHierarchyFilter(hierarchyFilter),
-    [overlaySeatFilterKey, hierarchyFilter]
-  );
-
-  const visibleViewportBbox = useMemo((): BboxQuery | null => {
-    void viewportBoundsTick;
-    const m = map.current;
-    if (!m) return null;
-    const bounds = m.getBounds();
-    return {
-      minLng: bounds.getWest(),
-      minLat: bounds.getSouth(),
-      maxLng: bounds.getEast(),
-      maxLat: bounds.getNorth(),
-    };
-  }, [viewportBoundsTick, mapReadyVersion]);
-
   const filteredRegionAgencias = useMemo(() => {
     if (storeFilterCodAg) {
       if (pinnedAgencyPoint) return [pinnedAgencyPoint];
       const key = normalizeCodAgKey(storeFilterCodAg);
       return sqlAgencyPoints.filter((p) => normalizeCodAgKey(p.codAg) === key);
     }
-    let points = filterRegionMapPoints(
+    return filterRegionMapPoints(
       sqlAgencyPoints,
       selectedMunicipalityFeature,
       selectedStateFeature
     );
-    if (overlayScopeIsViewportExploration && visibleViewportBbox) {
-      const drawBbox = expandBbox(visibleViewportBbox, OVERLAY_VIEWPORT_DRAW_PADDING_RATIO);
-      points = points.filter((p) => pointInBbox(p.lngLat, drawBbox));
-    }
-    return points;
   }, [
     sqlAgencyPoints,
     storeFilterCodAg,
     pinnedAgencyPoint,
     selectedMunicipalityFeature,
     selectedStateFeature,
-    overlayScopeIsViewportExploration,
-    visibleViewportBbox,
   ]);
   const seatCoordColorIndex = useMemo(
     () => buildCoordColorIndexByGa(sqlSeatPoints),
@@ -2540,17 +2578,13 @@ const MapComponent: React.FC<MapComponentProps> = ({
       ? sqlStorePoints.filter((point) => normalizeCodAgKey(point.codAg) === agencyKey)
       : sqlStorePoints;
 
-    let visibleByArea = plannerCorridorActive
+    const visibleByArea = plannerCorridorActive
       ? storesInAgency
       : filterRegionMapPoints(
           storesInAgency,
           selectedMunicipalityFeature,
           selectedStateFeature
         );
-    if (!plannerCorridorActive && overlayScopeIsViewportExploration && visibleViewportBbox) {
-      const drawBbox = expandBbox(visibleViewportBbox, OVERLAY_VIEWPORT_DRAW_PADDING_RATIO);
-      visibleByArea = visibleByArea.filter((p) => pointInBbox(p.lngLat, drawBbox));
-    }
     return plannerCorridorActive ? visibleByArea : applySegmentFilter(visibleByArea);
   }, [
     sqlStorePoints,
@@ -2559,8 +2593,6 @@ const MapComponent: React.FC<MapComponentProps> = ({
     selectedMunicipalityFeature,
     selectedStateFeature,
     selectedStoreSegments,
-    overlayScopeIsViewportExploration,
-    visibleViewportBbox,
   ]);
 
   const linkedStoreCountForAgency = useMemo(() => {
@@ -2569,55 +2601,28 @@ const MapComponent: React.FC<MapComponentProps> = ({
     return filteredRegionLojas.filter((p) => normalizeCodAgKey(p.codAg) === key).length;
   }, [storeFilterCodAg, sqlStorePoints.length, filteredRegionLojas]);
 
-  const getCurrentMapBbox = (): BboxQuery | null => {
-    const m = map.current;
-    if (!m) return null;
-    const bounds = m.getBounds();
-    return {
-      minLng: bounds.getWest(),
-      minLat: bounds.getSouth(),
-      maxLng: bounds.getEast(),
-      maxLat: bounds.getNorth(),
-    };
-  };
-
-  const shouldSkipViewportOverlayRefresh = () => {
-    if (overlaySeatHierarchyRef.current) return true;
-    if (hasPanelHierarchyFilter(hierarchyFilterRef.current)) return true;
-    return false;
-  };
-
-  const clearOverlayViewportCaches = useCallback(() => {
+  const clearOverlayPointCaches = useCallback(() => {
     overlayAgencyCacheRef.current.clear();
     overlayStoreCacheRef.current.clear();
-    overlayFetchedBboxCacheRef.current = null;
-    overlayLastFetchZoomRef.current = null;
-    lastViewportOverlayBboxKeyRef.current = null;
   }, []);
 
   const applyAgencyFetchResult = useCallback(
-    (points: SqlMapPoint[], mode: 'merge' | 'replace', pruneAround?: BboxQuery | null) => {
+    (points: SqlMapPoint[], mode: 'merge' | 'replace') => {
       if (mode === 'replace') {
         overlayAgencyCacheRef.current.clear();
       }
       mergeOverlayPointsIntoCache(overlayAgencyCacheRef.current, points);
-      if (pruneAround) {
-        pruneOverlayCacheFarFromBbox(overlayAgencyCacheRef.current, pruneAround);
-      }
       setSqlAgencyPoints([...overlayAgencyCacheRef.current.values()]);
     },
     []
   );
 
   const applyStoreFetchResult = useCallback(
-    (points: SqlMapPoint[], mode: 'merge' | 'replace', pruneAround?: BboxQuery | null) => {
+    (points: SqlMapPoint[], mode: 'merge' | 'replace') => {
       if (mode === 'replace') {
         overlayStoreCacheRef.current.clear();
       }
       mergeOverlayPointsIntoCache(overlayStoreCacheRef.current, points);
-      if (pruneAround) {
-        pruneOverlayCacheFarFromBbox(overlayStoreCacheRef.current, pruneAround);
-      }
       setSqlStorePoints([...overlayStoreCacheRef.current.values()]);
     },
     []
@@ -2664,7 +2669,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
     }
     // Navegação na legenda não deve ligar os overlays de agências/lojas:
     // preserva o que o usuário escolheu nos toggles e só limpa o pin de agência.
-    clearOverlayViewportCaches();
+    clearOverlayPointCaches();
     setStoreFilterCodAg(null);
     setStoreFilterAgencyName(null);
     setPinnedAgencyPoint(null);
@@ -2736,18 +2741,12 @@ const MapComponent: React.FC<MapComponentProps> = ({
   const loadStoreOverlayPoints = useCallback(
     async (options?: {
       codAg?: string | null;
-      bbox?: BboxQuery | null;
       silent?: boolean;
       hierarchy?: SqlHierarchyFilter | null;
     }) => {
+      const fetchGen = ++overlayStoreFetchGenRef.current;
       const codAg = options?.codAg !== undefined ? options.codAg : null;
       const seatHierarchy = options?.hierarchy ?? overlaySeatHierarchyRef.current;
-      const bbox =
-        options?.bbox !== undefined
-          ? options.bbox
-          : codAg || seatHierarchy
-            ? null
-            : getCurrentMapBbox();
       const silent = options?.silent === true;
       const hierarchyForFetch =
         options?.hierarchy !== undefined
@@ -2766,20 +2765,16 @@ const MapComponent: React.FC<MapComponentProps> = ({
             ? { codAg, hierarchy: null }
             : hierarchyForFetch
               ? { hierarchy: hierarchyForFetch }
-              : bbox
-                ? { bbox, hierarchy: hierarchyFilterRef.current ?? null }
-                : { hierarchy: hierarchyFilterRef.current ?? null }
+              : { hierarchy: hierarchyFilterRef.current ?? null }
         );
-        if (codAg || hierarchyForFetch) {
-          applyStoreFetchResult(points, 'replace');
-        } else if (bbox) {
-          applyStoreFetchResult(points, 'merge', expandBbox(bbox));
-        } else {
-          applyStoreFetchResult(points, 'replace');
-        }
+        if (fetchGen !== overlayStoreFetchGenRef.current) return points;
+        applyStoreFetchResult(points, 'replace');
+        loadedStoreScopeRef.current = codAg
+          ? `agency:${normalizeCodAgKey(codAg)}`
+          : hierarchyFilterSignature(hierarchyForFetch ?? hierarchyFilterRef.current);
         return points;
       } finally {
-        if (!silent) setLoadingStorePoints(false);
+        if (!silent && fetchGen === overlayStoreFetchGenRef.current) setLoadingStorePoints(false);
       }
     },
     [applyStoreFetchResult]
@@ -2808,7 +2803,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
     if (!overlayLojas) {
       return;
     }
-    await loadStoreOverlayPoints({ codAg: null, bbox: getCurrentMapBbox() });
+    await loadStoreOverlayPoints({ codAg: null });
   }, [loadStoreOverlayPoints, overlayLojas, resetAgencyStoreFilterSync]);
 
   const selectAgencyForStores = useCallback(
@@ -2823,6 +2818,8 @@ const MapComponent: React.FC<MapComponentProps> = ({
         sqlAgencyPoints.find((p) => normalizeCodAgKey(p.codAg) === normalized) ??
         null;
 
+      setOverlayLojas(false);
+      clearPreparedOverlaySource('region-overlay-lojas');
       storeFilterCodAgRef.current = normalized;
       overlaySeatHierarchyRef.current = null;
       seatLegendHistoryRef.current = [];
@@ -2831,10 +2828,10 @@ const MapComponent: React.FC<MapComponentProps> = ({
       setStoreFilterCodAg(normalized);
       setStoreFilterAgencyName(agencyLabel);
       setPinnedAgencyPoint(pinned);
-      setOverlayLojas(true);
 
       try {
         const linked = await loadStoreOverlayPoints({ codAg: normalized });
+        setOverlayLojas(true);
         if (linked.length === 0) {
           toast({
             title: 'Nenhuma loja vinculada',
@@ -2851,7 +2848,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
         });
       }
     },
-    [loadStoreOverlayPoints, sqlAgencyPoints, toast]
+    [clearPreparedOverlaySource, loadStoreOverlayPoints, sqlAgencyPoints, toast]
   );
 
   useEffect(() => {
@@ -2862,30 +2859,6 @@ const MapComponent: React.FC<MapComponentProps> = ({
     if (!plannerAgencyFocus) return;
     const m = map.current;
     if (!m) return;
-
-    const agencyPoint: SqlMapPoint = {
-      id: plannerAgencyFocus.id,
-      nome: plannerAgencyFocus.nome,
-      kind: 'agencia',
-      lngLat: plannerAgencyFocus.lngLat,
-      codAg: plannerAgencyFocus.codAg,
-      enderecoFormatado: plannerAgencyFocus.enderecoFormatado ?? null,
-    };
-
-    setOverlayAgencias(true);
-    setOverlayLojas(true);
-    setOverlayMarkerSelection({
-      nome: plannerAgencyFocus.nome,
-      sub: 'Agência',
-      kind: 'agencia',
-      codAg: plannerAgencyFocus.codAg,
-      enderecoFormatado: plannerAgencyFocus.enderecoFormatado ?? '',
-    });
-    void selectAgencyForStoresRef.current(
-      plannerAgencyFocus.codAg,
-      plannerAgencyFocus.nome,
-      agencyPoint
-    );
     try {
       m.easeTo({
         center: plannerAgencyFocus.lngLat,
@@ -2903,39 +2876,30 @@ const MapComponent: React.FC<MapComponentProps> = ({
 
   useEffect(() => {
     if (!plannerRouteAgencies) return;
+    plannerOverlayActiveRef.current = true;
     let active = true;
+    const fetchGen = ++overlayStoreFetchGenRef.current;
     const { origin, destination } = plannerRouteAgencies;
-    const corridorBbox = plannerCorridorBbox(
-      origin.lngLat,
-      destination.lngLat,
-      PLANNER_ROUTE_CORRIDOR_KM
-    );
+    const routeId = `planner-preview-${origin.id}-${destination.id}`;
 
-    void Promise.all([
-      fetchStorePoints({ codAg: origin.codAg, hierarchy: null }),
-      fetchStorePoints({ codAg: destination.codAg, hierarchy: null }),
-      fetchStorePoints({ bbox: corridorBbox, limit: 1500, hierarchy: null }),
-    ]).then(([originStores, destinationStores, areaStores]) => {
-      if (!active) return;
+    void (async () => {
       const originKey = normalizeCodAgKey(origin.codAg);
       const destinationKey = normalizeCodAgKey(destination.codAg);
       const pointKey = (point: SqlMapPoint) =>
         `${normalizeCodAgKey(point.codAg)}|${point.lngLat[0].toFixed(6)}|${point.lngLat[1].toFixed(6)}|${point.nome}`;
       const visible = new Map<string, SqlMapPoint>();
+      const routeCoordinatesPromise = fetchDrivingGeometry(routeId, [
+        origin.lngLat,
+        destination.lngLat,
+      ]);
+      const [originStores, destinationStores] = await Promise.all([
+        origin.codAg
+          ? fetchStorePoints({ codAg: origin.codAg, hierarchy: null })
+          : Promise.resolve([] as SqlMapPoint[]),
+        fetchStorePoints({ codAg: destination.codAg, hierarchy: null }),
+      ]);
+      if (!active || fetchGen !== overlayStoreFetchGenRef.current) return;
 
-      for (const point of areaStores) {
-        const codAg = normalizeCodAgKey(point.codAg);
-        if (codAg === originKey || codAg === destinationKey) continue;
-        if (
-          distanceToPlannerSegmentKm(
-            point.lngLat,
-            origin.lngLat,
-            destination.lngLat
-          ) > PLANNER_ROUTE_CORRIDOR_KM
-        ) continue;
-        visible.set(pointKey(point), { ...point, routeRole: 'corridor' });
-        if (visible.size >= 300) break;
-      }
       for (const point of originStores) {
         visible.set(pointKey(point), { ...point, routeRole: 'origin' });
       }
@@ -2945,144 +2909,65 @@ const MapComponent: React.FC<MapComponentProps> = ({
           routeRole: originKey === destinationKey ? 'origin' : 'destination',
         });
       }
-
+      // Mostra imediatamente os Corbans dos dois extremos; o corredor entra
+      // assim que a geometria viária e a consulta espacial terminarem.
       setOverlayAgencias(true);
       setOverlayLojas(true);
       setSqlStorePoints([...visible.values()]);
-    }).catch((error) => {
-      console.error('Falha ao carregar lojas do corredor do roteiro:', error);
+
+      const routeCoordinates =
+        (await routeCoordinatesPromise) ??
+        [origin.lngLat, destination.lngLat];
+      if (!active || fetchGen !== overlayStoreFetchGenRef.current) return;
+
+      const corridorBbox = plannerCorridorBbox(routeCoordinates, PLANNER_ROUTE_CORRIDOR_KM);
+      const areaStores = await fetchStorePoints({
+        bbox: corridorBbox,
+        limit: 1500,
+        hierarchy: null,
+      });
+      if (!active || fetchGen !== overlayStoreFetchGenRef.current) return;
+
+      for (const point of areaStores) {
+        const codAg = normalizeCodAgKey(point.codAg);
+        if (codAg === originKey || codAg === destinationKey) continue;
+        if (distanceToPlannerRouteKm(point.lngLat, routeCoordinates) > PLANNER_ROUTE_CORRIDOR_KM) {
+          continue;
+        }
+        visible.set(pointKey(point), { ...point, routeRole: 'corridor' });
+        if (visible.size >= 300) break;
+      }
+
+      setSqlStorePoints([...visible.values()]);
+    })().catch((error) => {
+      if (active && fetchGen === overlayStoreFetchGenRef.current) {
+        console.error('Falha ao carregar lojas do corredor do roteiro:', error);
+      }
     });
 
     return () => { active = false; };
   }, [plannerRouteAgencies]);
 
-  const refreshOverlayDataForViewport = async (options?: { silent?: boolean; force?: boolean }) => {
-    const silent = options?.silent === true;
-    const force = options?.force === true;
+  useEffect(() => {
+    if (plannerMode || !plannerOverlayActiveRef.current) return;
 
-    if (!force && shouldSkipViewportOverlayRefresh()) {
-      return;
-    }
+    plannerOverlayActiveRef.current = false;
+    plannerRouteAgenciesRef.current = null;
+    ++overlayStoreFetchGenRef.current;
+    storeFilterCodAgRef.current = null;
+    overlayStoreCacheRef.current.clear();
+    loadedStoreScopeRef.current = null;
 
-    const m = map.current;
-    const panelHierarchy = hierarchyFilterRef.current;
-    if (force && hasPanelHierarchyFilter(panelHierarchy)) {
-      if (overlayAgencias) {
-        const gen = ++overlayAgencyFetchGenRef.current;
-        if (!silent) setLoadingAgencyPoints(true);
-        try {
-          const points = await fetchAgencyPoints({ hierarchy: panelHierarchy });
-          if (gen !== overlayAgencyFetchGenRef.current) return;
-          applyAgencyFetchResult(points, 'replace');
-        } catch (error) {
-          if (gen === overlayAgencyFetchGenRef.current) {
-            console.error('Falha ao carregar agências SQL:', error);
-            if (!silent) {
-              toast({
-                title: 'Falha ao carregar agências',
-                description: 'Não foi possível buscar agências no SQL Server.',
-                variant: 'destructive',
-              });
-            }
-          }
-        } finally {
-          if (gen === overlayAgencyFetchGenRef.current && !silent) {
-            setLoadingAgencyPoints(false);
-          }
-        }
-      }
-      if (overlayLojas) {
-        try {
-          await loadStoreOverlayPoints({
-            codAg: null,
-            bbox: null,
-            silent,
-            hierarchy: panelHierarchy,
-          });
-        } catch (error) {
-          console.error('Falha ao carregar lojas SQL:', error);
-          if (!silent) {
-            toast({
-              title: 'Falha ao carregar lojas',
-              description: 'Não foi possível buscar lojas no SQL Server.',
-              variant: 'destructive',
-            });
-          }
-        }
-      }
-      return;
-    }
-
-    const viewport = getCurrentMapBbox();
-    if (!viewport || !m) return;
-
-    const zoom = m.getZoom();
-    const cachedFetchBbox = overlayFetchedBboxCacheRef.current;
-    if (
-      !force &&
-      cachedFetchBbox &&
-      bboxContains(cachedFetchBbox, viewport) &&
-      overlayLastFetchZoomRef.current != null &&
-      Math.abs(zoom - overlayLastFetchZoomRef.current) < OVERLAY_ZOOM_REFETCH_DELTA
-    ) {
-      return;
-    }
-
-    const fetchBbox = expandBbox(viewport);
-    // Reserva o bbox antes do await para pans concorrentes não dispararem o mesmo fetch.
-    overlayFetchedBboxCacheRef.current = fetchBbox;
-    overlayLastFetchZoomRef.current = zoom;
-
-    if (overlayAgencias) {
-      const gen = ++overlayAgencyFetchGenRef.current;
-      if (!silent) setLoadingAgencyPoints(true);
-      try {
-        const points = await fetchAgencyPoints({
-          bbox: fetchBbox,
-          hierarchy: hierarchyFilterRef.current ?? null,
-        });
-        if (gen !== overlayAgencyFetchGenRef.current) return;
-        applyAgencyFetchResult(points, 'merge', fetchBbox);
-      } catch (error) {
-        if (gen === overlayAgencyFetchGenRef.current) {
-          if (overlayFetchedBboxCacheRef.current === fetchBbox) {
-            overlayFetchedBboxCacheRef.current = null;
-          }
-          console.error('Falha ao carregar agências SQL:', error);
-          if (!silent) {
-            toast({
-              title: 'Falha ao carregar agências',
-              description: 'Não foi possível buscar agências no SQL Server.',
-              variant: 'destructive',
-            });
-          }
-        }
-      } finally {
-        if (gen === overlayAgencyFetchGenRef.current && !silent) {
-          setLoadingAgencyPoints(false);
-        }
-      }
-    }
-
-    if (overlayLojas) {
-      try {
-        await loadStoreOverlayPoints({
-          codAg: null,
-          bbox: fetchBbox,
-          silent,
-        });
-      } catch (error) {
-        console.error('Falha ao carregar lojas SQL:', error);
-        if (!silent) {
-          toast({
-            title: 'Falha ao carregar lojas',
-            description: 'Não foi possível buscar lojas no SQL Server.',
-            variant: 'destructive',
-          });
-        }
-      }
-    }
-  };
+    setStoreFilterCodAg(null);
+    setStoreFilterAgencyName(null);
+    setPinnedAgencyPoint(null);
+    setOverlayMarkerSelection(null);
+    setSqlStorePoints([]);
+    setOverlayLojas(false);
+    setOverlayAgencias(false);
+    clearPreparedOverlaySource('region-overlay-lojas');
+    clearPreparedOverlaySource('region-overlay-agencias');
+  }, [plannerMode, clearPreparedOverlaySource]);
 
   const clearSupervisorOverlayFilter = useCallback(async () => {
     const emptyFc: GeoJSON.FeatureCollection = { type: 'FeatureCollection', features: [] };
@@ -3102,18 +2987,12 @@ const MapComponent: React.FC<MapComponentProps> = ({
     setOverlayMarkerSelection(null);
     overlayAgencyCacheRef.current.clear();
     overlayStoreCacheRef.current.clear();
-    overlayFetchedBboxCacheRef.current = null;
-    overlayLastFetchZoomRef.current = null;
     lastOverlayFcSignatureRef.current = {};
     setSqlAgencyPoints([]);
     setSqlStorePoints([]);
     setOverlayAgencias(false);
     setOverlayLojas(false);
 
-    await refreshOverlayDataForViewport({
-      silent: false,
-      force: hasPanelHierarchyFilter(hierarchyFilterRef.current),
-    });
   }, []);
 
   const visibleSearchOptions = useMemo(() => {
@@ -3126,6 +3005,17 @@ const MapComponent: React.FC<MapComponentProps> = ({
         : filterMunicipalitySearchOptions(allMunicipalitiesFcRef.current, searchQuery, 8);
     return [...states.slice(0, 6), ...municipalities.slice(0, 8)];
   }, [searchQuery, stateSearchOptions, municipalitySearchOptions, municipalitiesGeoVersion]);
+
+  // O catálogo nacional possui milhares de polígonos. Carrega somente quando
+  // uma busca municipal realmente precisa dele, em vez de bloquear a abertura.
+  useEffect(() => {
+    if (!searchOpen || normalizeText(searchQuery).length < 2) return;
+    if (municipalitySearchOptions.length > 0) return;
+    if (allMunicipalitiesFcRef.current.features.length > 0) return;
+    void loadAllMunicipalitiesRef.current().catch((error) => {
+      console.warn('Falha ao preparar municípios do Brasil para busca:', error);
+    });
+  }, [searchOpen, searchQuery, municipalitySearchOptions.length, mapReadyVersion]);
 
   const municipalityNamesForTable = useMemo(() => {
     const names =
@@ -3366,52 +3256,36 @@ const MapComponent: React.FC<MapComponentProps> = ({
 
   const handleToggleAgencias = async () => {
     if (overlayAgencias) {
-      // Desligar o overlay não pode apagar a seleção da legenda (equipe comercial):
-      // só limpa os pontos de agência e o toggle.
-      overlayAgencyCacheRef.current.clear();
-      overlayFetchedBboxCacheRef.current = null;
-      overlayLastFetchZoomRef.current = null;
-      if (!overlayLojas) {
-        lastViewportOverlayBboxKeyRef.current = null;
-      }
-      setSqlAgencyPoints([]);
+      // Mantém os dados em memória e apenas oculta a camada.
       setOverlayAgencias(false);
       return;
     }
 
     // Prioriza a hierarquia selecionada na legenda (ex.: gerente comercial em foco);
-    // sem seleção, cai no filtro do painel ou no viewport.
+    // sem seleção, carrega todas as agências disponíveis.
     const seatHierarchy = overlaySeatHierarchyRef.current;
     const activeHierarchy = seatHierarchy ?? hierarchyFilter ?? null;
-    const useHierarchyOnly =
-      Boolean(seatHierarchy) || hasPanelHierarchyFilter(hierarchyFilter);
-
-    const viewport = getCurrentMapBbox();
-    const fetchBbox = viewport ? expandBbox(viewport) : null;
-    if (!useHierarchyOnly && fetchBbox && map.current) {
-      overlayFetchedBboxCacheRef.current = fetchBbox;
-      overlayLastFetchZoomRef.current = map.current.getZoom();
+    const scopeSignature = hierarchyFilterSignature(activeHierarchy);
+    if (loadedAgencyScopeRef.current === scopeSignature) {
+      setOverlayAgencias(true);
+      return;
     }
     setLoadingAgencyPoints(true);
-    setOverlayAgencias(true);
+    setOverlayAgencias(false);
+    clearPreparedOverlaySource('region-overlay-agencias');
     try {
       const points = await fetchAgencyPoints({
-        bbox: useHierarchyOnly ? null : fetchBbox ?? viewport,
         hierarchy: activeHierarchy,
       });
-      if (useHierarchyOnly) {
-        applyAgencyFetchResult(points, 'replace');
-      } else if (fetchBbox) {
-        applyAgencyFetchResult(points, 'merge', fetchBbox);
-      } else {
-        applyAgencyFetchResult(points, 'replace');
-      }
+      applyAgencyFetchResult(points, 'replace');
+      loadedAgencyScopeRef.current = scopeSignature;
+      setOverlayAgencias(true);
       if (points.length === 0) {
         toast({
           title: 'Nenhuma agência nesta área',
           description: hierarchyFilter
             ? 'A API respondeu, mas o filtro da escada comercial não encontrou agências com COD_AG compatível. Limpe os filtros ou ajuste o vínculo COD_AG no SQL.'
-            : 'Verifique o zoom do mapa ou se há agências com coordenadas na região.',
+            : 'Verifique se há agências com coordenadas cadastradas.',
         });
       }
     } catch (error) {
@@ -3483,42 +3357,32 @@ const MapComponent: React.FC<MapComponentProps> = ({
 
   const handleToggleLojas = async () => {
     if (overlayLojas) {
-      // Desligar o overlay não pode apagar a seleção da legenda (equipe comercial):
-      // só limpa filtro de agência-pin, pontos de loja e o toggle.
+      // Mantém os dados em memória e apenas oculta a camada.
       storeFilterCodAgRef.current = null;
       setStoreFilterCodAg(null);
       setStoreFilterAgencyName(null);
       setPinnedAgencyPoint(null);
-      overlayStoreCacheRef.current.clear();
-      overlayFetchedBboxCacheRef.current = null;
-      overlayLastFetchZoomRef.current = null;
-      if (!overlayAgencias) {
-        lastViewportOverlayBboxKeyRef.current = null;
-      }
-      setSqlStorePoints([]);
       setOverlayLojas(false);
       setStoreSegmentMenuOpen(false);
       return;
     }
 
     setStoreFilterCodAg(null);
-    // Com um gerente selecionado na legenda, busca as lojas da hierarquia dele
-    // (loadStoreOverlayPoints resolve via overlaySeatHierarchyRef quando bbox não é passado).
-    const seatHierarchy = overlaySeatHierarchyRef.current;
-    const viewport = getCurrentMapBbox();
-    const fetchBbox = viewport ? expandBbox(viewport) : null;
-    if (!seatHierarchy && fetchBbox && map.current) {
-      overlayFetchedBboxCacheRef.current = fetchBbox;
-      overlayLastFetchZoomRef.current = map.current.getZoom();
-    }
-    setOverlayLojas(true);
+    // Com um gerente selecionado, busca a hierarquia dele; sem seleção,
+    // carrega todas as lojas de uma vez, sem depender da câmera.
     setStoreSegmentMenuOpen(true);
+    const scopeSignature = hierarchyFilterSignature(
+      overlaySeatHierarchyRef.current ?? hierarchyFilter
+    );
+    if (loadedStoreScopeRef.current === scopeSignature) {
+      setOverlayLojas(true);
+      return;
+    }
+    setOverlayLojas(false);
+    clearPreparedOverlaySource('region-overlay-lojas');
     try {
-      await loadStoreOverlayPoints(
-        seatHierarchy
-          ? { codAg: null }
-          : { codAg: null, bbox: fetchBbox ?? viewport }
-      );
+      await loadStoreOverlayPoints({ codAg: null });
+      setOverlayLojas(true);
     } catch (error) {
       console.error('Falha ao carregar lojas SQL:', error);
       setOverlayLojas(false);
@@ -3809,11 +3673,10 @@ const MapComponent: React.FC<MapComponentProps> = ({
           const nextKey = JSON.stringify(hierarchy);
           overlaySeatFilterKeyRef.current = nextKey;
           setOverlaySeatFilterKey(nextKey);
-          overlayFetchedBboxCacheRef.current = null;
-          overlayLastFetchZoomRef.current = null;
-          lastViewportOverlayBboxKeyRef.current = null;
-          setOverlayAgencias(true);
-          setOverlayLojas(true);
+          setOverlayAgencias(false);
+          setOverlayLojas(false);
+          clearPreparedOverlaySource('region-overlay-agencias');
+          clearPreparedOverlaySource('region-overlay-lojas');
           setStoreFilterCodAg(null);
           setStoreFilterAgencyName(null);
           setPinnedAgencyPoint(null);
@@ -3831,6 +3694,11 @@ const MapComponent: React.FC<MapComponentProps> = ({
             ]);
             applyAgencyFetchResult(agencias, 'replace');
             applyStoreFetchResult(lojas, 'replace');
+            const scopeSignature = hierarchyFilterSignature(hierarchy);
+            loadedAgencyScopeRef.current = scopeSignature;
+            loadedStoreScopeRef.current = scopeSignature;
+            setOverlayAgencias(true);
+            setOverlayLojas(true);
             window.setTimeout(() => {
               commitPointFocusBaseline();
             }, MAPBOX_CONFIG.interactive3d.focusDurationMs + 80);
@@ -3939,6 +3807,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
             loadingAllMunicipalitiesRef.current = false;
           }
         };
+        loadAllMunicipalitiesRef.current = loadAllMunicipios;
 
         void fetch(BRAZIL_STATES_GEOJSON)
           .then(async (response) => {
@@ -3983,21 +3852,44 @@ const MapComponent: React.FC<MapComponentProps> = ({
           return applied;
         };
 
-        void tryApplyOutsideBrazilMask();
-        m.once('idle', () => {
-          if (!map.current) return;
-          void (async () => {
-            const applied = await ensureBrazilOutsideMask(map.current!, activeBaseStyle);
-            if (applied) {
-              syncOutsideMaskColorState();
-              disableBasemapClouds(map.current!);
-              scheduleBrazilBasemapLabelTweaks(map.current!);
-              repositionBrazilCutoutLayers(map.current!);
-            }
-          })();
-        });
+        const revealMapAfterMaskedRender = () => {
+          if (
+            initGen !== mapInitGenRef.current ||
+            map.current !== m ||
+            !m.getLayer('brazil-outside-mask-fill')
+          ) {
+            return;
+          }
+          // `idle` só ocorre depois de a fonte GeoJSON da máscara ser processada
+          // e desenhada. A cobertura React sai no frame seguinte.
+          m.once('idle', () => {
+            if (initGen !== mapInitGenRef.current || map.current !== m) return;
+            window.requestAnimationFrame(() => {
+              if (initGen !== mapInitGenRef.current || map.current !== m) return;
+              finishMapTransitionLoading();
+            });
+          });
+          m.triggerRepaint();
+        };
 
-        finishMapTransitionLoading();
+        void tryApplyOutsideBrazilMask().then((applied) => {
+          // Em `load` o estilo normalmente já aceita a máscara. Repetir sempre
+          // no `idle` reenviava os mesmos GeoJSONs e reiniciava o render sem ganho.
+          if (applied) {
+            revealMapAfterMaskedRender();
+            return;
+          }
+          m.once('idle', () => {
+            if (!map.current) return;
+            void ensureBrazilOutsideMask(map.current, activeBaseStyle).then((retried) => {
+              if (!retried || !map.current) return;
+              syncOutsideMaskColorState();
+              disableBasemapClouds(map.current);
+              repositionBrazilCutoutLayers(map.current);
+              revealMapAfterMaskedRender();
+            });
+          });
+        });
 
         m.addSource('structure-people', {
           type: 'geojson',
@@ -4105,7 +3997,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
                   const ctx = map.current.getSource('municipalities-context') as
                     | mapboxgl.GeoJSONSource
                     | undefined;
-                  ctx?.setData(munis);
+                  if (municipalityMeshVisibleRef.current) ctx?.setData(munis);
                   municipalitiesFcRef.current = munis;
                   municipalitiesRawFcRef.current = munis;
                   setMunicipalitySearchOptions(buildMunicipalitySearchOptions(munis, uf));
@@ -4133,6 +4025,14 @@ const MapComponent: React.FC<MapComponentProps> = ({
               return;
             }
             if (!meshSelectionEnabled()) return;
+            // Estado e município ocupam o mesmo ponto. Quando a malha municipal
+            // já está desenhada, deixa o handler municipal ser o único responsável.
+            if (m.getLayer('municipalities-context-fill')) {
+              const municipalityAtPoint = m.queryRenderedFeatures(e.point, {
+                layers: ['municipalities-context-fill'],
+              });
+              if (municipalityAtPoint.length > 0) return;
+            }
             const f = e.features?.[0] as GeoJSON.Feature | undefined;
             if (!f) return;
             applyStateSelection(f);
@@ -4147,9 +4047,6 @@ const MapComponent: React.FC<MapComponentProps> = ({
           m.on('mouseleave', 'br-states-hit', () => {
             m.getCanvas().style.cursor = '';
           });
-          void loadAllMunicipios().catch((err) =>
-            console.warn('Falha ao preparar municípios do Brasil para coropleto:', err)
-          );
         } catch (e) {
           console.warn('Camadas de estados não aplicadas:', e);
         }
@@ -4260,12 +4157,16 @@ const MapComponent: React.FC<MapComponentProps> = ({
             }
 
             if (meshSelectionEnabled()) {
-              const muniByPoly = findMunicipalityFeatureContainingLngLat(
-                municipalitiesFcRef.current,
-                e.lngLat
-              );
-              if (muniByPoly) {
-                selectMunicipalityFeature(muniByPoly);
+              const renderedMunicipality = m.queryRenderedFeatures(e.point, {
+                layers: ['municipalities-context-fill'],
+              })[0] as GeoJSON.Feature | undefined;
+              if (renderedMunicipality) {
+                selectMunicipalityFeature(
+                  resolveFullMunicipalityFromRenderedHit(
+                    renderedMunicipality,
+                    municipalitiesRawFcRef.current
+                  )
+                );
                 return;
               }
             }
@@ -4356,10 +4257,10 @@ const MapComponent: React.FC<MapComponentProps> = ({
             }
             if (!meshSelectionEnabled()) return;
             const direct = (e.features?.[0] as GeoJSON.Feature | undefined) ?? null;
-            const byPoint = findMunicipalityFeatureContainingLngLat(municipalitiesFcRef.current, e.lngLat);
-            const feature = byPoint ?? direct;
-            if (!feature) return;
-            selectMunicipalityFeature(feature);
+            if (!direct) return;
+            selectMunicipalityFeature(
+              resolveFullMunicipalityFromRenderedHit(direct, municipalitiesRawFcRef.current)
+            );
           };
 
           cityClickHandlerRef.current = onMapClick;
@@ -4682,11 +4583,15 @@ const MapComponent: React.FC<MapComponentProps> = ({
           if (!f?.properties || !map.current || !f.geometry || f.geometry.type !== 'Point') return;
           const coordinates = [...(f.geometry.coordinates as [number, number])] as [number, number];
           const info = readAgencyPopupInfoFromProperties(f.properties);
+          const popupHtml =
+            info.kind === 'loja'
+              ? buildStorePopupHtml(readStorePopupInfoFromProperties(f.properties))
+              : buildAgencyPopupHtml(info, { compact: true });
 
           map.current.getCanvas().style.cursor = 'pointer';
           hoverPopup
             .setLngLat(coordinates)
-            .setHTML(buildAgencyPopupHtml(info, { compact: true }))
+            .setHTML(popupHtml)
             .addTo(map.current);
         };
 
@@ -4849,7 +4754,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
       }
       const munis = municipalitiesFcRef.current;
       const ctx = m.getSource('municipalities-context') as mapboxgl.GeoJSONSource | undefined;
-      if (ctx && munis.features.length > 0) {
+      if (ctx && municipalityMeshVisibleRef.current && munis.features.length > 0) {
         try {
           ctx.setData(munis);
         } catch {
@@ -5051,88 +4956,84 @@ const MapComponent: React.FC<MapComponentProps> = ({
   }, [compareSupervisionAreas, mapReadyVersion]);
 
   useEffect(() => {
-    const m = map.current;
-    if (!m) return;
-    if (!overlayAgencias && !overlayLojas) {
-      lastViewportOverlayBboxKeyRef.current = null;
-      return;
-    }
+    clearOverlayPointCaches();
+    loadedAgencyScopeRef.current = null;
+    loadedStoreScopeRef.current = null;
+    const activeHierarchy = overlaySeatHierarchyRef.current ?? hierarchyFilterRef.current ?? null;
+    const scopeSignature = hierarchyFilterSignature(activeHierarchy);
+    const gen = ++overlayAgencyFetchGenRef.current;
+    const storeGen = ++overlayStoreFetchGenRef.current;
 
-    const scheduleViewportDrawTick = () => {
-      if (shouldSkipViewportOverlayRefresh()) return;
-      if (viewportBoundsTickTimerRef.current != null) {
-        window.clearTimeout(viewportBoundsTickTimerRef.current);
+    void Promise.allSettled([
+      fetchAgencyPoints({ hierarchy: activeHierarchy }),
+      fetchStorePoints({ hierarchy: activeHierarchy }),
+    ]).then(([agenciesResult, storesResult]) => {
+      if (gen === overlayAgencyFetchGenRef.current && agenciesResult.status === 'fulfilled') {
+        applyAgencyFetchResult(agenciesResult.value, 'replace');
+        loadedAgencyScopeRef.current = scopeSignature;
+      } else if (gen === overlayAgencyFetchGenRef.current) {
+        console.warn('Pré-carga de agências não concluída:', agenciesResult.reason);
       }
-      viewportBoundsTickTimerRef.current = window.setTimeout(() => {
-        setViewportBoundsTick((t) => t + 1);
-        viewportBoundsTickTimerRef.current = null;
-      }, OVERLAY_VIEWPORT_DRAW_DEBOUNCE_MS);
-    };
-
-    const scheduleRefresh = () => {
-      scheduleViewportDrawTick();
-      if (shouldSkipViewportOverlayRefresh()) return;
-      if (refreshTimerRef.current != null) {
-        window.clearTimeout(refreshTimerRef.current);
+      if (
+        storeGen === overlayStoreFetchGenRef.current &&
+        plannerRouteAgenciesRef.current == null &&
+        storesResult.status === 'fulfilled'
+      ) {
+        applyStoreFetchResult(storesResult.value, 'replace');
+        loadedStoreScopeRef.current = scopeSignature;
+      } else if (
+        storeGen === overlayStoreFetchGenRef.current &&
+        plannerRouteAgenciesRef.current == null
+      ) {
+        console.warn('Pré-carga de lojas não concluída:', storesResult.reason);
       }
-      refreshTimerRef.current = window.setTimeout(() => {
-        void refreshOverlayDataForViewport({ silent: true });
-      }, OVERLAY_MOVEEND_DEBOUNCE_MS);
-    };
-
-    m.on('moveend', scheduleRefresh);
-    return () => {
-      m.off('moveend', scheduleRefresh);
-      if (refreshTimerRef.current != null) {
-        window.clearTimeout(refreshTimerRef.current);
-        refreshTimerRef.current = null;
-      }
-      if (viewportBoundsTickTimerRef.current != null) {
-        window.clearTimeout(viewportBoundsTickTimerRef.current);
-        viewportBoundsTickTimerRef.current = null;
-      }
-    };
-  }, [overlayAgencias, overlayLojas, mapReadyVersion, hierarchyFilter]);
-
-  useEffect(() => {
-    if (!overlayAgencias && !overlayLojas) return;
-    clearOverlayViewportCaches();
-    void refreshOverlayDataForViewport({
-      silent: true,
-      force: hasPanelHierarchyFilter(hierarchyFilter),
     });
-  }, [hierarchyFilter, clearOverlayViewportCaches]);
+  }, [hierarchyFilter, clearOverlayPointCaches, applyAgencyFetchResult, applyStoreFetchResult]);
 
   useEffect(() => {
     const m = map.current;
     if (!m) return;
-    const empty: GeoJSON.FeatureCollection = { type: 'FeatureCollection', features: [] };
     const applyOverlaySources = () => {
       const mapInst = map.current;
       if (!mapInst) return;
       const apply = (
         sourceId: string,
-        active: boolean,
+        layerId: string,
+        visible: boolean,
         points: Parameters<typeof regionPointsToFeatureCollection>[0]
       ) => {
+        if (mapInst.getLayer(layerId)) {
+          try {
+            mapInst.setLayoutProperty(layerId, 'visibility', visible ? 'visible' : 'none');
+          } catch {
+            /* estilo recarregando */
+          }
+        }
         const src = mapInst.getSource(sourceId) as mapboxgl.GeoJSONSource | undefined;
         if (!src) return;
-        if (!active) {
-          lastOverlayFcSignatureRef.current[sourceId] = '';
-          src.setData(empty);
-          return;
-        }
-
         const signature = overlayPointsSignature(points);
-        if (lastOverlayFcSignatureRef.current[sourceId] === signature) {
-          return;
-        }
+        if (lastOverlayFcSignatureRef.current[sourceId] === signature) return;
         lastOverlayFcSignatureRef.current[sourceId] = signature;
         src.setData(regionPointsToFeatureCollection(points));
       };
-      apply('region-overlay-agencias', overlayAgencias, filteredRegionAgencias);
-      apply('region-overlay-supervisores', overlaySupervisores, filteredRegionSupervisores);
-      apply('region-overlay-lojas', overlayLojas, filteredRegionLojas);
+      apply(
+        'region-overlay-agencias',
+        'region-overlay-agencias-cir',
+        overlayAgencias,
+        filteredRegionAgencias
+      );
+      apply(
+        'region-overlay-supervisores',
+        'region-overlay-supervisores-cir',
+        overlaySupervisores,
+        filteredRegionSupervisores
+      );
+      apply(
+        'region-overlay-lojas',
+        'region-overlay-lojas-cir',
+        overlayLojas,
+        filteredRegionLojas
+      );
     };
 
     return runWhenMapStyleReady(m, applyOverlaySources);
@@ -5361,6 +5262,18 @@ const MapComponent: React.FC<MapComponentProps> = ({
     const m = map.current;
     if (!m?.isStyleLoaded()) return;
     const visibility = municipalityMeshVisible ? 'visible' : 'none';
+    const contextSource = m.getSource('municipalities-context') as
+      | mapboxgl.GeoJSONSource
+      | undefined;
+    try {
+      contextSource?.setData(
+        municipalityMeshVisible
+          ? municipalitiesFcRef.current
+          : { type: 'FeatureCollection', features: [] }
+      );
+    } catch {
+      /* estilo recarregando */
+    }
     for (const layerId of ['municipalities-context-fill', 'municipalities-context-line'] as const) {
       if (!m.getLayer(layerId)) continue;
       try {
@@ -5458,13 +5371,15 @@ const MapComponent: React.FC<MapComponentProps> = ({
   /** Camada do roteiro de visitas (linha + paradas numeradas por status). */
   useEffect(() => {
     const m = map.current;
-    if (!m?.isStyleLoaded()) return;
-    syncVisitRouteOnMap(m, visitRoute, selectedVisitStopId, (stopId) => {
-      onVisitStopSelectRef.current?.(stopId);
+    if (!m) return;
+    const cancelSync = runWhenMapStyleReady(m, () => {
+      syncVisitRouteOnMap(m, visitRoute, selectedVisitStopId, (stopId) => {
+        onVisitStopSelectRef.current?.(stopId);
+      });
     });
     if (!visitRoute) {
       visitRouteFitIdRef.current = null;
-      return;
+      return cancelSync;
     }
     if (visitRouteFitIdRef.current !== visitRoute.id) {
       visitRouteFitIdRef.current = visitRoute.id;
@@ -5486,6 +5401,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
         }
       }
     }
+    return cancelSync;
   }, [visitRoute, selectedVisitStopId, mapReadyVersion, plannerMode]);
 
   /** Foco de câmera pedido pelos painéis ("Abrir no mapa" / "Ver roteiro completo"). */
@@ -5509,6 +5425,8 @@ const MapComponent: React.FC<MapComponentProps> = ({
         } catch {
           /* viewport pequena para o padding */
         }
+      } else if (visitRoute.origin) {
+        animateToPointFocus(m, [visitRoute.origin.lng, visitRoute.origin.lat]);
       }
       return;
     }

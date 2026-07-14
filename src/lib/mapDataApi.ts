@@ -14,6 +14,15 @@ export interface SqlMapPoint {
   chaveEntidade?: number | null;
   seatColor?: string | null;
   routeRole?: 'origin' | 'destination' | 'corridor' | null;
+  chaveLoja?: string | null;
+  statusTablet?: string | null;
+  dataBloqueio?: string | null;
+  motivoBloqueio?: string | null;
+  tipoPosto?: string | null;
+  segmento?: string | null;
+  dataUltimaTransacao?: string | null;
+  cieloM0?: boolean | null;
+  checklist?: boolean | null;
 }
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? '';

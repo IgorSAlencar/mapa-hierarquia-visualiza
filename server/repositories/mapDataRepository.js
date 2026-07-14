@@ -137,8 +137,19 @@ export async function fetchStoreCoordinates({ bbox = null, limit = null, codAg =
       l.CHAVE_LOJA,
       l.COD_AG,
       CAST(l.LONGITUDE AS float) AS lon,
-      CAST(l.LATITUDE AS float) AS lat
+      CAST(l.LATITUDE AS float) AS lat,
+      be.NOME_LOJA,
+      be.STATUS_TABLET,
+      be.DT_BLOQUEIO,
+      be.MOTIVO_BLOQUEIO,
+      be.TIPO_POSTO,
+      be.DESC_SEGTO,
+      be.DT_ULT_TRX,
+      be.CIELO_M0,
+      be.CHECKLIST
     FROM TESTE..TB_COORD_BE_IGOR AS l
+    INNER JOIN DATALAKE..DL_BRADESCO_EXPRESSO AS be
+      ON be.CHAVE_LOJA = l.CHAVE_LOJA
     WHERE l.LONGITUDE IS NOT NULL
       AND l.LATITUDE IS NOT NULL
       ${codAgSql}
