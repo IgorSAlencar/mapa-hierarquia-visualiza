@@ -15,6 +15,8 @@ export interface SqlMapPoint {
   seatColor?: string | null;
   routeRole?: 'origin' | 'destination' | 'corridor' | null;
   chaveLoja?: string | null;
+  municipio?: string | null;
+  uf?: string | null;
   statusTablet?: string | null;
   dataBloqueio?: string | null;
   motivoBloqueio?: string | null;
@@ -23,6 +25,26 @@ export interface SqlMapPoint {
   dataUltimaTransacao?: string | null;
   cieloM0?: boolean | null;
   checklist?: boolean | null;
+}
+
+export interface StoreProductionPoint {
+  periodo: number;
+  qtdTrxContabil: number;
+  qtdContas: number;
+  qtdConsig: number;
+  qtdLime: number;
+  qtdCreditoParcelado: number;
+  qtdCartao: number;
+  qtdFgts: number;
+  qtdVida: number;
+  qtdMicro: number;
+  qtdResidencial: number;
+  qtdDental: number;
+  qtdSuper: number;
+  qtdSegDebito: number;
+  qtdCred: number;
+  vlrCred: number;
+  segTotal: number;
 }
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? '';
@@ -37,6 +59,8 @@ export interface BboxQuery {
 interface FetchPointsOptions {
   bbox?: BboxQuery | null;
   limit?: number;
+  /** Ordena consultas espaciais do ponto mais próximo para o mais distante do centro da bbox. */
+  sortByCenter?: boolean;
   hierarchy?: SqlHierarchyFilter | null;
   /** Filtra lojas vinculadas à agência (COD_AG em TB_COORD_BE_IGOR). */
   codAg?: string | null;
@@ -53,6 +77,7 @@ function buildQueryParams(options: FetchPointsOptions = {}) {
   if (options.limit && Number.isFinite(options.limit)) {
     params.set('limit', String(Math.max(1, Math.round(options.limit))));
   }
+  if (options.sortByCenter && options.bbox) params.set('sortByCenter', '1');
   const codAgRaw = options.codAg != null ? String(options.codAg).trim() : '';
   const codAgNum = Number(codAgRaw.replace(',', '.'));
   const codAg =
@@ -112,4 +137,31 @@ export function fetchStorePoints(options?: FetchPointsOptions) {
 
 export function fetchCommercialSeatPoints(options?: FetchPointsOptions) {
   return fetchPoints('/api/map/sedes', options);
+}
+
+export async function fetchStoreProductionHistory(
+  chaveLoja: string,
+  signal?: AbortSignal
+): Promise<StoreProductionPoint[]> {
+  const key = String(chaveLoja ?? '').trim();
+  if (!key) return [];
+
+  const url = `${API_BASE_URL}/api/map/lojas/${encodeURIComponent(key)}/producao`;
+  let response: Response;
+  try {
+    response = await fetch(url, { signal });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') throw error;
+    const detail = error instanceof Error ? ` Detalhe: ${error.message}` : '';
+    throw new Error(
+      `Não foi possível conectar à API de produção da loja.${detail}`
+    );
+  }
+
+  if (!response.ok) {
+    throw new Error(`Falha ao buscar a produção da loja (${response.status}).`);
+  }
+
+  const data = (await response.json()) as { history?: StoreProductionPoint[] };
+  return Array.isArray(data.history) ? data.history : [];
 }

@@ -25,6 +25,7 @@ import {
 import {
   buildStorePopupHtml,
   readStorePopupInfoFromProperties,
+  type StorePopupInfo,
 } from '@/components/StoreInfoPopup';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
@@ -1058,7 +1059,11 @@ function clearRegionOverlaySources(m: mapboxgl.Map) {
 }
 
 const AGENCY_CLICK_LAYER_IDS = ['region-overlay-agencias-cir', 'structure-agencies-point'] as const;
-const LOJA_CLICK_LAYER_IDS = ['region-overlay-lojas-cir'] as const;
+const LOJA_CLICK_LAYER_IDS = [
+  'planner-selected-lojas-cir',
+  'planner-route-lojas-cir',
+  'region-overlay-lojas-cir',
+] as const;
 /** Bolinhas de gerentes — sempre acima de agências/lojas no mapa. */
 const MANAGER_CIRCLE_LAYER_IDS = [
   'region-overlay-supervisores-cir',
@@ -1071,6 +1076,8 @@ const MANAGER_CIRCLE_LAYER_IDS = [
  */
 const MARKER_LAYER_STACK_BOTTOM_TO_TOP = [
   'region-overlay-lojas-cir',
+  'planner-route-lojas-cir',
+  'planner-selected-lojas-cir',
   'structure-agencies-clusters',
   'structure-agencies-cluster-count',
   'structure-agencies-point',
@@ -1182,6 +1189,21 @@ const MARKER_CIRCLE_RADIUS_HIGHLIGHT: mapboxgl.ExpressionSpecification = [
   11,
   14,
   14,
+];
+
+/** Destaque da oportunidade: intermediário entre a loja comum e o ponto inicial. */
+const PLANNER_SELECTED_STORE_CIRCLE_RADIUS: mapboxgl.ExpressionSpecification = [
+  'interpolate',
+  ['linear'],
+  ['zoom'],
+  3,
+  4.5,
+  6,
+  6,
+  10,
+  8.25,
+  14,
+  11,
 ];
 
 /** Lojas ~70% do raio das agências/gerentes. */
@@ -1589,7 +1611,46 @@ function resolveSeatPointsFetchHierarchy(
   return panel ?? null;
 }
 
-const PLANNER_ROUTE_CORRIDOR_KM = 15;
+/** Distância máxima das lojas cinzas até a rota: 20 km para cada lado. */
+const PLANNER_ROUTE_CORRIDOR_KM = 20;
+const EMPTY_PLANNER_SELECTED_STORE_IDS: string[] = [];
+
+function plannerTerritoryFeatureCollection(
+  focus: { center: [number, number]; radiusKm: number } | null
+): GeoJSON.FeatureCollection {
+  if (!focus || focus.radiusKm <= 0) {
+    return { type: 'FeatureCollection', features: [] };
+  }
+
+  const [centerLng, centerLat] = focus.center;
+  const earthRadiusKm = 6371.0088;
+  const angularDistance = focus.radiusKm / earthRadiusKm;
+  const centerLatRad = (centerLat * Math.PI) / 180;
+  const centerLngRad = (centerLng * Math.PI) / 180;
+  const ring: [number, number][] = [];
+
+  for (let index = 0; index <= 96; index += 1) {
+    const bearing = (index / 96) * Math.PI * 2;
+    const latitude = Math.asin(
+      Math.sin(centerLatRad) * Math.cos(angularDistance) +
+      Math.cos(centerLatRad) * Math.sin(angularDistance) * Math.cos(bearing)
+    );
+    const longitude = centerLngRad + Math.atan2(
+      Math.sin(bearing) * Math.sin(angularDistance) * Math.cos(centerLatRad),
+      Math.cos(angularDistance) - Math.sin(centerLatRad) * Math.sin(latitude)
+    );
+    ring.push([(longitude * 180) / Math.PI, (latitude * 180) / Math.PI]);
+  }
+
+  return {
+    type: 'FeatureCollection',
+    features: [{
+      type: 'Feature',
+      properties: { radius_km: focus.radiusKm },
+      geometry: { type: 'Polygon', coordinates: [ring] },
+    }],
+  };
+}
 
 function plannerCorridorBbox(
   coordinates: [number, number][],
@@ -1735,11 +1796,22 @@ interface MapComponentProps {
     destination: {
       id: string;
       nome: string;
-      codAg: string;
+      codAg?: string;
       lngLat: [number, number];
       enderecoFormatado?: string;
     };
   } | null;
+  plannerTerritoryFocus?: {
+    center: [number, number];
+    radiusKm: number;
+  } | null;
+  plannerSelectedStoreIds?: string[];
+  plannerOpportunityFocus?: {
+    tick: number;
+    id: string;
+    lngLat: [number, number];
+  } | null;
+  onPlannerStoresChange?: (points: SqlMapPoint[]) => void;
   /** Painéis flutuantes do Navegar (abaixo da UI do mapa: busca, AG, lojas, equipe). */
   navigatorOverlays?: React.ReactNode;
 }
@@ -1916,6 +1988,10 @@ const MapComponent: React.FC<MapComponentProps> = ({
   onPlannerTerritorySelect,
   plannerAgencyFocus = null,
   plannerRouteAgencies = null,
+  plannerTerritoryFocus = null,
+  plannerSelectedStoreIds = EMPTY_PLANNER_SELECTED_STORE_IDS,
+  plannerOpportunityFocus = null,
+  onPlannerStoresChange,
   navigatorOverlays,
 }) => {
   // O pai pode recriar o objeto em qualquer render (por exemplo, ao arrastar um
@@ -2019,6 +2095,8 @@ const MapComponent: React.FC<MapComponentProps> = ({
     Array<{ chave: number; descricao: string }>
   >([]);
   const [sqlStorePoints, setSqlStorePoints] = useState<SqlMapPoint[]>([]);
+  /** Lojas temporárias do planejador; não altera os toggles/filtros globais do mapa. */
+  const [plannerStorePoints, setPlannerStorePoints] = useState<SqlMapPoint[]>([]);
   const [loadingAgencyPoints, setLoadingAgencyPoints] = useState(false);
   const [loadingSeatPoints, setLoadingSeatPoints] = useState(false);
   const [loadingStorePoints, setLoadingStorePoints] = useState(false);
@@ -2027,7 +2105,9 @@ const MapComponent: React.FC<MapComponentProps> = ({
   const [storeFilterAgencyName, setStoreFilterAgencyName] = useState<string | null>(null);
   const [pinnedAgencyPoint, setPinnedAgencyPoint] = useState<SqlMapPoint | null>(null);
   /** Detalhe do marcador clicado (barra inferior); hover continua no popup do mapa. */
-  const [overlayMarkerSelection, setOverlayMarkerSelection] = useState<AgencyPopupInfo | null>(null);
+  const [overlayMarkerSelection, setOverlayMarkerSelection] = useState<
+    AgencyPopupInfo | StorePopupInfo | null
+  >(null);
   const storeFilterCodAgRef = useRef<string | null>(null);
   const overlaySeatHierarchyRef = useRef<SqlHierarchyFilter | null>(null);
   const hierarchyFilterRef = useRef<SqlHierarchyFilter | null | undefined>(hierarchyFilter);
@@ -2036,9 +2116,6 @@ const MapComponent: React.FC<MapComponentProps> = ({
   >(async () => {});
   const overlayAgencyCacheRef = useRef(new Map<string, SqlMapPoint>());
   const overlayStoreCacheRef = useRef(new Map<string, SqlMapPoint>());
-  const plannerRouteAgenciesRef = useRef(plannerRouteAgencies);
-  const plannerOverlayActiveRef = useRef(false);
-  plannerRouteAgenciesRef.current = plannerRouteAgencies;
   const loadedAgencyScopeRef = useRef<string | null>(null);
   const loadedStoreScopeRef = useRef<string | null>(null);
   const lastOverlayFcSignatureRef = useRef<Record<string, string>>({});
@@ -2054,6 +2131,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
   /** Gerações de fetch: ignora respostas antigas e permite pan durante loading. */
   const overlayAgencyFetchGenRef = useRef(0);
   const overlayStoreFetchGenRef = useRef(0);
+  const plannerStoreFetchGenRef = useRef(0);
   const mapInitGenRef = useRef(0);
   const [overlaySeatFilterKey, setOverlaySeatFilterKey] = useState<string | null>(null);
   /** Histórico de filtros da legenda para o botão Voltar (GG → GC III → GC). */
@@ -2568,28 +2646,24 @@ const MapComponent: React.FC<MapComponentProps> = ({
   const seatLegendGc3Detail = seatLegendCoordenacaoFilter != null;
   const seatLegendGgDetail = seatLegendGerenciaFilter != null;
   const filteredRegionLojas = useMemo(() => {
-    const plannerCorridorActive = plannerRouteAgencies != null;
     const visibleSegments = new Set(selectedStoreSegments);
     const applySegmentFilter = (points: SqlMapPoint[]) =>
       points.filter((point) => visibleSegments.has(resolveStoreSegment(point)));
 
-    const agencyKey = plannerCorridorActive ? '' : normalizeCodAgKey(storeFilterCodAg);
+    const agencyKey = normalizeCodAgKey(storeFilterCodAg);
     const storesInAgency = agencyKey
       ? sqlStorePoints.filter((point) => normalizeCodAgKey(point.codAg) === agencyKey)
       : sqlStorePoints;
 
-    const visibleByArea = plannerCorridorActive
-      ? storesInAgency
-      : filterRegionMapPoints(
-          storesInAgency,
-          selectedMunicipalityFeature,
-          selectedStateFeature
-        );
-    return plannerCorridorActive ? visibleByArea : applySegmentFilter(visibleByArea);
+    const visibleByArea = filterRegionMapPoints(
+      storesInAgency,
+      selectedMunicipalityFeature,
+      selectedStateFeature
+    );
+    return applySegmentFilter(visibleByArea);
   }, [
     sqlStorePoints,
     storeFilterCodAg,
-    plannerRouteAgencies,
     selectedMunicipalityFeature,
     selectedStateFeature,
     selectedStoreSegments,
@@ -2641,7 +2715,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
       m.fitBounds(bounds, {
         padding: 72,
         maxZoom: points.length === 1 ? 14 : 12,
-        duration: 650,
+        duration: 300,
       });
     } catch {
       /* ignore */
@@ -2866,7 +2940,9 @@ const MapComponent: React.FC<MapComponentProps> = ({
         pitch: 45,
         bearing: m.getBearing(),
         offset: MAPBOX_CONFIG.interactive3d.focusOffset,
-        duration: 1200,
+        // Foco direto para a agência, sem desaceleração perceptível no final.
+        duration: 180,
+        easing: (progress) => progress,
         essential: true,
       });
     } catch {
@@ -2875,12 +2951,209 @@ const MapComponent: React.FC<MapComponentProps> = ({
   }, [plannerAgencyFocus]);
 
   useEffect(() => {
-    if (!plannerRouteAgencies) return;
-    plannerOverlayActiveRef.current = true;
+    if (!plannerMode || !plannerOpportunityFocus) return;
+    const m = map.current;
+    if (!m) return;
+
+    const focusOpportunity = () => {
+      const mapInst = map.current;
+      if (!mapInst) return;
+      const mapRect = mapInst.getContainer().getBoundingClientRect();
+      const panelRect = document
+        .querySelector<HTMLElement>('[data-route-planner-results]')
+        ?.getBoundingClientRect();
+      const padding = { top: 40, bottom: 40, left: 40, right: 80 };
+      const panelOverlapsMap = panelRect
+        && panelRect.right > mapRect.left
+        && panelRect.left < mapRect.right
+        && panelRect.bottom > mapRect.top
+        && panelRect.top < mapRect.bottom;
+      if (panelOverlapsMap) {
+        const panelOnLeft = panelRect.left <= mapRect.left + mapRect.width / 2;
+        const minimumVisibleWidth = 180;
+        if (panelOnLeft) {
+          const coveredWidth = Math.max(0, panelRect.right - mapRect.left + 20);
+          padding.left = Math.min(
+            coveredWidth,
+            Math.max(40, mapRect.width - padding.right - minimumVisibleWidth)
+          );
+        } else {
+          const coveredWidth = Math.max(0, mapRect.right - panelRect.left + 20);
+          padding.right = Math.min(
+            coveredWidth,
+            Math.max(40, mapRect.width - padding.left - minimumVisibleWidth)
+          );
+        }
+      }
+
+      try {
+        mapInst.stop();
+        mapInst.easeTo({
+          center: plannerOpportunityFocus.lngLat,
+          zoom: Math.max(mapInst.getZoom(), 10),
+          bearing: mapInst.getBearing(),
+          pitch: mapInst.getPitch(),
+          padding,
+          retainPadding: false,
+          duration: 180,
+          easing: (progress) => progress,
+          essential: true,
+        });
+      } catch {
+        /* mapa ainda ajustando o estilo */
+      }
+    };
+
+    return runWhenMapStyleReady(m, focusOpportunity);
+  }, [mapReadyVersion, plannerMode, plannerOpportunityFocus]);
+
+  useEffect(() => {
+    if (!plannerMode || !plannerAgencyFocus || plannerRouteAgencies || plannerTerritoryFocus) return;
+    const fetchGen = ++plannerStoreFetchGenRef.current;
+    const agencyKey = normalizeCodAgKey(plannerAgencyFocus.codAg);
+    const frameOriginStores = (points: SqlMapPoint[]) => {
+      if (points.length === 0) return;
+      const mapInst = map.current;
+      if (!mapInst) return;
+      const coordinates = [plannerAgencyFocus.lngLat, ...points.map((point) => point.lngLat)];
+      const lngs = coordinates.map(([lng]) => lng);
+      const lats = coordinates.map(([, lat]) => lat);
+      const wideViewport = mapInst.getContainer().clientWidth >= 900;
+      try {
+        mapInst.fitBounds(
+          [
+            [Math.min(...lngs), Math.min(...lats)],
+            [Math.max(...lngs), Math.max(...lats)],
+          ],
+          {
+            padding: { top: 60, bottom: 60, left: wideViewport ? 480 : 60, right: 80 },
+            maxZoom: 10,
+            duration: 180,
+            essential: true,
+          }
+        );
+      } catch {
+        /* mapa ainda ajustando o estilo */
+      }
+    };
+    const cached = [...overlayStoreCacheRef.current.values()]
+      .filter((point) => normalizeCodAgKey(point.codAg) === agencyKey)
+      .map((point) => ({ ...point, routeRole: 'origin' as const }));
+
+    // O cache pré-aquecido dá resposta imediata; a consulta abaixo confirma
+    // o conjunto completo sem interferir no overlay global de lojas.
+    setPlannerStorePoints(cached);
+    frameOriginStores(cached);
+    void fetchStorePoints({ codAg: plannerAgencyFocus.codAg, hierarchy: null })
+      .then((points) => {
+        if (fetchGen !== plannerStoreFetchGenRef.current) return;
+        const originStores = points.map((point) => ({ ...point, routeRole: 'origin' as const }));
+        setPlannerStorePoints(originStores);
+        frameOriginStores(originStores);
+      })
+      .catch((error) => {
+        if (fetchGen === plannerStoreFetchGenRef.current) {
+          console.error('Falha ao carregar lojas da origem do roteiro:', error);
+        }
+      });
+  }, [plannerAgencyFocus, plannerMode, plannerRouteAgencies, plannerTerritoryFocus]);
+
+  useEffect(() => {
+    if (!plannerMode || !plannerTerritoryFocus) return;
+    const mapInst = map.current;
+    if (!mapInst) return;
+    const [lng, lat] = plannerTerritoryFocus.center;
+    const latPad = plannerTerritoryFocus.radiusKm / 111;
+    const lngPad = plannerTerritoryFocus.radiusKm /
+      Math.max(20, 111 * Math.cos((lat * Math.PI) / 180));
+    const wideViewport = mapInst.getContainer().clientWidth >= 900;
+
+    try {
+      mapInst.fitBounds(
+        [
+          [lng - lngPad, lat - latPad],
+          [lng + lngPad, lat + latPad],
+        ],
+        {
+          padding: { top: 64, bottom: 64, left: wideViewport ? 480 : 64, right: 80 },
+          maxZoom: 13,
+          duration: 220,
+          essential: true,
+        }
+      );
+    } catch {
+      /* mapa ainda ajustando o estilo */
+    }
+  }, [plannerMode, plannerTerritoryFocus]);
+
+  useEffect(() => {
+    const mapInst = map.current;
+    if (!mapInst) return;
+    const visible = plannerMode && plannerTerritoryFocus != null;
+    const featureCollection = plannerTerritoryFeatureCollection(
+      visible ? plannerTerritoryFocus : null
+    );
+
+    return runWhenMapStyleReady(mapInst, () => {
+      const currentMap = map.current;
+      if (!currentMap) return;
+      const source = currentMap.getSource('planner-territory-area') as
+        | mapboxgl.GeoJSONSource
+        | undefined;
+      source?.setData(featureCollection);
+      for (const layerId of ['planner-territory-area-fill', 'planner-territory-area-line']) {
+        if (!currentMap.getLayer(layerId)) continue;
+        currentMap.setLayoutProperty(layerId, 'visibility', visible ? 'visible' : 'none');
+      }
+    });
+  }, [mapReadyVersion, plannerMode, plannerTerritoryFocus]);
+
+  useEffect(() => {
+    if (!plannerMode || !plannerTerritoryFocus) return;
     let active = true;
-    const fetchGen = ++overlayStoreFetchGenRef.current;
+    const fetchGen = ++plannerStoreFetchGenRef.current;
+    const { center, radiusKm } = plannerTerritoryFocus;
+    const originKey = normalizeCodAgKey(plannerAgencyFocus?.codAg);
+    const bbox = plannerCorridorBbox([center], radiusKm);
+    setPlannerStorePoints([]);
+
+    void fetchStorePoints({
+      bbox,
+      hierarchy: null,
+    })
+      .then((points) => {
+        if (!active || fetchGen !== plannerStoreFetchGenRef.current) return;
+        const territoryStores = points
+          .map((point) => ({
+            point,
+            distanceKm: distanceToPlannerSegmentKm(point.lngLat, center, center),
+          }))
+          .filter(({ distanceKm }) => distanceKm <= radiusKm)
+          .sort((a, b) => a.distanceKm - b.distanceKm)
+          .map(({ point }) => ({
+            ...point,
+            routeRole: originKey && normalizeCodAgKey(point.codAg) === originKey
+              ? 'origin' as const
+              : 'corridor' as const,
+          }));
+        setPlannerStorePoints(territoryStores);
+      })
+      .catch((error) => {
+        if (active && fetchGen === plannerStoreFetchGenRef.current) {
+          console.error('Falha ao carregar lojas do território do roteiro:', error);
+        }
+      });
+
+    return () => { active = false; };
+  }, [plannerAgencyFocus?.codAg, plannerMode, plannerTerritoryFocus]);
+
+  useEffect(() => {
+    if (!plannerRouteAgencies) return;
+    let active = true;
+    const fetchGen = ++plannerStoreFetchGenRef.current;
     const { origin, destination } = plannerRouteAgencies;
     const routeId = `planner-preview-${origin.id}-${destination.id}`;
+    setPlannerStorePoints([]);
 
     void (async () => {
       const originKey = normalizeCodAgKey(origin.codAg);
@@ -2896,9 +3169,11 @@ const MapComponent: React.FC<MapComponentProps> = ({
         origin.codAg
           ? fetchStorePoints({ codAg: origin.codAg, hierarchy: null })
           : Promise.resolve([] as SqlMapPoint[]),
-        fetchStorePoints({ codAg: destination.codAg, hierarchy: null }),
+        destination.codAg
+          ? fetchStorePoints({ codAg: destination.codAg, hierarchy: null })
+          : Promise.resolve([] as SqlMapPoint[]),
       ]);
-      if (!active || fetchGen !== overlayStoreFetchGenRef.current) return;
+      if (!active || fetchGen !== plannerStoreFetchGenRef.current) return;
 
       for (const point of originStores) {
         visible.set(pointKey(point), { ...point, routeRole: 'origin' });
@@ -2911,14 +3186,12 @@ const MapComponent: React.FC<MapComponentProps> = ({
       }
       // Mostra imediatamente os Corbans dos dois extremos; o corredor entra
       // assim que a geometria viária e a consulta espacial terminarem.
-      setOverlayAgencias(true);
-      setOverlayLojas(true);
-      setSqlStorePoints([...visible.values()]);
+      setPlannerStorePoints([...visible.values()]);
 
       const routeCoordinates =
         (await routeCoordinatesPromise) ??
         [origin.lngLat, destination.lngLat];
-      if (!active || fetchGen !== overlayStoreFetchGenRef.current) return;
+      if (!active || fetchGen !== plannerStoreFetchGenRef.current) return;
 
       const corridorBbox = plannerCorridorBbox(routeCoordinates, PLANNER_ROUTE_CORRIDOR_KM);
       const areaStores = await fetchStorePoints({
@@ -2926,7 +3199,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
         limit: 1500,
         hierarchy: null,
       });
-      if (!active || fetchGen !== overlayStoreFetchGenRef.current) return;
+      if (!active || fetchGen !== plannerStoreFetchGenRef.current) return;
 
       for (const point of areaStores) {
         const codAg = normalizeCodAgKey(point.codAg);
@@ -2938,9 +3211,9 @@ const MapComponent: React.FC<MapComponentProps> = ({
         if (visible.size >= 300) break;
       }
 
-      setSqlStorePoints([...visible.values()]);
+      setPlannerStorePoints([...visible.values()]);
     })().catch((error) => {
-      if (active && fetchGen === overlayStoreFetchGenRef.current) {
+      if (active && fetchGen === plannerStoreFetchGenRef.current) {
         console.error('Falha ao carregar lojas do corredor do roteiro:', error);
       }
     });
@@ -2949,25 +3222,14 @@ const MapComponent: React.FC<MapComponentProps> = ({
   }, [plannerRouteAgencies]);
 
   useEffect(() => {
-    if (plannerMode || !plannerOverlayActiveRef.current) return;
+    if (plannerMode && (plannerAgencyFocus || plannerRouteAgencies)) return;
+    ++plannerStoreFetchGenRef.current;
+    setPlannerStorePoints([]);
+  }, [plannerMode, plannerAgencyFocus, plannerRouteAgencies]);
 
-    plannerOverlayActiveRef.current = false;
-    plannerRouteAgenciesRef.current = null;
-    ++overlayStoreFetchGenRef.current;
-    storeFilterCodAgRef.current = null;
-    overlayStoreCacheRef.current.clear();
-    loadedStoreScopeRef.current = null;
-
-    setStoreFilterCodAg(null);
-    setStoreFilterAgencyName(null);
-    setPinnedAgencyPoint(null);
-    setOverlayMarkerSelection(null);
-    setSqlStorePoints([]);
-    setOverlayLojas(false);
-    setOverlayAgencias(false);
-    clearPreparedOverlaySource('region-overlay-lojas');
-    clearPreparedOverlaySource('region-overlay-agencias');
-  }, [plannerMode, clearPreparedOverlaySource]);
+  useEffect(() => {
+    onPlannerStoresChange?.(plannerMode ? plannerStorePoints : []);
+  }, [onPlannerStoresChange, plannerMode, plannerStorePoints]);
 
   const clearSupervisorOverlayFilter = useCallback(async () => {
     const emptyFc: GeoJSON.FeatureCollection = { type: 'FeatureCollection', features: [] };
@@ -3571,7 +3833,12 @@ const MapComponent: React.FC<MapComponentProps> = ({
 
         const pinOverlayMarkerSelection = (feature: GeoJSON.Feature) => {
           agencyHoverPopupRef.current?.remove();
-          setOverlayMarkerSelection(readAgencyPopupInfoFromProperties(feature.properties));
+          const agencyInfo = readAgencyPopupInfoFromProperties(feature.properties);
+          setOverlayMarkerSelection(
+            agencyInfo.kind === 'loja'
+              ? readStorePopupInfoFromProperties(feature.properties)
+              : agencyInfo
+          );
         };
 
         const handleLojaFeatureClick = (feature: GeoJSON.Feature, lngLat: mapboxgl.LngLatLike) => {
@@ -4432,6 +4699,9 @@ const MapComponent: React.FC<MapComponentProps> = ({
         m.addSource('region-overlay-agencias', { type: 'geojson', data: emptyRegionFc });
         m.addSource('region-overlay-supervisores', { type: 'geojson', data: emptyRegionFc });
         m.addSource('region-overlay-lojas', { type: 'geojson', data: emptyRegionFc });
+        m.addSource('planner-route-lojas', { type: 'geojson', data: emptyRegionFc });
+        m.addSource('planner-selected-lojas', { type: 'geojson', data: emptyRegionFc });
+        m.addSource('planner-territory-area', { type: 'geojson', data: emptyRegionFc });
         m.addSource('supervision-area', { type: 'geojson', data: emptyRegionFc });
         m.addSource('supervisions-compare', { type: 'geojson', data: emptyRegionFc });
 
@@ -4440,6 +4710,33 @@ const MapComponent: React.FC<MapComponentProps> = ({
         const structureBeforeId = m.getLayer('structure-people-circles')
           ? 'structure-people-circles'
           : sym;
+        m.addLayer(
+          {
+            id: 'planner-territory-area-fill',
+            type: 'fill',
+            source: 'planner-territory-area',
+            layout: { visibility: 'none' },
+            paint: fillPaintForStandard(activeBaseStyle, {
+              'fill-color': '#38bdf8',
+              'fill-opacity': 0.16,
+            }),
+          },
+          structureBeforeId
+        );
+        m.addLayer(
+          {
+            id: 'planner-territory-area-line',
+            type: 'line',
+            source: 'planner-territory-area',
+            layout: { visibility: 'none' },
+            paint: linePaintForStandard(activeBaseStyle, {
+              'line-color': '#0284c7',
+              'line-width': 2,
+              'line-opacity': 0.7,
+            }),
+          },
+          structureBeforeId
+        );
         m.addLayer(
           {
             id: 'supervisions-compare-fill',
@@ -4536,6 +4833,30 @@ const MapComponent: React.FC<MapComponentProps> = ({
             'circle-opacity': 0.95,
           }),
         });
+        m.addLayer({
+          id: 'planner-route-lojas-cir',
+          type: 'circle',
+          source: 'planner-route-lojas',
+          layout: {
+            'circle-sort-key': MARKER_CIRCLE_SORT_KEY,
+          },
+          paint: buildOverlayLojaCirclePaint(activeBaseStyle, null),
+        });
+        m.addLayer({
+          id: 'planner-selected-lojas-cir',
+          type: 'circle',
+          source: 'planner-selected-lojas',
+          layout: {
+            'circle-sort-key': MARKER_CIRCLE_SORT_KEY,
+          },
+          paint: circlePaintForStandard(activeBaseStyle, {
+            'circle-radius': PLANNER_SELECTED_STORE_CIRCLE_RADIUS,
+            'circle-color': '#f97316',
+            'circle-stroke-width': 2.5,
+            'circle-stroke-color': '#fff7ed',
+            'circle-opacity': 1,
+          }),
+        });
 
         const onRegionOverlayMarkerClick = (e: mapboxgl.MapLayerMouseEvent) => {
           e.originalEvent?.stopPropagation();
@@ -4566,7 +4887,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
         m.on('mouseenter', 'region-overlay-agencias-cir', setStructPointer);
         m.on('mouseleave', 'region-overlay-agencias-cir', clearStructPointer);
 
-        for (const layerId of ['region-overlay-supervisores-cir', 'region-overlay-lojas-cir'] as const) {
+        for (const layerId of ['region-overlay-supervisores-cir', 'region-overlay-lojas-cir', 'planner-route-lojas-cir'] as const) {
           m.on('click', layerId, onRegionOverlayMarkerClick);
           m.on('mouseenter', layerId, setStructPointer);
           m.on('mouseleave', layerId, clearStructPointer);
@@ -4612,6 +4933,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
           'structure-agencies-point',
           'region-overlay-agencias-cir',
           'region-overlay-lojas-cir',
+          'planner-route-lojas-cir',
           'region-overlay-supervisores-cir',
           'structure-people-circles',
         ] as const;
@@ -4974,17 +5296,10 @@ const MapComponent: React.FC<MapComponentProps> = ({
       } else if (gen === overlayAgencyFetchGenRef.current) {
         console.warn('Pré-carga de agências não concluída:', agenciesResult.reason);
       }
-      if (
-        storeGen === overlayStoreFetchGenRef.current &&
-        plannerRouteAgenciesRef.current == null &&
-        storesResult.status === 'fulfilled'
-      ) {
+      if (storeGen === overlayStoreFetchGenRef.current && storesResult.status === 'fulfilled') {
         applyStoreFetchResult(storesResult.value, 'replace');
         loadedStoreScopeRef.current = scopeSignature;
-      } else if (
-        storeGen === overlayStoreFetchGenRef.current &&
-        plannerRouteAgenciesRef.current == null
-      ) {
+      } else if (storeGen === overlayStoreFetchGenRef.current) {
         console.warn('Pré-carga de lojas não concluída:', storesResult.reason);
       }
     });
@@ -5034,6 +5349,20 @@ const MapComponent: React.FC<MapComponentProps> = ({
         overlayLojas,
         filteredRegionLojas
       );
+      apply(
+        'planner-route-lojas',
+        'planner-route-lojas-cir',
+        plannerMode && plannerStorePoints.length > 0,
+        plannerStorePoints
+      );
+      const selectedStoreIds = new Set(plannerSelectedStoreIds);
+      const selectedPlannerStores = plannerStorePoints.filter((point) => selectedStoreIds.has(point.id));
+      apply(
+        'planner-selected-lojas',
+        'planner-selected-lojas-cir',
+        plannerMode && selectedPlannerStores.length > 0,
+        selectedPlannerStores
+      );
     };
 
     return runWhenMapStyleReady(m, applyOverlaySources);
@@ -5045,6 +5374,9 @@ const MapComponent: React.FC<MapComponentProps> = ({
     filteredRegionAgencias,
     filteredRegionSupervisores,
     filteredRegionLojas,
+    plannerMode,
+    plannerStorePoints,
+    plannerSelectedStoreIds,
   ]);
 
   useEffect(() => {
@@ -5460,7 +5792,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
       }
       if (m && regionOverlayClickHandlerRef.current) {
         const h = regionOverlayClickHandlerRef.current;
-        for (const id of ['region-overlay-supervisores-cir', 'region-overlay-lojas-cir'] as const) {
+        for (const id of ['region-overlay-supervisores-cir', 'region-overlay-lojas-cir', 'planner-route-lojas-cir'] as const) {
           m.off('click', id, h);
         }
       }
@@ -6029,7 +6361,16 @@ const MapComponent: React.FC<MapComponentProps> = ({
             )}
           </div>
         ) : null}
-        {visitRoute ? <RouteLegend /> : null}
+        {visitRoute ? <RouteLegend
+          plannerMode={plannerMode}
+          hasDestination={Boolean(visitRoute.destination)}
+          showOriginStores={plannerStorePoints.some((point) => point.routeRole === 'origin')}
+          showDestinationStores={plannerStorePoints.some((point) => point.routeRole === 'destination')}
+          showCorridorStores={plannerStorePoints.some((point) => point.routeRole === 'corridor')}
+          showTerritory={Boolean(plannerTerritoryFocus)}
+          territoryStoreCount={plannerTerritoryFocus ? plannerStorePoints.length : undefined}
+          selectedStoreCount={plannerSelectedStoreIds.length}
+        /> : null}
         {compareSupervisionAreas && compareSupervisionsList.length > 0 ? (
           <div className="pointer-events-auto min-w-0 w-[min(280px,60vw)] shrink rounded-xl border border-slate-200/70 bg-white/90 shadow-lg shadow-slate-900/10 backdrop-blur-sm">
             <div className="flex items-start justify-between gap-2 px-3 pt-2.5 pb-1.5">

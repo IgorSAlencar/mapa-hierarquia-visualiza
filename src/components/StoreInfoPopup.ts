@@ -1,6 +1,8 @@
 export interface StorePopupInfo {
+  kind: 'loja';
   nome: string;
   chaveLoja: string;
+  codAg: string;
   statusTablet: string;
   dataBloqueio: string;
   motivoBloqueio: string;
@@ -28,8 +30,10 @@ export function readStorePopupInfoFromProperties(
 ): StorePopupInfo {
   const p = (properties ?? {}) as Record<string, unknown>;
   return {
+    kind: 'loja',
     nome: text(p.nome) || 'Loja',
     chaveLoja: text(p.chave_loja),
+    codAg: text(p.cod_ag),
     statusTablet: text(p.status_tablet),
     dataBloqueio: text(p.dt_bloqueio),
     motivoBloqueio: text(p.motivo_bloqueio),
@@ -70,7 +74,7 @@ const icons = {
   lock: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3M12 14v3"/></svg>',
   briefcase: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="7" width="18" height="13" rx="2"/><path d="M8 7V4h8v3M3 12h18"/></svg>',
   segment: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="6" r="2"/><circle cx="18" cy="6" r="2"/><circle cx="12" cy="18" r="2"/><path d="m8 7 3 9m5-9-3 9"/></svg>',
-  cielo: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 10h18M7 15h3"/></svg>',
+  cielo: '<span class="store-popup-cielo-logo" aria-hidden="true">cielo</span>',
   clock: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>',
   close: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>',
 } as const;
@@ -117,9 +121,10 @@ export function buildStorePopupHtml(info: StorePopupInfo): string {
       <span class="store-popup-store-icon">${icons.store}</span>
       <span class="store-popup-heading">
         <strong class="store-popup-title" title="${escapeHtml(info.nome)}">${escapeHtml(info.nome)}</strong>
-        <span class="store-popup-meta">
-          <span class="store-popup-key">${info.chaveLoja ? `Chave ${escapeHtml(info.chaveLoja)}` : 'Chave não informada'}</span>
-          <span class="store-popup-cielo${info.cieloM0 ? ' store-popup-cielo--active' : ''}">Cielo M0: ${escapeHtml(cieloValue)}</span>
+        <span class="store-popup-key">${info.chaveLoja ? `Chave ${escapeHtml(info.chaveLoja)}` : 'Chave não informada'}</span>
+        <span class="store-popup-context">
+          <span><b>Tipo de posto</b>${escapeHtml(info.tipoPosto || 'Não informado')}</span>
+          <span><b>Segmento</b>${escapeHtml(info.segmento || 'Não informado')}</span>
         </span>
       </span>
       <span class="store-popup-close" aria-hidden="true">${icons.close}</span>
@@ -131,8 +136,8 @@ export function buildStorePopupHtml(info: StorePopupInfo): string {
       ${statusItem(isBlocked ? 'danger' : 'positive', icons.lock, 'Bloqueio', isBlocked ? 'Bloqueada' : 'Não bloqueada', isBlocked ? formatDate(info.dataBloqueio) : '')}
     </section>
     <section class="store-popup-details-grid">
-      ${detailItem(icons.briefcase, 'Tipo de posto', info.tipoPosto || 'Não informado')}
-      ${detailItem(icons.segment, 'Segmento', info.segmento || 'Não informado')}
+      ${detailItem(icons.cielo, 'Cielo M0', cieloValue, info.cieloM0 ? 'cielo-positive' : 'cielo-neutral')}
+      <div class="store-popup-detail store-popup-detail--empty" aria-hidden="true"></div>
       ${detailItem(icons.clock, 'Última transação', formatDate(info.dataUltimaTransacao))}
     </section>
     ${

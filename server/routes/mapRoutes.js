@@ -1,5 +1,10 @@
 import { Router } from 'express';
-import { getAgencyMapPoints, getCommercialSeatMapPoints, getStoreMapPoints } from '../services/mapDataService.js';
+import {
+  getAgencyMapPoints,
+  getCommercialSeatMapPoints,
+  getStoreMapPoints,
+  getStoreProductionHistory,
+} from '../services/mapDataService.js';
 
 const router = Router();
 
@@ -68,12 +73,28 @@ router.get('/lojas', async (req, res) => {
     const bbox = readBboxFromQuery(req.query);
     const limit = readLimitFromQuery(req.query, null, 300000);
     const codAg = readCodAgFromQuery(req.query);
+    const sortByCenter = String(req.query.sortByCenter ?? '').trim() === '1';
     const hierarchy = readHierarchyFromQuery(req.query);
-    const points = await getStoreMapPoints({ bbox, limit, codAg, hierarchy });
+    const points = await getStoreMapPoints({ bbox, limit, codAg, hierarchy, sortByCenter });
     res.json({ points });
   } catch (error) {
     console.error('Erro ao buscar lojas:', error);
     res.status(500).json({ message: 'Erro ao buscar lojas no SQL Server.' });
+  }
+});
+
+router.get('/lojas/:chaveLoja/producao', async (req, res) => {
+  try {
+    const chaveLoja = String(req.params.chaveLoja ?? '').trim();
+    if (!/^\d{1,18}$/.test(chaveLoja)) {
+      res.status(400).json({ message: 'Parâmetro inválido: chaveLoja.' });
+      return;
+    }
+    const history = await getStoreProductionHistory(chaveLoja);
+    res.json({ history });
+  } catch (error) {
+    console.error('Erro ao buscar produção da loja:', error);
+    res.status(500).json({ message: 'Erro ao buscar produção da loja no SQL Server.' });
   }
 });
 

@@ -65,8 +65,10 @@ function toSuggestion(feature: GeocodingFeature): AddressSuggestion | null {
  * Busca temporária no Mapbox Geocoding v6. Os resultados ficam somente no
  * estado da tela e não são persistidos, conforme as regras da API temporária.
  */
-export async function fetchAddressSuggestions(
+async function fetchGeocodingSuggestions(
   query: string,
+  types: string,
+  fallbackError: string,
   signal?: AbortSignal
 ): Promise<AddressSuggestion[]> {
   const normalizedQuery = query.trim().replace(/\s+/g, ' ').slice(0, 256);
@@ -78,7 +80,7 @@ export async function fetchAddressSuggestions(
   url.searchParams.set('autocomplete', 'true');
   url.searchParams.set('country', 'br');
   url.searchParams.set('language', 'pt-BR');
-  url.searchParams.set('types', 'address,street,postcode,place');
+  url.searchParams.set('types', types);
   url.searchParams.set('limit', '6');
 
   const response = await fetch(url, {
@@ -90,11 +92,36 @@ export async function fetchAddressSuggestions(
   const payload = (await response.json().catch(() => ({}))) as GeocodingResponse;
 
   if (!response.ok) {
-    throw new Error(text(payload.message) || 'Não foi possível buscar endereços agora.');
+    throw new Error(text(payload.message) || fallbackError);
   }
 
   if (!Array.isArray(payload.features)) return [];
   return payload.features
     .map((feature) => toSuggestion(feature as GeocodingFeature))
     .filter((suggestion): suggestion is AddressSuggestion => Boolean(suggestion));
+}
+
+export function fetchAddressSuggestions(
+  query: string,
+  signal?: AbortSignal
+): Promise<AddressSuggestion[]> {
+  return fetchGeocodingSuggestions(
+    query,
+    'address,street,postcode,place',
+    'Não foi possível buscar endereços agora.',
+    signal
+  );
+}
+
+/** Busca somente municípios brasileiros; a coordenada retornada é o centro da cidade. */
+export function fetchMunicipalitySuggestions(
+  query: string,
+  signal?: AbortSignal
+): Promise<AddressSuggestion[]> {
+  return fetchGeocodingSuggestions(
+    query,
+    'place',
+    'Não foi possível buscar municípios agora.',
+    signal
+  );
 }

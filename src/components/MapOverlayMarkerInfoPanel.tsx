@@ -1,11 +1,13 @@
 import React from 'react';
-import { X } from 'lucide-react';
+import { Building2, Store, X } from 'lucide-react';
 import type { AgencyPopupInfo } from '@/components/AgencyInfoPopup';
+import StoreProductionChart from '@/components/StoreProductionChart';
+import type { StorePopupInfo } from '@/components/StoreInfoPopup';
 
 type MapOverlayMarkerInfoPanelProps = {
   storeFilterCodAg: string | null;
   storeFilterAgencyName: string | null;
-  overlayMarkerSelection: AgencyPopupInfo | null;
+  overlayMarkerSelection: AgencyPopupInfo | StorePopupInfo | null;
   storeCountOnMap: number;
   overlayLojasActive: boolean;
   onDismiss: () => void;
@@ -23,12 +25,75 @@ const MapOverlayMarkerInfoPanel: React.FC<MapOverlayMarkerInfoPanelProps> = ({
     return null;
   }
 
+  const storeSelection =
+    overlayMarkerSelection?.kind === 'loja' && 'chaveLoja' in overlayMarkerSelection
+      ? overlayMarkerSelection
+      : null;
+  const agencySelection =
+    overlayMarkerSelection && 'sub' in overlayMarkerSelection ? overlayMarkerSelection : null;
+
   const kindLabel =
-    overlayMarkerSelection?.kind === 'loja'
-      ? 'Loja'
-      : overlayMarkerSelection?.kind === 'agencia'
+    agencySelection?.kind === 'agencia'
         ? 'Agência'
-        : overlayMarkerSelection?.sub?.trim() || 'Estrutura comercial';
+        : agencySelection?.sub?.trim() || 'Estrutura comercial';
+
+  if (!storeFilterCodAg && storeSelection) {
+    return (
+      <div
+        className="mt-2 max-h-[calc(100vh-190px)] overflow-y-auto rounded-xl border border-slate-200/90 bg-white/95 shadow-md shadow-slate-900/5 backdrop-blur-sm"
+        role="region"
+        aria-label={`Produção da loja ${storeSelection.nome}`}
+      >
+        <div className="flex items-start gap-3 p-3">
+          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-emerald-600 text-white shadow-sm">
+            <Store className="h-5 w-5" aria-hidden />
+          </span>
+          <div className="min-w-0 flex-1">
+            <p className="text-[10px] font-semibold uppercase tracking-wide text-emerald-700">
+              Loja selecionada
+            </p>
+            <p className="mt-0.5 truncate text-sm font-semibold leading-snug text-slate-900">
+              {storeSelection.nome.trim() || 'Loja'}
+            </p>
+            <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-slate-600">
+              <span>
+                <span className="text-slate-400">Chave</span>{' '}
+                <strong className="font-semibold text-slate-700">
+                  {storeSelection.chaveLoja || 'Não informada'}
+                </strong>
+              </span>
+              {storeSelection.codAg ? (
+                <span className="inline-flex items-center gap-1">
+                  <Building2 className="h-3 w-3 text-slate-400" aria-hidden />
+                  Agência {storeSelection.codAg}
+                </span>
+              ) : null}
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onDismiss}
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+            aria-label="Fechar informações da loja"
+            title="Fechar informações da loja"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </div>
+
+        {storeSelection.chaveLoja ? (
+          <StoreProductionChart
+            chaveLoja={storeSelection.chaveLoja}
+            cieloM0={storeSelection.cieloM0}
+          />
+        ) : (
+          <div className="border-t border-slate-100 px-3 py-4 text-xs text-slate-500">
+            A chave da loja não foi informada; não é possível consultar a produção.
+          </div>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div
@@ -45,9 +110,9 @@ const MapOverlayMarkerInfoPanel: React.FC<MapOverlayMarkerInfoPanelProps> = ({
             <p className="mt-1 text-sm font-semibold leading-snug text-slate-900">
               {storeFilterCodAg} - {storeFilterAgencyName ?? 'Agência'}
             </p>
-            {overlayMarkerSelection?.enderecoFormatado ? (
+            {agencySelection?.enderecoFormatado ? (
               <p className="mt-1.5 text-xs leading-relaxed text-slate-600">
-                {overlayMarkerSelection.enderecoFormatado}
+                {agencySelection.enderecoFormatado}
               </p>
             ) : null}
             {overlayLojasActive && storeCountOnMap > 0 ? (
@@ -66,29 +131,29 @@ const MapOverlayMarkerInfoPanel: React.FC<MapOverlayMarkerInfoPanelProps> = ({
             <X className="h-3.5 w-3.5" />
           </button>
         </div>
-      ) : overlayMarkerSelection ? (
+      ) : agencySelection ? (
         <div className="flex items-start gap-2">
           <div className="min-w-0 flex-1">
             <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
               {kindLabel}
             </p>
             <p className="mt-1 text-sm font-semibold leading-snug text-slate-900">
-              {overlayMarkerSelection.nome.trim() ||
-                overlayMarkerSelection.sub.trim() ||
+              {agencySelection.nome.trim() ||
+                agencySelection.sub.trim() ||
                 'Ponto no mapa'}
             </p>
-            {overlayMarkerSelection.codAg ? (
+            {agencySelection.codAg ? (
               <p className="mt-0.5 text-xs font-medium text-slate-600">
-                Código: {overlayMarkerSelection.codAg}
+                Código: {agencySelection.codAg}
               </p>
             ) : null}
-            {overlayMarkerSelection.sub.trim() &&
-            overlayMarkerSelection.sub.trim() !== overlayMarkerSelection.nome.trim() ? (
-              <p className="mt-0.5 text-xs text-slate-500">{overlayMarkerSelection.sub}</p>
+            {agencySelection.sub.trim() &&
+            agencySelection.sub.trim() !== agencySelection.nome.trim() ? (
+              <p className="mt-0.5 text-xs text-slate-500">{agencySelection.sub}</p>
             ) : null}
-            {overlayMarkerSelection.enderecoFormatado ? (
+            {agencySelection.enderecoFormatado ? (
               <p className="mt-1.5 text-xs leading-relaxed text-slate-600">
-                {overlayMarkerSelection.enderecoFormatado}
+                {agencySelection.enderecoFormatado}
               </p>
             ) : null}
           </div>

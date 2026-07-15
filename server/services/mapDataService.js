@@ -2,6 +2,7 @@ import {
   fetchAgencyCoordinates,
   fetchCommercialSeatCoordinates,
   fetchStoreCoordinates,
+  fetchStoreProductionHistory,
 } from '../repositories/mapDataRepository.js';
 
 function validCoordinate(row) {
@@ -75,13 +76,14 @@ export async function getAgencyMapPoints({ bbox = null, limit = null, hierarchy 
     .filter(Boolean);
 }
 
-export async function getStoreMapPoints({ bbox = null, limit = null, codAg = null, hierarchy = null } = {}) {
+export async function getStoreMapPoints({ bbox = null, limit = null, codAg = null, hierarchy = null, sortByCenter = false } = {}) {
   const targetCodAg = normalizeCodAg(codAg);
   const rows = await fetchStoreCoordinates({
     bbox: targetCodAg ? null : bbox,
     limit,
     codAg: targetCodAg,
     hierarchy,
+    sortByCenter,
   });
 
   const scopedRows = targetCodAg
@@ -101,6 +103,8 @@ export async function getStoreMapPoints({ bbox = null, limit = null, codAg = nul
         lngLat,
         codAg: rowCodAg,
         chaveLoja,
+        municipio: normalizeText(row.MUNICIPIO),
+        uf: normalizeText(row.UF)?.toUpperCase() ?? null,
         statusTablet: normalizeText(row.STATUS_TABLET),
         dataBloqueio: normalizeDate(row.DT_BLOQUEIO),
         motivoBloqueio: normalizeText(row.MOTIVO_BLOQUEIO),
@@ -112,6 +116,38 @@ export async function getStoreMapPoints({ bbox = null, limit = null, codAg = nul
       };
     })
     .filter(Boolean);
+}
+
+const STORE_PRODUCTION_NUMBER_FIELDS = [
+  'qtdTrxContabil',
+  'qtdContas',
+  'qtdConsig',
+  'qtdLime',
+  'qtdCreditoParcelado',
+  'qtdCartao',
+  'qtdFgts',
+  'qtdVida',
+  'qtdMicro',
+  'qtdResidencial',
+  'qtdDental',
+  'qtdSuper',
+  'qtdSegDebito',
+  'qtdCred',
+  'vlrCred',
+  'segTotal',
+];
+
+export async function getStoreProductionHistory(chaveLoja) {
+  const rows = await fetchStoreProductionHistory(chaveLoja);
+
+  return rows.map((row) => {
+    const normalized = { periodo: Number(row.periodo) };
+    for (const field of STORE_PRODUCTION_NUMBER_FIELDS) {
+      const value = Number(row[field]);
+      normalized[field] = Number.isFinite(value) ? value : 0;
+    }
+    return normalized;
+  });
 }
 
 export async function getCommercialSeatMapPoints({ hierarchy = null } = {}) {

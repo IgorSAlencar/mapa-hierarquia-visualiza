@@ -12,6 +12,7 @@ import RoutePlannerPanel from '@/components/navigator/RoutePlannerPanel';
 import type { VisitRoute } from '@/data/visitRoutesMock';
 import type { RegionMapPoint } from '@/data/regionMapPointsMock';
 import type { DeviceLocation } from '@/lib/deviceGeolocation';
+import type { SqlMapPoint } from '@/lib/mapDataApi';
 import { usePanelDrag } from '@/hooks/usePanelDrag';
 import {
   FILTROS_INICIAIS,
@@ -36,6 +37,12 @@ interface PlannerAgencyEndpoint extends PlannerRouteEndpoint {
   codAg: string;
 }
 
+interface PlannerOpportunityFocus {
+  tick: number;
+  id: string;
+  lngLat: [number, number];
+}
+
 const Index = () => {
   const [filters, setFilters] = useState<FiltrosEstrutura>(FILTROS_INICIAIS);
   const [filtersPanelOpen, setFiltersPanelOpen] = useState(false);
@@ -47,9 +54,13 @@ const Index = () => {
   const [selectedStopId, setSelectedStopId] = useState<number | null>(null);
   const [visitFocus, setVisitFocus] = useState<{ tick: number; stopId: number | null } | null>(null);
   const [plannerTerritory, setPlannerTerritory] = useState<string | null>(null);
+  const [plannerTerritoryRadiusKm, setPlannerTerritoryRadiusKm] = useState<number | null>(null);
   const [plannerAgencyFocus, setPlannerAgencyFocus] = useState<(PlannerAgencyEndpoint & { tick: number }) | null>(null);
   const [plannerOriginAgency, setPlannerOriginAgency] = useState<PlannerRouteEndpoint | null>(null);
-  const [plannerDestinationAgency, setPlannerDestinationAgency] = useState<PlannerAgencyEndpoint | null>(null);
+  const [plannerDestination, setPlannerDestination] = useState<PlannerRouteEndpoint | null>(null);
+  const [plannerSqlStores, setPlannerSqlStores] = useState<SqlMapPoint[]>([]);
+  const [plannerSelectedStoreIds, setPlannerSelectedStoreIds] = useState<string[]>([]);
+  const [plannerOpportunityFocus, setPlannerOpportunityFocus] = useState<PlannerOpportunityFocus | null>(null);
   const [compareSupervisionAreas, setCompareSupervisionAreas] = useState(false);
   const [compareApplyTick, setCompareApplyTick] = useState(0);
   /** "Todos" em GG e GC III: compara as áreas de toda a estrutura. */
@@ -93,11 +104,11 @@ const Index = () => {
   const plannerPreviewRoute = useMemo<VisitRoute | null>(() => {
     if (!plannerOriginAgency || activeSection !== 'planejar') return null;
     return {
-      id: `planner-preview-${plannerOriginAgency.id}-${plannerDestinationAgency?.id ?? 'origem'}`,
+      id: `planner-preview-${plannerOriginAgency.id}-${plannerDestination?.id ?? 'origem'}`,
       chaveSupervisao: 0,
       gerenteComercial: 'Meu roteiro',
-      nome: plannerDestinationAgency
-        ? `${plannerOriginAgency.nome} → ${plannerDestinationAgency.nome}`
+      nome: plannerDestination
+        ? `${plannerOriginAgency.nome} → ${plannerDestination.nome}`
         : `Saída: ${plannerOriginAgency.nome}`,
       data: 'Prévia do roteiro',
       distanciaKm: 0,
@@ -108,15 +119,29 @@ const Index = () => {
         lng: plannerOriginAgency.lngLat[0],
         lat: plannerOriginAgency.lngLat[1],
       },
-      destination: plannerDestinationAgency
+      destination: plannerDestination
         ? {
-            nome: plannerDestinationAgency.nome,
-            lng: plannerDestinationAgency.lngLat[0],
-            lat: plannerDestinationAgency.lngLat[1],
+            nome: plannerDestination.nome,
+            lng: plannerDestination.lngLat[0],
+            lat: plannerDestination.lngLat[1],
           }
         : undefined,
     };
-  }, [activeSection, plannerOriginAgency, plannerDestinationAgency]);
+  }, [activeSection, plannerOriginAgency, plannerDestination]);
+
+  const plannerRouteAgencies = useMemo(() => {
+    if (!plannerOriginAgency || !plannerDestination || activeSection !== 'planejar') {
+      return null;
+    }
+    return { origin: plannerOriginAgency, destination: plannerDestination };
+  }, [activeSection, plannerOriginAgency, plannerDestination]);
+
+  const plannerTerritoryFocus = useMemo(() => {
+    if (!plannerOriginAgency || !plannerTerritoryRadiusKm || activeSection !== 'planejar') {
+      return null;
+    }
+    return { center: plannerOriginAgency.lngLat, radiusKm: plannerTerritoryRadiusKm };
+  }, [activeSection, plannerOriginAgency, plannerTerritoryRadiusKm]);
 
   const handlePlannerOriginAgencyFocus = useCallback((agency: RegionMapPoint) => {
     const codAg = String(agency.codAg ?? '').trim();
@@ -129,21 +154,53 @@ const Index = () => {
       enderecoFormatado: agency.enderecoFormatado,
     };
     setPlannerOriginAgency(endpoint);
-    setPlannerDestinationAgency(null);
+    setPlannerDestination(null);
+    setPlannerTerritoryRadiusKm(null);
+    setPlannerSelectedStoreIds([]);
+    setPlannerOpportunityFocus(null);
     setPlannerAgencyFocus({ tick: Date.now(), ...endpoint });
   }, []);
 
   const handlePlannerDestinationAgencyFocus = useCallback((agency: RegionMapPoint) => {
     const codAg = String(agency.codAg ?? '').trim();
     if (!codAg) return;
-    setPlannerDestinationAgency({
+    setPlannerDestination({
       id: agency.id,
       nome: agency.nome,
       codAg,
       lngLat: agency.lngLat,
       enderecoFormatado: agency.enderecoFormatado,
     });
+    setPlannerSelectedStoreIds([]);
+    setPlannerOpportunityFocus(null);
     setVisitFocus({ tick: Date.now(), stopId: null });
+  }, []);
+
+  const handlePlannerDestinationLocationFocus = useCallback((location: DeviceLocation) => {
+    setPlannerDestination({
+      id: `destination-location-${location.longitude.toFixed(6)}-${location.latitude.toFixed(6)}`,
+      nome: location.label ?? 'Destino selecionado',
+      lngLat: [location.longitude, location.latitude],
+    });
+    setPlannerTerritoryRadiusKm(null);
+    setPlannerSelectedStoreIds([]);
+    setPlannerOpportunityFocus(null);
+    setVisitFocus({ tick: Date.now(), stopId: null });
+  }, []);
+
+  const clearPlannerDestination = useCallback(() => {
+    setPlannerDestination(null);
+    setPlannerSelectedStoreIds([]);
+    setPlannerOpportunityFocus(null);
+    setVisitFocus(null);
+  }, []);
+
+  const handlePlannerTerritoryRadiusChange = useCallback((radiusKm: number | null) => {
+    setPlannerDestination(null);
+    setPlannerTerritoryRadiusKm(radiusKm);
+    setPlannerSelectedStoreIds([]);
+    setPlannerOpportunityFocus(null);
+    setVisitFocus(null);
   }, []);
 
   const handlePlannerOriginLocationFocus = useCallback((location: DeviceLocation) => {
@@ -153,16 +210,29 @@ const Index = () => {
       nome: location.label ?? 'Minha localização',
       lngLat,
     });
-    setPlannerDestinationAgency(null);
+    setPlannerDestination(null);
+    setPlannerTerritoryRadiusKm(null);
     setPlannerAgencyFocus(null);
+    setPlannerSelectedStoreIds([]);
+    setPlannerOpportunityFocus(null);
     setVisitFocus({ tick: Date.now(), stopId: null });
   }, []);
 
   const clearPlannerOrigin = useCallback(() => {
     setPlannerOriginAgency(null);
-    setPlannerDestinationAgency(null);
+    setPlannerDestination(null);
+    setPlannerTerritoryRadiusKm(null);
     setPlannerAgencyFocus(null);
+    setPlannerSelectedStoreIds([]);
+    setPlannerOpportunityFocus(null);
     setVisitFocus(null);
+  }, []);
+
+  const handlePlannerOpportunityFocus = useCallback((opportunity: {
+    id: string;
+    lngLat: [number, number];
+  }) => {
+    setPlannerOpportunityFocus({ ...opportunity, tick: Date.now() });
   }, []);
 
   const clearVisitState = () => {
@@ -188,9 +258,13 @@ const Index = () => {
     setActiveSection(section);
     if (section !== 'planejar') {
       setPlannerTerritory(null);
+      setPlannerTerritoryRadiusKm(null);
       setPlannerAgencyFocus(null);
       setPlannerOriginAgency(null);
-      setPlannerDestinationAgency(null);
+      setPlannerDestination(null);
+      setPlannerSqlStores([]);
+      setPlannerSelectedStoreIds([]);
+      setPlannerOpportunityFocus(null);
     }
     if (section !== 'visitas' && section !== 'planejar') clearVisitState();
     if (leavingComparar) clearCompareState();
@@ -219,7 +293,8 @@ const Index = () => {
   const handleRouteChange = (route: VisitRoute | null) => {
     if (route) {
       setPlannerOriginAgency(null);
-      setPlannerDestinationAgency(null);
+      setPlannerDestination(null);
+      setPlannerTerritoryRadiusKm(null);
     }
     setActiveRoute(route);
     setRouteDetailsOpen(route != null);
@@ -277,6 +352,12 @@ const Index = () => {
               onOriginLocationFocus={handlePlannerOriginLocationFocus}
               onOriginClear={clearPlannerOrigin}
               onDestinationAgencyFocus={handlePlannerDestinationAgencyFocus}
+              onDestinationLocationFocus={handlePlannerDestinationLocationFocus}
+              onDestinationClear={clearPlannerDestination}
+              onTerritoryRadiusChange={handlePlannerTerritoryRadiusChange}
+              onOpportunitySelectionChange={setPlannerSelectedStoreIds}
+              onOpportunityFocus={handlePlannerOpportunityFocus}
+              plannerStores={plannerSqlStores}
               territory={plannerTerritory}
               shellStyle={plannerDrag.shellStyle}
               headerDragProps={plannerDrag.headerDragProps}
@@ -359,7 +440,11 @@ const Index = () => {
           plannerMode={activeSection === 'planejar'}
           onPlannerTerritorySelect={setPlannerTerritory}
           plannerAgencyFocus={plannerAgencyFocus}
-          plannerRouteAgencies={null}
+          plannerRouteAgencies={plannerRouteAgencies}
+          plannerTerritoryFocus={plannerTerritoryFocus}
+          plannerSelectedStoreIds={plannerSelectedStoreIds}
+          plannerOpportunityFocus={plannerOpportunityFocus}
+          onPlannerStoresChange={setPlannerSqlStores}
           compareSupervisionAreas={compareSupervisionAreas}
           onCompareSupervisionAreasChange={handleCompareActiveChange}
           compareApplyTick={compareApplyTick}

@@ -24,12 +24,12 @@ import {
   Zap,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { PLANNER_STORES } from '@/data/routePlannerMock';
 import type { RegionMapPoint } from '@/data/regionMapPointsMock';
 import type { PanelHeaderDragProps } from '@/hooks/usePanelDrag';
 import { requestDeviceLocation, type DeviceLocation } from '@/lib/deviceGeolocation';
 import {
   fetchAddressSuggestions,
+  fetchMunicipalitySuggestions,
   type AddressSuggestion,
 } from '@/lib/mapboxGeocoding';
 import { mergeHeaderDrag } from './mergeHeaderDrag';
@@ -40,8 +40,11 @@ interface JourneyResult {
   intention: string;
   originId: string;
   destination: string;
+  territoryRadiusKm: number | null;
   priority: PlanningPriority;
 }
+
+type DestinationType = 'agencia' | 'municipio' | 'endereco' | 'territorio';
 
 interface Props {
   agencies: RegionMapPoint[];
@@ -52,6 +55,9 @@ interface Props {
   onOriginAgencySelect?: (agency: RegionMapPoint) => void;
   onOriginLocationSelect?: (location: DeviceLocation | null) => void;
   onDestinationAgencySelect?: (agency: RegionMapPoint) => void;
+  onDestinationLocationSelect?: (location: DeviceLocation | null) => void;
+  onDestinationClear?: () => void;
+  onTerritoryRadiusSelect?: (radiusKm: number | null) => void;
   headerDragProps?: PanelHeaderDragProps;
 }
 
@@ -86,14 +92,16 @@ const ROUTE_PLANNER_HERO_EDGE_FADE: React.CSSProperties = {
   WebkitMaskComposite: 'source-in',
 };
 
-const RoutePlanningJourney: React.FC<Props> = ({ agencies, originId, destination, onClose, onComplete, onOriginAgencySelect, onOriginLocationSelect, onDestinationAgencySelect, headerDragProps }) => {
+const RoutePlanningJourney: React.FC<Props> = ({ agencies, originId, destination, onClose, onComplete, onOriginAgencySelect, onOriginLocationSelect, onDestinationAgencySelect, onDestinationLocationSelect, onDestinationClear, onTerritoryRadiusSelect, headerDragProps }) => {
   const [screen, setScreen] = useState(0);
   const [intention, setIntention] = useState('rotina');
   const [originType, setOriginType] = useState('agencia');
   const [selectedOriginId, setSelectedOriginId] = useState('');
-  const [destinationType, setDestinationType] = useState('agencia');
+  const [destinationType, setDestinationType] = useState<DestinationType>('agencia');
   const [destinationAgencyId, setDestinationAgencyId] = useState('');
   const [selectedDestination, setSelectedDestination] = useState(destination);
+  const [destinationLocation, setDestinationLocation] = useState<DeviceLocation | null>(null);
+  const [territoryRadiusKm, setTerritoryRadiusKm] = useState<number | null>(null);
   const [priority, setPriority] = useState<PlanningPriority>('potencial');
   const [originLocation, setOriginLocation] = useState<DeviceLocation | null>(null);
   const [locationLoading, setLocationLoading] = useState(false);
@@ -128,6 +136,7 @@ const RoutePlanningJourney: React.FC<Props> = ({ agencies, originId, destination
       intention,
       originId: selectedOriginId || originId,
       destination: destinationType === 'agencia' ? agencyDestination ?? selectedDestination : selectedDestination,
+      territoryRadiusKm,
       priority,
     });
   };
@@ -173,11 +182,37 @@ const RoutePlanningJourney: React.FC<Props> = ({ agencies, originId, destination
     onOriginLocationSelect?.(null);
   };
 
+  const handleDestinationTypeSelect = (type: DestinationType) => {
+    if (type === destinationType) return;
+    setDestinationType(type);
+    setDestinationAgencyId('');
+    setDestinationLocation(null);
+    setTerritoryRadiusKm(null);
+    setSelectedDestination('');
+    onDestinationClear?.();
+    onTerritoryRadiusSelect?.(null);
+  };
+
+  const handleDestinationLocation = (location: DeviceLocation | null) => {
+    setDestinationLocation(location);
+    setSelectedDestination(location?.label ?? '');
+    onDestinationLocationSelect?.(location);
+  };
+
+  const handleTerritoryRadius = (radiusKm: number) => {
+    setTerritoryRadiusKm(radiusKm);
+    setSelectedDestination(`Território em um raio de ${radiusKm} km`);
+    onTerritoryRadiusSelect?.(radiusKm);
+  };
+
   const canContinue =
     (screen !== 2 || originType !== 'agencia' || Boolean(selectedOriginId)) &&
     (screen !== 2 || originType !== 'localizacao' || Boolean(originLocation)) &&
     (screen !== 2 || originType !== 'endereco' || Boolean(addressLocation)) &&
-    (screen !== 3 || destinationType !== 'agencia' || Boolean(destinationAgencyId));
+    (screen !== 3 || destinationType !== 'agencia' || Boolean(destinationAgencyId)) &&
+    (screen !== 3 || destinationType !== 'municipio' || Boolean(destinationLocation)) &&
+    (screen !== 3 || destinationType !== 'endereco' || Boolean(destinationLocation)) &&
+    (screen !== 3 || destinationType !== 'territorio' || Boolean(territoryRadiusKm));
 
   if (screen === 0) {
     return (
@@ -252,6 +287,7 @@ const RoutePlanningJourney: React.FC<Props> = ({ agencies, originId, destination
             <ChoiceRow icon={MapPin} title="Endereço" description="Digitar um endereço específico" selected={originType === 'endereco'} onClick={() => handleOriginTypeSelect('endereco')}>
               {originType === 'endereco' && <AddressAutocomplete
                 value={addressLocation}
+                inputLabel="Buscar endereço de origem"
                 onChange={(location) => {
                   setAddressLocation(location);
                   onOriginLocationSelect?.(location);
@@ -264,15 +300,18 @@ const RoutePlanningJourney: React.FC<Props> = ({ agencies, originId, destination
         {screen === 3 && <>
           <JourneyTitle title="Para onde pretende ir?" subtitle="Defina seu destino ou área de atuação." />
           <div className="mt-4 space-y-2 sm:mt-5">
-            <ChoiceRow icon={Building2} title="Agência" description="Escolher uma agência como destino" selected={destinationType === 'agencia'} onClick={() => setDestinationType('agencia')}>
+            <ChoiceRow icon={Building2} title="Agência" description="Escolher uma agência como destino" selected={destinationType === 'agencia'} onClick={() => handleDestinationTypeSelect('agencia')}>
               {destinationType === 'agencia' && <AgencySearchSelect agencies={agencies} value={destinationAgencyId} onChange={setDestinationAgencyId} placeholder="Buscar agência de destino..." />}
             </ChoiceRow>
-            <ChoiceRow icon={MapPin} title="Município" description="Escolher uma cidade" selected={destinationType === 'municipio'} onClick={() => setDestinationType('municipio')}>
-              {destinationType === 'municipio' && <select value={selectedDestination} onChange={(event) => setSelectedDestination(event.target.value)} onClick={(event) => event.stopPropagation()} className="mt-1.5 w-full rounded-lg border border-blue-200 bg-white px-2.5 py-1.5 text-xs outline-none">{[...new Set(PLANNER_STORES.map((store) => store.municipio))].map((city) => <option key={city}>{city}</option>)}</select>}
+            <ChoiceRow icon={MapPin} title="Município" description="Buscar uma cidade pelo nome" selected={destinationType === 'municipio'} onClick={() => handleDestinationTypeSelect('municipio')}>
+              {destinationType === 'municipio' && <MunicipalityAutocomplete value={destinationLocation} onChange={handleDestinationLocation} />}
             </ChoiceRow>
-            <ChoiceRow icon={Navigation} title="Região / Bairro" description="Escolher uma região ou bairro" selected={destinationType === 'regiao'} onClick={() => setDestinationType('regiao')} />
-            <ChoiceRow icon={ShieldCheck} title="Território" description="Usar meu território de atuação" selected={destinationType === 'territorio'} onClick={() => setDestinationType('territorio')} />
-            <ChoiceRow icon={Map} title="Sem destino definido" description="Mostrar oportunidades próximas" selected={destinationType === 'aberto'} onClick={() => setDestinationType('aberto')} />
+            <ChoiceRow icon={Navigation} title="Endereço" description="Digitar um endereço específico" selected={destinationType === 'endereco'} onClick={() => handleDestinationTypeSelect('endereco')}>
+              {destinationType === 'endereco' && <AddressAutocomplete value={destinationLocation} inputLabel="Buscar endereço de destino" onChange={handleDestinationLocation} />}
+            </ChoiceRow>
+            <ChoiceRow icon={ShieldCheck} title="Território" description="Definir uma área ao redor da origem" selected={destinationType === 'territorio'} onClick={() => handleDestinationTypeSelect('territorio')}>
+              {destinationType === 'territorio' && <TerritoryRadiusSelect value={territoryRadiusKm} onChange={handleTerritoryRadius} />}
+            </ChoiceRow>
           </div>
         </>}
         {screen === 4 && <>
@@ -355,7 +394,15 @@ function AgencySearchSelect({ agencies, value, onChange, placeholder }: { agenci
   </div>;
 }
 
-function AddressAutocomplete({ value, onChange }: { value: DeviceLocation | null; onChange: (location: DeviceLocation | null) => void }) {
+function AddressAutocomplete({ value, onChange, inputLabel }: { value: DeviceLocation | null; onChange: (location: DeviceLocation | null) => void; inputLabel: string }) {
+  return <LocationAutocomplete kind="address" value={value} onChange={onChange} inputLabel={inputLabel} />;
+}
+
+function MunicipalityAutocomplete({ value, onChange }: { value: DeviceLocation | null; onChange: (location: DeviceLocation | null) => void }) {
+  return <LocationAutocomplete kind="municipality" value={value} onChange={onChange} inputLabel="Buscar município de destino" />;
+}
+
+function LocationAutocomplete({ kind, value, onChange, inputLabel }: { kind: 'address' | 'municipality'; value: DeviceLocation | null; onChange: (location: DeviceLocation | null) => void; inputLabel: string }) {
   const [query, setQuery] = useState(value?.label ?? '');
   const [suggestions, setSuggestions] = useState<AddressSuggestion[]>([]);
   const [open, setOpen] = useState(false);
@@ -379,7 +426,10 @@ function AddressAutocomplete({ value, onChange }: { value: DeviceLocation | null
     const timeout = window.setTimeout(() => {
       setLoading(true);
       setError(null);
-      void fetchAddressSuggestions(search, controller.signal)
+      const fetchSuggestions = kind === 'municipality'
+        ? fetchMunicipalitySuggestions
+        : fetchAddressSuggestions;
+      void fetchSuggestions(search, controller.signal)
         .then((items) => {
           setSuggestions(items);
           setActiveIndex(items.length ? 0 : -1);
@@ -387,7 +437,7 @@ function AddressAutocomplete({ value, onChange }: { value: DeviceLocation | null
         .catch((requestError) => {
           if (requestError instanceof DOMException && requestError.name === 'AbortError') return;
           setSuggestions([]);
-          setError(requestError instanceof Error ? requestError.message : 'Não foi possível buscar endereços.');
+          setError(requestError instanceof Error ? requestError.message : `Não foi possível buscar ${kind === 'municipality' ? 'municípios' : 'endereços'}.`);
         })
         .finally(() => {
           if (!controller.signal.aborted) setLoading(false);
@@ -398,7 +448,7 @@ function AddressAutocomplete({ value, onChange }: { value: DeviceLocation | null
       window.clearTimeout(timeout);
       controller.abort();
     };
-  }, [open, query, value?.label]);
+  }, [kind, open, query, value?.label]);
 
   const selectSuggestion = (suggestion: AddressSuggestion) => {
     const location: DeviceLocation = {
@@ -417,11 +467,11 @@ function AddressAutocomplete({ value, onChange }: { value: DeviceLocation | null
   const status = query.trim().length < 3
     ? 'Digite pelo menos 3 caracteres.'
     : loading
-      ? 'Buscando endereços...'
+      ? `Buscando ${kind === 'municipality' ? 'municípios' : 'endereços'}...`
       : error
         ? error
         : suggestions.length === 0
-          ? 'Nenhum endereço encontrado.'
+          ? `Nenhum ${kind === 'municipality' ? 'município' : 'endereço'} encontrado.`
           : '';
 
   return <div className="relative mt-2" onClick={(event) => event.stopPropagation()}>
@@ -453,18 +503,18 @@ function AddressAutocomplete({ value, onChange }: { value: DeviceLocation | null
             inputRef.current?.blur();
           }
         }}
-        placeholder="Rua, número, bairro ou CEP..."
+        placeholder={kind === 'municipality' ? 'Digite o nome da cidade...' : 'Rua, número, bairro ou CEP...'}
         className="h-full w-full rounded-full border-0 bg-transparent pl-9 pr-9 text-sm text-slate-700 outline-none placeholder:text-slate-400"
-        aria-label="Buscar endereço de origem"
+        aria-label={inputLabel}
         aria-autocomplete="list"
         aria-expanded={open}
-        aria-controls="address-suggestions"
-        autoComplete="street-address"
+        aria-controls={`${kind}-suggestions`}
+        autoComplete={kind === 'municipality' ? 'address-level2' : 'street-address'}
       />
       {value ? <CheckCircle2 className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-emerald-600" aria-hidden /> : null}
     </div>
-    {value ? <p className="mt-1.5 px-2 text-[10px] leading-snug text-emerald-700">Endereço confirmado · coordenadas prontas para a próxima etapa.</p> : null}
-    {open && !value && <div id="address-suggestions" className="absolute left-0 right-0 top-full z-50 mt-2 max-h-52 overflow-auto rounded-xl border border-slate-200 bg-white p-1.5 shadow-lg shadow-slate-900/15 ring-1 ring-slate-900/5" role="listbox">
+    {value ? <p className="mt-1.5 px-2 text-[10px] leading-snug text-emerald-700">{kind === 'municipality' ? 'Município confirmado · centro da cidade localizado no mapa.' : 'Endereço confirmado · coordenadas prontas para a próxima etapa.'}</p> : null}
+    {open && !value && <div id={`${kind}-suggestions`} className="absolute left-0 right-0 top-full z-50 mt-2 max-h-52 overflow-auto rounded-xl border border-slate-200 bg-white p-1.5 shadow-lg shadow-slate-900/15 ring-1 ring-slate-900/5" role="listbox">
       {status ? <p className={cn('px-3 py-2.5 text-xs', error ? 'text-rose-600' : 'text-slate-500')}>{status}</p> : suggestions.map((suggestion, index) => <button
         key={suggestion.id}
         type="button"
@@ -479,6 +529,31 @@ function AddressAutocomplete({ value, onChange }: { value: DeviceLocation | null
         <span className="text-xs leading-snug text-slate-700">{suggestion.label}</span>
       </button>)}
     </div>}
+  </div>;
+}
+
+const TERRITORY_RADIUS_OPTIONS_KM = [5, 10, 15, 20, 25, 30];
+
+function TerritoryRadiusSelect({ value, onChange }: { value: number | null; onChange: (radiusKm: number) => void }) {
+  return <div className="mt-2" onClick={(event) => event.stopPropagation()}>
+    <p className="mb-2 text-[10px] leading-snug text-slate-500">Raio calculado a partir do ponto de origem.</p>
+    <div className="grid grid-cols-3 gap-1.5" role="radiogroup" aria-label="Raio do território">
+      {TERRITORY_RADIUS_OPTIONS_KM.map((radiusKm) => <button
+        key={radiusKm}
+        type="button"
+        role="radio"
+        aria-checked={value === radiusKm}
+        onClick={() => onChange(radiusKm)}
+        className={cn(
+          'rounded-lg border px-2 py-2 text-xs font-semibold transition-colors',
+          value === radiusKm
+            ? 'border-blue-600 bg-blue-600 text-white shadow-sm'
+            : 'border-slate-200 bg-white text-slate-600 hover:border-blue-300 hover:bg-blue-50'
+        )}
+      >
+        {radiusKm} km
+      </button>)}
+    </div>
   </div>;
 }
 
