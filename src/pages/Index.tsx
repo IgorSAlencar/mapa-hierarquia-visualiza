@@ -60,7 +60,10 @@ const Index = () => {
   const [plannerDestination, setPlannerDestination] = useState<PlannerRouteEndpoint | null>(null);
   const [plannerSqlStores, setPlannerSqlStores] = useState<SqlMapPoint[]>([]);
   const [plannerSelectedStoreIds, setPlannerSelectedStoreIds] = useState<string[]>([]);
+  const [plannerVisibleStoreIds, setPlannerVisibleStoreIds] = useState<string[] | null>(null);
   const [plannerOpportunityFocus, setPlannerOpportunityFocus] = useState<PlannerOpportunityFocus | null>(null);
+  const [plannerHoveredStoreId, setPlannerHoveredStoreId] = useState<string | null>(null);
+  const [plannerStoreClassifications, setPlannerStoreClassifications] = useState<Record<string, 'alta' | 'media' | 'baixa'>>({});
   const [compareSupervisionAreas, setCompareSupervisionAreas] = useState(false);
   const [compareApplyTick, setCompareApplyTick] = useState(0);
   /** "Todos" em GG e GC III: compara as áreas de toda a estrutura. */
@@ -158,6 +161,7 @@ const Index = () => {
     setPlannerTerritoryRadiusKm(null);
     setPlannerSelectedStoreIds([]);
     setPlannerOpportunityFocus(null);
+    setVisitFocus(null);
     setPlannerAgencyFocus({ tick: Date.now(), ...endpoint });
   }, []);
 
@@ -173,7 +177,7 @@ const Index = () => {
     });
     setPlannerSelectedStoreIds([]);
     setPlannerOpportunityFocus(null);
-    setVisitFocus({ tick: Date.now(), stopId: null });
+    setVisitFocus(null);
   }, []);
 
   const handlePlannerDestinationLocationFocus = useCallback((location: DeviceLocation) => {
@@ -185,7 +189,7 @@ const Index = () => {
     setPlannerTerritoryRadiusKm(null);
     setPlannerSelectedStoreIds([]);
     setPlannerOpportunityFocus(null);
-    setVisitFocus({ tick: Date.now(), stopId: null });
+    setVisitFocus(null);
   }, []);
 
   const clearPlannerDestination = useCallback(() => {
@@ -256,6 +260,10 @@ const Index = () => {
   const handleSelectSection = (section: NavigatorSection | null) => {
     const leavingComparar = activeSection === 'comparar' && section !== 'comparar';
     setActiveSection(section);
+    if (section === 'planejar') {
+      navigatorDrag.setPosition(NAVIGATOR_PANEL_DOCK);
+      setNavigatorMinimized(true);
+    }
     if (section !== 'planejar') {
       setPlannerTerritory(null);
       setPlannerTerritoryRadiusKm(null);
@@ -265,6 +273,7 @@ const Index = () => {
       setPlannerSqlStores([]);
       setPlannerSelectedStoreIds([]);
       setPlannerOpportunityFocus(null);
+      setPlannerHoveredStoreId(null);
     }
     if (section !== 'visitas' && section !== 'planejar') clearVisitState();
     if (leavingComparar) clearCompareState();
@@ -343,26 +352,6 @@ const Index = () => {
               headerDragProps={visitasDrag.headerDragProps}
             />
           )}
-          {activeSection === 'planejar' && (
-            <RoutePlannerPanel
-              onBack={() => handleSelectSection(null)}
-              onClose={() => handleSelectSection(null)}
-              onRouteChange={handleRouteChange}
-              onAgencyFocus={handlePlannerOriginAgencyFocus}
-              onOriginLocationFocus={handlePlannerOriginLocationFocus}
-              onOriginClear={clearPlannerOrigin}
-              onDestinationAgencyFocus={handlePlannerDestinationAgencyFocus}
-              onDestinationLocationFocus={handlePlannerDestinationLocationFocus}
-              onDestinationClear={clearPlannerDestination}
-              onTerritoryRadiusChange={handlePlannerTerritoryRadiusChange}
-              onOpportunitySelectionChange={setPlannerSelectedStoreIds}
-              onOpportunityFocus={handlePlannerOpportunityFocus}
-              plannerStores={plannerSqlStores}
-              territory={plannerTerritory}
-              shellStyle={plannerDrag.shellStyle}
-              headerDragProps={plannerDrag.headerDragProps}
-            />
-          )}
           {activeSection === 'comparar' && (
             <CompararAreasPanel
               onBack={() => handleSelectSection(null)}
@@ -377,6 +366,31 @@ const Index = () => {
             />
           )}
         </>
+      )}
+
+      {/* O planejador é irmão do painel Navegar: minimizar o menu não desmonta o roteiro. */}
+      {activeSection === 'planejar' && (
+        <RoutePlannerPanel
+          onBack={() => handleSelectSection(null)}
+          onClose={() => handleSelectSection(null)}
+          onRouteChange={handleRouteChange}
+          onAgencyFocus={handlePlannerOriginAgencyFocus}
+          onOriginLocationFocus={handlePlannerOriginLocationFocus}
+          onOriginClear={clearPlannerOrigin}
+          onDestinationAgencyFocus={handlePlannerDestinationAgencyFocus}
+          onDestinationLocationFocus={handlePlannerDestinationLocationFocus}
+          onDestinationClear={clearPlannerDestination}
+          onTerritoryRadiusChange={handlePlannerTerritoryRadiusChange}
+          onOpportunitySelectionChange={setPlannerSelectedStoreIds}
+          onOpportunityVisibilityChange={setPlannerVisibleStoreIds}
+          onOpportunityFocus={handlePlannerOpportunityFocus}
+          onOpportunityHover={setPlannerHoveredStoreId}
+          onOpportunityClassificationsChange={setPlannerStoreClassifications}
+          plannerStores={plannerSqlStores}
+          territory={plannerTerritory}
+          shellStyle={plannerDrag.shellStyle}
+          headerDragProps={plannerDrag.headerDragProps}
+        />
       )}
 
       {activeRoute && routeDetailsOpen && (
@@ -413,16 +427,23 @@ const Index = () => {
     <div className="min-h-screen bg-background">
       <header className="border-b bg-map-surface/50 backdrop-blur-sm">
         <div className="w-full px-4 py-4">
-          <div className="flex items-center space-x-3">
-            <div className="p-2 bg-map-primary/10 rounded-lg">
-              <Map className="h-6 w-6 text-map-primary" />
+          <div className="flex items-center gap-3">
+            <div className="flex shrink-0 items-center gap-3">
+              <div className="rounded-lg bg-map-primary/10 p-2">
+                <Map className="h-6 w-6 text-map-primary" />
+              </div>
+              <div>
+                <h1 className="text-xl font-bold">Mapa Comercial</h1>
+                <p className="text-sm text-muted-foreground">
+                  Gestão 360° - Igor Alencar
+                </p>
+              </div>
             </div>
-            <div>
-              <h1 className="text-xl font-bold">Mapa Comercial</h1>
-              <p className="text-sm text-muted-foreground">
-                Gestão 360° - Igor Alencar
-              </p>
-            </div>
+            <div
+              id="route-planner-header-summary"
+              className="ml-auto hidden min-w-0 items-center justify-end md:flex"
+              aria-live="polite"
+            />
           </div>
         </div>
       </header>
@@ -443,7 +464,10 @@ const Index = () => {
           plannerRouteAgencies={plannerRouteAgencies}
           plannerTerritoryFocus={plannerTerritoryFocus}
           plannerSelectedStoreIds={plannerSelectedStoreIds}
+          plannerVisibleStoreIds={plannerVisibleStoreIds}
           plannerOpportunityFocus={plannerOpportunityFocus}
+          plannerHoveredStoreId={plannerHoveredStoreId}
+          plannerStoreClassifications={plannerStoreClassifications}
           onPlannerStoresChange={setPlannerSqlStores}
           compareSupervisionAreas={compareSupervisionAreas}
           onCompareSupervisionAreasChange={handleCompareActiveChange}

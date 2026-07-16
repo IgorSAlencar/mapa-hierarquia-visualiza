@@ -35,11 +35,16 @@ import {
 import { mergeHeaderDrag } from './mergeHeaderDrag';
 
 export type PlanningPriority = 'potencial' | 'sem_visita' | 'deslocamento' | 'alertas' | 'equilibrado';
+export type RoutePlanningScreen = 0 | 1 | 2 | 3 | 4;
 
 interface JourneyResult {
   intention: string;
   originId: string;
   destination: string;
+  initialScreen?: RoutePlanningScreen;
+  initialPriority?: PlanningPriority;
+  initialOriginLocation?: DeviceLocation | null;
+  initialDestinationLocation?: DeviceLocation | null;
   territoryRadiusKm: number | null;
   priority: PlanningPriority;
 }
@@ -92,18 +97,31 @@ const ROUTE_PLANNER_HERO_EDGE_FADE: React.CSSProperties = {
   WebkitMaskComposite: 'source-in',
 };
 
-const RoutePlanningJourney: React.FC<Props> = ({ agencies, originId, destination, onClose, onComplete, onOriginAgencySelect, onOriginLocationSelect, onDestinationAgencySelect, onDestinationLocationSelect, onDestinationClear, onTerritoryRadiusSelect, headerDragProps }) => {
-  const [screen, setScreen] = useState(0);
+const RoutePlanningJourney: React.FC<Props> = ({ agencies, originId, destination, initialScreen = 0, initialPriority = 'potencial', initialOriginLocation = null, initialDestinationLocation = null, onClose, onComplete, onOriginAgencySelect, onOriginLocationSelect, onDestinationAgencySelect, onDestinationLocationSelect, onDestinationClear, onTerritoryRadiusSelect, headerDragProps }) => {
+  const initialDestinationAgencyId = agencies.find((agency) => agency.nome === destination)?.id ?? '';
+  const initialTerritoryRadius = /^Território em um raio de (\d+(?:[.,]\d+)?) km$/i.exec(destination)?.[1];
+  const parsedInitialTerritoryRadius = initialTerritoryRadius
+    ? Number(initialTerritoryRadius.replace(',', '.'))
+    : null;
+  const [screen, setScreen] = useState<RoutePlanningScreen>(initialScreen);
   const [intention, setIntention] = useState('rotina');
-  const [originType, setOriginType] = useState('agencia');
-  const [selectedOriginId, setSelectedOriginId] = useState('');
-  const [destinationType, setDestinationType] = useState<DestinationType>('agencia');
-  const [destinationAgencyId, setDestinationAgencyId] = useState('');
+  const [originType, setOriginType] = useState(initialOriginLocation ? 'localizacao' : 'agencia');
+  const [selectedOriginId, setSelectedOriginId] = useState(originId);
+  const [destinationType, setDestinationType] = useState<DestinationType>(
+    initialDestinationAgencyId
+      ? 'agencia'
+      : parsedInitialTerritoryRadius
+        ? 'territorio'
+        : initialDestinationLocation
+          ? 'municipio'
+          : 'agencia'
+  );
+  const [destinationAgencyId, setDestinationAgencyId] = useState(initialDestinationAgencyId);
   const [selectedDestination, setSelectedDestination] = useState(destination);
-  const [destinationLocation, setDestinationLocation] = useState<DeviceLocation | null>(null);
-  const [territoryRadiusKm, setTerritoryRadiusKm] = useState<number | null>(null);
-  const [priority, setPriority] = useState<PlanningPriority>('potencial');
-  const [originLocation, setOriginLocation] = useState<DeviceLocation | null>(null);
+  const [destinationLocation, setDestinationLocation] = useState<DeviceLocation | null>(initialDestinationLocation);
+  const [territoryRadiusKm, setTerritoryRadiusKm] = useState<number | null>(parsedInitialTerritoryRadius);
+  const [priority, setPriority] = useState<PlanningPriority>(initialPriority);
+  const [originLocation, setOriginLocation] = useState<DeviceLocation | null>(initialOriginLocation);
   const [locationLoading, setLocationLoading] = useState(false);
   const [locationError, setLocationError] = useState<string | null>(null);
   const [addressLocation, setAddressLocation] = useState<DeviceLocation | null>(null);
@@ -349,6 +367,22 @@ function normalizeAgencySearch(value: string): string {
   return value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase('pt-BR').trim();
 }
 
+function normalizeAgencyCodeSearch(value: string | null | undefined): string {
+  const raw = String(value ?? '').replace(/\s+/g, '').replace(',', '.');
+  if (!raw) return '';
+
+  // Aceita zeros a esquerda e o sufixo ".0" exibido por outras ferramentas.
+  if (/^\+?\d+(?:\.0+)?$/.test(raw)) {
+    try {
+      return BigInt(raw.split('.')[0].replace(/^\+/, '')).toString();
+    } catch {
+      // Usa busca textual quando o valor nao segue o formato numerico esperado.
+    }
+  }
+
+  return normalizeAgencySearch(raw);
+}
+
 function agencyLabel(agency: RegionMapPoint | undefined): string {
   if (!agency) return '';
   return agency.codAg ? `${agency.codAg} - ${agency.nome}` : agency.nome;
@@ -365,10 +399,31 @@ function AgencySearchSelect({ agencies, value, onChange, placeholder }: { agenci
 
   const matches = useMemo(() => {
     const search = normalizeAgencySearch(query);
-    const filtered = search
-      ? agencies.filter((agency) => normalizeAgencySearch(`${agency.codAg ?? ''} ${agency.nome}`).includes(search))
-      : agencies;
-    return filtered.slice(0, 10);
+    if (!search) return agencies.slice(0, 20);
+
+    const queryLooksLikeCode = /^\+?[\d\s]+(?:[.,]0+)?$/.test(query.trim());
+    const codeSearch = queryLooksLikeCode ? normalizeAgencyCodeSearch(query) : '';
+
+    return agencies
+      .map((agency, index) => {
+        const code = normalizeAgencyCodeSearch(agency.codAg);
+        const name = normalizeAgencySearch(agency.nome);
+        const searchableLabel = normalizeAgencySearch(`${agency.codAg ?? ''} ${agency.nome}`);
+        let rank = Number.POSITIVE_INFINITY;
+
+        if (codeSearch && code === codeSearch) rank = 0;
+        else if (codeSearch && code.startsWith(codeSearch)) rank = 1;
+        else if (codeSearch && code.includes(codeSearch)) rank = 2;
+        else if (name === search) rank = 3;
+        else if (name.startsWith(search)) rank = 4;
+        else if (searchableLabel.includes(search)) rank = 5;
+
+        return { agency, index, rank };
+      })
+      .filter((match) => Number.isFinite(match.rank))
+      .sort((a, b) => a.rank - b.rank || a.index - b.index)
+      .slice(0, 20)
+      .map((match) => match.agency);
   }, [agencies, query]);
 
   return <div className="relative mt-2" onClick={(event) => event.stopPropagation()}>

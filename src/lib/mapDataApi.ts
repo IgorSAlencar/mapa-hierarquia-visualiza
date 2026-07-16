@@ -48,6 +48,9 @@ export interface StoreProductionPoint {
 }
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? '';
+const POINTS_CACHE_MAX_ENTRIES = 120;
+const pointsResponseCache = new Map<string, { expiresAt: number; points: SqlMapPoint[] }>();
+const pendingPointsRequests = new Map<string, Promise<SqlMapPoint[]>>();
 
 export interface BboxQuery {
   minLng: number;
@@ -64,6 +67,26 @@ interface FetchPointsOptions {
   hierarchy?: SqlHierarchyFilter | null;
   /** Filtra lojas vinculadas à agência (COD_AG em TB_COORD_BE_IGOR). */
   codAg?: string | null;
+}
+
+function pointsCacheTtlMs(path: string, options: FetchPointsOptions): number {
+  if (path === '/api/map/lojas' && options.codAg) return 2 * 60_000;
+  if (path === '/api/map/lojas' && options.bbox) return 30_000;
+  if (path === '/api/map/lojas' && options.hierarchy) return 30_000;
+  if (path === '/api/map/lojas') return 2 * 60_000;
+  if (path === '/api/map/agencias' && !options.bbox && !options.hierarchy) return 2 * 60_000;
+  return 0;
+}
+
+function rememberPoints(url: string, points: SqlMapPoint[], ttlMs: number): void {
+  if (ttlMs <= 0) return;
+  pointsResponseCache.delete(url);
+  pointsResponseCache.set(url, { expiresAt: Date.now() + ttlMs, points });
+  while (pointsResponseCache.size > POINTS_CACHE_MAX_ENTRIES) {
+    const oldestKey = pointsResponseCache.keys().next().value as string | undefined;
+    if (!oldestKey) break;
+    pointsResponseCache.delete(oldestKey);
+  }
 }
 
 function buildQueryParams(options: FetchPointsOptions = {}) {
@@ -107,7 +130,7 @@ function buildQueryParams(options: FetchPointsOptions = {}) {
   return serialized ? `?${serialized}` : '';
 }
 
-async function fetchPoints(path: string, options: FetchPointsOptions = {}): Promise<SqlMapPoint[]> {
+async function fetchPointsFromApi(path: string, options: FetchPointsOptions = {}): Promise<SqlMapPoint[]> {
   const url = `${API_BASE_URL}${path}${buildQueryParams(options)}`;
   let response: Response;
   try {
@@ -125,6 +148,33 @@ async function fetchPoints(path: string, options: FetchPointsOptions = {}): Prom
 
   const data = (await response.json()) as { points?: SqlMapPoint[] };
   return Array.isArray(data.points) ? data.points : [];
+}
+
+async function fetchPoints(path: string, options: FetchPointsOptions = {}): Promise<SqlMapPoint[]> {
+  const url = `${API_BASE_URL}${path}${buildQueryParams(options)}`;
+  const ttlMs = pointsCacheTtlMs(path, options);
+  const cached = pointsResponseCache.get(url);
+  if (cached && cached.expiresAt > Date.now()) {
+    pointsResponseCache.delete(url);
+    pointsResponseCache.set(url, cached);
+    return cached.points;
+  }
+  if (cached) pointsResponseCache.delete(url);
+
+  const pending = pendingPointsRequests.get(url);
+  if (pending) return pending;
+
+  const request = fetchPointsFromApi(path, options)
+    .then((points) => {
+      rememberPoints(url, points, ttlMs);
+      return points;
+    })
+    .finally(() => {
+      pendingPointsRequests.delete(url);
+    });
+
+  pendingPointsRequests.set(url, request);
+  return request;
 }
 
 export function fetchAgencyPoints(options?: FetchPointsOptions) {

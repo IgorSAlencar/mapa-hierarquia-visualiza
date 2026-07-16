@@ -37,7 +37,7 @@ const MapOverlayMarkerInfoPanel: React.FC<MapOverlayMarkerInfoPanelProps> = ({
         ? 'Agência'
         : agencySelection?.sub?.trim() || 'Estrutura comercial';
 
-  if (!storeFilterCodAg && storeSelection) {
+  if (storeSelection) {
     return (
       <div
         className="mt-2 max-h-[calc(100vh-190px)] overflow-y-auto rounded-xl border border-slate-200/90 bg-white/95 shadow-md shadow-slate-900/5 backdrop-blur-sm"
