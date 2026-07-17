@@ -84,7 +84,7 @@ const PRIORITIES: Array<{ id: PlanningPriority; title: string; description: stri
 ];
 
 const ROUTE_PLANNER_HERO_IMG_CLASS =
-  'mx-auto block w-full max-h-[clamp(96px,28dvh,260px)] object-contain object-bottom';
+  'route-planning-welcome-image mx-auto block w-full max-h-[clamp(88px,24dvh,220px)] object-contain object-bottom';
 
 /** Esmaece cantos superior, inferior, esquerdo e direito (interseção dos gradientes).
  *  Intensidade do fade: percentuais do meio (ex. 18% / 82%) — quanto mais perto de 50%, mais forte. */
@@ -126,6 +126,8 @@ const RoutePlanningJourney: React.FC<Props> = ({ agencies, originId, destination
   const [locationError, setLocationError] = useState<string | null>(null);
   const [addressLocation, setAddressLocation] = useState<DeviceLocation | null>(null);
   const locationRequestIdRef = useRef(0);
+  const notifiedOriginAgencyIdRef = useRef<string | null>(null);
+  const notifiedDestinationAgencyIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (selectedOriginId && !agencies.some((agency) => agency.id === selectedOriginId)) {
@@ -137,15 +139,25 @@ const RoutePlanningJourney: React.FC<Props> = ({ agencies, originId, destination
   }, [agencies, selectedOriginId, destinationAgencyId]);
 
   useEffect(() => {
-    if (screen !== 2 || originType !== 'agencia') return;
+    if (screen !== 2 || originType !== 'agencia' || !selectedOriginId) {
+      notifiedOriginAgencyIdRef.current = null;
+      return;
+    }
     const agency = agencies.find((item) => item.id === selectedOriginId);
-    if (agency) onOriginAgencySelect?.(agency);
+    if (!agency || notifiedOriginAgencyIdRef.current === agency.id) return;
+    notifiedOriginAgencyIdRef.current = agency.id;
+    onOriginAgencySelect?.(agency);
   }, [agencies, onOriginAgencySelect, originType, screen, selectedOriginId]);
 
   useEffect(() => {
-    if (screen !== 3 || destinationType !== 'agencia') return;
+    if (screen !== 3 || destinationType !== 'agencia' || !destinationAgencyId) {
+      notifiedDestinationAgencyIdRef.current = null;
+      return;
+    }
     const agency = agencies.find((item) => item.id === destinationAgencyId);
-    if (agency) onDestinationAgencySelect?.(agency);
+    if (!agency || notifiedDestinationAgencyIdRef.current === agency.id) return;
+    notifiedDestinationAgencyIdRef.current = agency.id;
+    onDestinationAgencySelect?.(agency);
   }, [agencies, destinationAgencyId, destinationType, onDestinationAgencySelect, screen]);
 
   const finish = () => {
@@ -235,9 +247,9 @@ const RoutePlanningJourney: React.FC<Props> = ({ agencies, originId, destination
   if (screen === 0) {
     return (
       <JourneyShell title="Montar meu roteiro" onClose={onClose} headerDragProps={headerDragProps}>
-        <div className="flex min-h-0 flex-1 flex-col overflow-hidden px-3 pb-3 pt-1 sm:px-6 sm:pb-5 sm:pt-2">
-          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain pr-1">
-            <div className="relative mx-auto w-full max-w-[400px] shrink-0 sm:max-w-[420px]">
+        <div className="route-planning-welcome-body flex min-h-0 flex-col overflow-hidden px-3 pb-3 pt-1 sm:px-6 sm:pb-5 sm:pt-2">
+          <div className="route-planning-stage min-h-0 overflow-hidden">
+            <div className="route-planning-welcome-hero relative mx-auto w-full max-w-[400px] shrink-0 sm:max-w-[420px]">
             <img
                 aria-hidden
                 src="/IMG_ROTEIRO.jpg"
@@ -256,7 +268,6 @@ const RoutePlanningJourney: React.FC<Props> = ({ agencies, originId, destination
                 width={1000}
                 height={622}
                 loading="eager"
-                fetchPriority="high"
               style={ROUTE_PLANNER_HERO_EDGE_FADE}
               className={cn('relative z-[1]', ROUTE_PLANNER_HERO_IMG_CLASS)}
             />
@@ -265,11 +276,11 @@ const RoutePlanningJourney: React.FC<Props> = ({ agencies, originId, destination
               <h2 className="text-base font-semibold text-slate-900 sm:text-lg">Para onde vamos hoje?</h2>
               <p className="mx-auto mt-2 max-w-[320px] text-xs leading-relaxed text-slate-500 sm:mt-3">Vamos montar o melhor roteiro de visitas com base na sua intenção.</p>
             </div>
-            <div className="mx-auto mt-4 grid w-full max-w-[320px] gap-2 text-sm text-slate-600 sm:mt-5 sm:gap-3">
+            <div className="route-planning-welcome-features mx-auto mt-4 grid w-full max-w-[360px] grid-cols-2 gap-x-3 gap-y-2 text-xs text-slate-600 sm:mt-5 sm:gap-y-3">
               {[['Oportunidades certas', Target], ['Melhor ordem de visitas', MapPin], ['Menos deslocamento', Navigation], ['Mais resultados', Zap]].map(([label, Icon]) => <div key={String(label)} className="flex items-center gap-3"><span className="flex h-7 w-7 items-center justify-center rounded-lg bg-blue-50 text-blue-700"><Icon className="h-4 w-4" /></span><span>{String(label)}</span></div>)}
             </div>
           </div>
-          <div className="shrink-0 border-t border-slate-100 bg-white pt-3">
+          <div className="route-planning-footer shrink-0 border-t border-slate-100 bg-white pt-3">
             <button type="button" onClick={() => setScreen(1)} className="flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-blue-700 to-sky-600 px-4 py-3 text-sm font-semibold text-white shadow-lg shadow-blue-200 sm:py-3.5">Começar <ArrowRight className="h-4 w-4" /></button>
           </div>
         </div>
@@ -279,15 +290,15 @@ const RoutePlanningJourney: React.FC<Props> = ({ agencies, originId, destination
 
   return (
     <JourneyShell title="Montar meu roteiro" step={screen} onClose={onClose} headerDragProps={headerDragProps}>
-      <div className="flex min-h-0 flex-1 flex-col overflow-hidden px-3 pb-3 pt-3 sm:px-7 sm:pb-5 sm:pt-5">
-        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain pr-1">
+      <div className="route-planning-step-body flex min-h-0 flex-col overflow-hidden px-3 pb-3 pt-3 sm:px-7 sm:pb-5 sm:pt-5">
+        <div className="route-planning-stage min-h-0 overflow-hidden">
           {screen === 1 && <>
           <JourneyTitle title="Qual é sua intenção hoje?" subtitle="Selecione uma ou mais opções." />
-          <div className="mt-4 grid grid-cols-1 gap-2 min-[360px]:grid-cols-2 sm:mt-5">{INTENTIONS.map((option) => <ChoiceCard key={option.id} {...option} selected={intention === option.id} onClick={() => setIntention(option.id)} />)}</div>
+          <div className="route-planning-choice-list route-planning-intention-grid mt-4 grid grid-cols-1 gap-2 min-[360px]:grid-cols-2 sm:mt-5">{INTENTIONS.map((option) => <ChoiceCard key={option.id} {...option} selected={intention === option.id} onClick={() => setIntention(option.id)} />)}</div>
         </>}
         {screen === 2 && <>
           <JourneyTitle title="De onde você vai sair?" subtitle="Selecione sua origem." />
-          <div className="mt-4 space-y-2 sm:mt-5">
+          <div className="route-planning-choice-list mt-4 space-y-2 sm:mt-5">
             <ChoiceRow icon={UsersRound} title="Agência" description="Sair de uma agência" selected={originType === 'agencia'} onClick={() => handleOriginTypeSelect('agencia')}>
               {originType === 'agencia' && <AgencySearchSelect agencies={agencies} value={selectedOriginId} onChange={setSelectedOriginId} placeholder="Buscar agência por código ou nome..." />}
             </ChoiceRow>
@@ -317,7 +328,7 @@ const RoutePlanningJourney: React.FC<Props> = ({ agencies, originId, destination
         </>}
         {screen === 3 && <>
           <JourneyTitle title="Para onde pretende ir?" subtitle="Defina seu destino ou área de atuação." />
-          <div className="mt-4 space-y-2 sm:mt-5">
+          <div className="route-planning-choice-list route-planning-destination-list mt-4 space-y-2 sm:mt-5">
             <ChoiceRow icon={Building2} title="Agência" description="Escolher uma agência como destino" selected={destinationType === 'agencia'} onClick={() => handleDestinationTypeSelect('agencia')}>
               {destinationType === 'agencia' && <AgencySearchSelect agencies={agencies} value={destinationAgencyId} onChange={setDestinationAgencyId} placeholder="Buscar agência de destino..." />}
             </ChoiceRow>
@@ -334,10 +345,10 @@ const RoutePlanningJourney: React.FC<Props> = ({ agencies, originId, destination
         </>}
         {screen === 4 && <>
           <JourneyTitle title="Qual é a prioridade do roteiro?" subtitle="Como devemos priorizar as oportunidades?" />
-          <div className="mt-4 space-y-2 sm:mt-5">{PRIORITIES.map((option) => <ChoiceRow key={option.id} icon={option.icon} title={option.title} description={option.description} selected={priority === option.id} onClick={() => setPriority(option.id)} />)}</div>
+          <div className="route-planning-choice-list route-planning-priority-list mt-4 space-y-2 sm:mt-5">{PRIORITIES.map((option) => <ChoiceRow key={option.id} icon={option.icon} title={option.title} description={option.description} selected={priority === option.id} onClick={() => setPriority(option.id)} />)}</div>
         </>}
         </div>
-        <div className="grid shrink-0 grid-cols-2 gap-2 border-t border-slate-100 bg-white pt-3 sm:gap-3">
+        <div className="route-planning-footer grid shrink-0 grid-cols-2 gap-2 border-t border-slate-100 bg-white pt-3 sm:gap-3">
           <button type="button" onClick={() => setScreen((value) => Math.max(0, value - 1))} className="flex min-w-0 items-center justify-center gap-1.5 rounded-xl border border-slate-200 px-2 py-2.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 sm:gap-2 sm:px-4 sm:py-3 sm:text-sm"><ArrowLeft className="h-4 w-4 shrink-0" />Voltar</button>
           <button type="button" disabled={!canContinue} onClick={handleContinue} className="flex min-w-0 items-center justify-center gap-1.5 rounded-xl bg-gradient-to-r from-blue-700 to-sky-600 px-2 py-2.5 text-center text-xs font-semibold leading-tight text-white shadow-md shadow-blue-200 disabled:cursor-not-allowed disabled:opacity-45 sm:gap-2 sm:px-4 sm:py-3 sm:text-sm"><span>{screen === 4 ? 'Gerar oportunidades' : 'Continuar'}</span> {screen === 4 ? <Sparkles className="h-4 w-4 shrink-0" /> : <ArrowRight className="h-4 w-4 shrink-0" />}</button>
         </div>
@@ -348,19 +359,19 @@ const RoutePlanningJourney: React.FC<Props> = ({ agencies, originId, destination
 
 function JourneyShell({ title, step, onClose, children, headerDragProps }: { title: string; step?: number; onClose: () => void; children: React.ReactNode; headerDragProps?: PanelHeaderDragProps }) {
   const header = mergeHeaderDrag('flex shrink-0 items-center gap-2 border-b border-slate-200 px-3 py-2', headerDragProps);
-  return <section className="pointer-events-auto flex h-[min(650px,calc(100dvh-166px))] max-h-[calc(100dvh-166px)] min-h-0 w-[min(430px,calc(100vw-32px))] min-w-0 flex-col overflow-hidden rounded-xl border border-slate-200 bg-white font-sans text-slate-700 shadow-2xl shadow-slate-900/20"><header className={header.className} style={header.dragStyle} {...header.dragHandlers} title="Arraste para mover"><span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-blue-50 text-blue-700"><Map className="h-3.5 w-3.5" /></span><h1 className="min-w-0 flex-1 truncate text-xs font-bold uppercase tracking-wide text-slate-900">{title}</h1>{step ? <span className="shrink-0 text-[10px] font-medium text-slate-500">Passo {step} de 4</span> : null}<button type="button" data-panel-drag-ignore onClick={onClose} className="shrink-0 rounded-lg p-1.5 text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-700"><X className="h-4 w-4" /></button></header>{step ? <div className="mx-3 mt-2 h-0.5 shrink-0 rounded-full bg-slate-100"><div className="h-full rounded-full bg-blue-700 transition-all" style={{ width: `${step * 25}%` }} /></div> : null}{children}</section>;
+  return <section className="route-planning-journey pointer-events-auto flex min-h-0 min-w-0 flex-col overflow-hidden rounded-xl border border-slate-200 bg-white font-sans text-slate-700 shadow-2xl shadow-slate-900/20"><header className={header.className} style={header.dragStyle} {...header.dragHandlers} title="Arraste para mover"><span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-blue-50 text-blue-700"><Map className="h-3.5 w-3.5" /></span><h1 className="min-w-0 flex-1 truncate text-xs font-bold uppercase tracking-wide text-slate-900">{title}</h1>{step ? <span className="shrink-0 text-[10px] font-medium text-slate-500">Passo {step} de 4</span> : null}<button type="button" data-panel-drag-ignore onClick={onClose} className="shrink-0 rounded-lg p-1.5 text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-700"><X className="h-4 w-4" /></button></header>{step ? <div className="route-planning-progress mx-3 mt-2 h-0.5 shrink-0 rounded-full bg-slate-100"><div className="h-full rounded-full bg-blue-700 transition-all" style={{ width: `${step * 25}%` }} /></div> : null}{children}</section>;
 }
 
 function JourneyTitle({ title, subtitle }: { title: string; subtitle: string }) {
-  return <div className="shrink-0"><h2 className="text-sm font-semibold text-slate-900">{title}</h2><p className="mt-1 text-xs text-slate-500">{subtitle}</p></div>;
+  return <div className="route-planning-title shrink-0"><h2 className="text-sm font-semibold text-slate-900">{title}</h2><p className="mt-1 text-xs text-slate-500">{subtitle}</p></div>;
 }
 
 function ChoiceCard({ icon: Icon, title, description, selected, onClick }: { icon: React.ElementType; title: string; description: string; selected: boolean; onClick: () => void }) {
-  return <button type="button" onClick={onClick} className={cn('flex min-h-[68px] items-start gap-2 rounded-xl border p-2 text-left transition-colors sm:min-h-[76px] sm:p-2.5', selected ? 'border-blue-500 bg-blue-50 shadow-sm' : 'border-slate-200 bg-white hover:border-blue-200')}><span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-slate-50 text-slate-600"><Icon className="h-3.5 w-3.5" /></span><span className="min-w-0"><span className="block text-sm font-medium leading-tight text-slate-700">{title}</span><span className="mt-1 block text-[10px] leading-snug text-slate-500">{description}</span></span></button>;
+  return <button type="button" onClick={onClick} className={cn('route-planning-choice-card flex min-h-[68px] items-start gap-2 rounded-xl border p-2 text-left transition-colors sm:min-h-[76px] sm:p-2.5', selected ? 'border-blue-500 bg-blue-50 shadow-sm' : 'border-slate-200 bg-white hover:border-blue-200')}><span className="route-planning-choice-icon flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-slate-50 text-slate-600"><Icon className="h-3.5 w-3.5" /></span><span className="min-w-0"><span className="route-planning-choice-title block text-sm font-medium leading-tight text-slate-700">{title}</span><span className="route-planning-choice-description mt-1 block text-[10px] leading-snug text-slate-500">{description}</span></span></button>;
 }
 
 function ChoiceRow({ icon: Icon, title, description, selected, onClick, children }: { icon: React.ElementType; title: string; description: string; selected: boolean; onClick: () => void; children?: React.ReactNode }) {
-  return <div role="button" tabIndex={0} onClick={onClick} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') onClick(); }} className={cn('relative w-full rounded-xl border px-3 py-2 text-left transition-colors', selected ? 'z-20 border-blue-600 bg-blue-50/70 shadow-sm' : 'border-slate-200 bg-white hover:border-blue-200')}><span className="flex items-center gap-2.5"><span className={cn('flex h-8 w-8 shrink-0 items-center justify-center rounded-lg', selected ? 'bg-blue-100 text-blue-700' : 'bg-slate-50 text-slate-600')}><Icon className="h-3.5 w-3.5" /></span><span className="min-w-0 flex-1"><span className="block text-sm font-medium text-slate-700">{title}</span><span className="mt-0.5 block text-[10px] leading-tight text-slate-500">{description}</span></span>{selected ? <span className="flex h-5 w-5 items-center justify-center rounded-full bg-blue-700 text-white"><Check className="h-3 w-3" /></span> : null}</span>{children}</div>;
+  return <div role="button" aria-pressed={selected} data-selected={selected ? 'true' : 'false'} tabIndex={0} onClick={onClick} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') onClick(); }} className={cn('route-planning-choice-row relative w-full rounded-xl border px-3 py-2 text-left transition-colors', selected ? 'z-20 border-blue-600 bg-blue-50/70 shadow-sm' : 'border-slate-200 bg-white hover:border-blue-200')}><span className="flex items-center gap-2.5"><span className={cn('route-planning-choice-icon flex h-8 w-8 shrink-0 items-center justify-center rounded-lg', selected ? 'bg-blue-100 text-blue-700' : 'bg-slate-50 text-slate-600')}><Icon className="h-3.5 w-3.5" /></span><span className="min-w-0 flex-1"><span className="route-planning-choice-title block text-sm font-medium text-slate-700">{title}</span><span className="route-planning-choice-description mt-0.5 block text-[10px] leading-tight text-slate-500">{description}</span></span>{selected ? <span className="flex h-5 w-5 items-center justify-center rounded-full bg-blue-700 text-white"><Check className="h-3 w-3" /></span> : null}</span>{children}</div>;
 }
 
 function normalizeAgencySearch(value: string): string {
@@ -426,8 +437,8 @@ function AgencySearchSelect({ agencies, value, onChange, placeholder }: { agenci
       .map((match) => match.agency);
   }, [agencies, query]);
 
-  return <div className="relative mt-2" onClick={(event) => event.stopPropagation()}>
-    <div className="relative h-10 rounded-full border border-slate-200/90 bg-white/95 shadow-md shadow-slate-900/5">
+  return <div className="route-planning-inline-control relative mt-2" onClick={(event) => event.stopPropagation()}>
+    <div className="route-planning-input-shell relative h-10 rounded-full border border-slate-200/90 bg-white/95 shadow-md shadow-slate-900/5">
       <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
       <input
         value={query}
@@ -529,8 +540,8 @@ function LocationAutocomplete({ kind, value, onChange, inputLabel }: { kind: 'ad
           ? `Nenhum ${kind === 'municipality' ? 'município' : 'endereço'} encontrado.`
           : '';
 
-  return <div className="relative mt-2" onClick={(event) => event.stopPropagation()}>
-    <div className={cn('relative h-10 rounded-full border bg-white/95 shadow-md shadow-slate-900/5', value ? 'border-emerald-300' : 'border-slate-200/90')}>
+  return <div className="route-planning-inline-control relative mt-2" onClick={(event) => event.stopPropagation()}>
+    <div className={cn('route-planning-input-shell relative h-10 rounded-full border bg-white/95 shadow-md shadow-slate-900/5', value ? 'border-emerald-300' : 'border-slate-200/90')}>
       <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
       <input
         ref={inputRef}
@@ -590,7 +601,7 @@ function LocationAutocomplete({ kind, value, onChange, inputLabel }: { kind: 'ad
 const TERRITORY_RADIUS_OPTIONS_KM = [5, 10, 15, 20, 25, 30];
 
 function TerritoryRadiusSelect({ value, onChange }: { value: number | null; onChange: (radiusKm: number) => void }) {
-  return <div className="mt-2" onClick={(event) => event.stopPropagation()}>
+  return <div className="route-planning-territory mt-2" onClick={(event) => event.stopPropagation()}>
     <p className="mb-2 text-[10px] leading-snug text-slate-500">Raio calculado a partir do ponto de origem.</p>
     <div className="grid grid-cols-3 gap-1.5" role="radiogroup" aria-label="Raio do território">
       {TERRITORY_RADIUS_OPTIONS_KM.map((radiusKm) => <button
@@ -600,7 +611,7 @@ function TerritoryRadiusSelect({ value, onChange }: { value: number | null; onCh
         aria-checked={value === radiusKm}
         onClick={() => onChange(radiusKm)}
         className={cn(
-          'rounded-lg border px-2 py-2 text-xs font-semibold transition-colors',
+          'route-planning-territory-option rounded-lg border px-2 py-2 text-xs font-semibold transition-colors',
           value === radiusKm
             ? 'border-blue-600 bg-blue-600 text-white shadow-sm'
             : 'border-slate-200 bg-white text-slate-600 hover:border-blue-300 hover:bg-blue-50'

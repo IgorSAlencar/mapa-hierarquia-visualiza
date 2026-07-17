@@ -591,3 +591,203 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* Jornada de montagem do roteiro: altura estável, com respiro antes das ações. */
+.route-planning-journey {
+  width: min(430px, calc(100vw - 32px));
+  height: min(560px, calc(100dvh - clamp(88px, 15dvh, 150px) - 16px));
+  max-height: calc(100dvh - clamp(88px, 15dvh, 150px) - 16px);
+}
+
+.route-planning-step-body,
+.route-planning-welcome-body,
+.route-planning-stage {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.route-planning-stage {
+  overflow: hidden;
+}
+
+@media (max-height: 720px) {
+  .route-planning-journey {
+    width: min(560px, calc(100vw - 24px));
+    height: min(460px, calc(100dvh - clamp(88px, 15dvh, 150px) - 16px));
+  }
+
+  .route-planning-step-body,
+  .route-planning-welcome-body {
+    padding: 8px 16px 10px;
+  }
+
+  .route-planning-progress {
+    margin-top: 6px;
+  }
+
+  .route-planning-title h2 {
+    font-size: 13px;
+    line-height: 1.2;
+  }
+
+  .route-planning-title p {
+    margin-top: 2px;
+    font-size: 10px;
+    line-height: 1.25;
+  }
+
+  .route-planning-choice-list {
+    margin-top: 8px !important;
+  }
+
+  .route-planning-choice-list > :not([hidden]) ~ :not([hidden]) {
+    margin-top: 6px;
+    margin-bottom: 0;
+  }
+
+  .route-planning-intention-grid > :not([hidden]) ~ :not([hidden]) {
+    margin-top: 0;
+  }
+
+  .route-planning-choice-row {
+    padding: 5px 10px;
+  }
+
+  .route-planning-choice-card {
+    min-height: 56px !important;
+    padding: 7px !important;
+  }
+
+  .route-planning-choice-icon {
+    width: 28px !important;
+    height: 28px !important;
+  }
+
+  .route-planning-choice-title {
+    font-size: 12px !important;
+    line-height: 1.15;
+  }
+
+  .route-planning-choice-description {
+    margin-top: 2px;
+    font-size: 9px !important;
+    line-height: 1.2;
+  }
+
+  .route-planning-inline-control,
+  .route-planning-territory {
+    margin-top: 5px;
+  }
+
+  .route-planning-input-shell {
+    height: 34px !important;
+  }
+
+  .route-planning-input-shell input {
+    font-size: 12px;
+  }
+
+  .route-planning-territory > p {
+    margin-bottom: 4px;
+    font-size: 9px;
+  }
+
+  .route-planning-territory-option {
+    padding-top: 5px !important;
+    padding-bottom: 5px !important;
+    font-size: 10px !important;
+  }
+
+  .route-planning-footer {
+    padding-top: 8px;
+  }
+
+  .route-planning-footer button {
+    padding-top: 8px !important;
+    padding-bottom: 8px !important;
+    font-size: 12px !important;
+  }
+
+  .route-planning-welcome-hero {
+    max-width: 300px !important;
+  }
+
+  .route-planning-welcome-image {
+    max-height: 105px !important;
+  }
+
+  .route-planning-welcome-body h2 {
+    font-size: 15px;
+  }
+
+  .route-planning-welcome-body p {
+    margin-top: 4px;
+    font-size: 10px;
+  }
+
+  .route-planning-welcome-features {
+    max-width: 430px;
+    margin-top: 9px !important;
+    row-gap: 6px !important;
+  }
+}
+
+@media (max-height: 580px) {
+  .route-planning-journey {
+    height: min(400px, calc(100dvh - 104px));
+  }
+
+  .route-planning-step-body,
+  .route-planning-welcome-body {
+    padding: 6px 12px 8px;
+  }
+
+  .route-planning-welcome-image {
+    max-height: 72px !important;
+  }
+
+  .route-planning-welcome-features {
+    margin-top: 6px !important;
+    row-gap: 4px !important;
+  }
+
+  .route-planning-choice-list {
+    margin-top: 6px !important;
+  }
+
+  .route-planning-choice-row {
+    padding-top: 4px;
+    padding-bottom: 4px;
+  }
+
+  .route-planning-destination-list {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+  }
+
+  .route-planning-destination-list > :not([hidden]) ~ :not([hidden]) {
+    margin-top: 0;
+  }
+
+  .route-planning-destination-list > [data-selected='true'] {
+    grid-column: 1 / -1;
+  }
+
+  .route-planning-footer {
+    padding-top: 6px;
+  }
+}
+
+@media (max-height: 580px) and (min-width: 520px) {
+  .route-planning-intention-grid,
+  .route-planning-priority-list {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+  }
+
+  .route-planning-priority-list > :not([hidden]) ~ :not([hidden]) {
+    margin-top: 0;
+  }
+}

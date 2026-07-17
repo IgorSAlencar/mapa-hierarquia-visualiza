@@ -23,6 +23,13 @@ export interface VisitStop {
   lng: number;
 }
 
+export interface VisitRouteDurationBreakdown {
+  travelMinutes: number;
+  visitMinutes: number;
+  minutesPerVisit: number;
+  source: 'calculated' | 'approximate' | 'planned';
+}
+
 export interface VisitRoute {
   id: string;
   /** Chave da supervisão (Gerente Comercial) dona do roteiro. */
@@ -32,6 +39,7 @@ export interface VisitRoute {
   data: string;
   distanciaKm: number;
   duracaoEstimada: string;
+  durationBreakdown?: VisitRouteDurationBreakdown;
   stops: VisitStop[];
   origin?: { nome: string; lat: number; lng: number };
   destination?: { nome: string; lat: number; lng: number };
@@ -46,6 +54,12 @@ export const VISIT_ROUTES: VisitRoute[] = [
     data: 'Hoje, 11 de jun. de 2026',
     distanciaKm: 128,
     duracaoEstimada: '7h 30m',
+    durationBreakdown: {
+      travelMinutes: 250,
+      visitMinutes: 200,
+      minutesPerVisit: 40,
+      source: 'planned',
+    },
     stops: [
       {
         id: 1,
@@ -127,6 +141,12 @@ export const VISIT_ROUTES: VisitRoute[] = [
     data: 'Hoje, 11 de jun. de 2026',
     distanciaKm: 46,
     duracaoEstimada: '5h 45m',
+    durationBreakdown: {
+      travelMinutes: 185,
+      visitMinutes: 160,
+      minutesPerVisit: 40,
+      source: 'planned',
+    },
     stops: [
       {
         id: 1,

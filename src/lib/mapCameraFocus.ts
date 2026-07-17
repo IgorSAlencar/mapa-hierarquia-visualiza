@@ -63,6 +63,21 @@ export function applyMapScrollZoomSettings(m: mapboxgl.Map): void {
   }
 }
 
+/**
+ * Garante que um foco programatico de camera nao deixe o mapa preso.
+ * Cada handler e restaurado isoladamente para manter compatibilidade entre
+ * versoes do Mapbox GL e dispositivos com mouse ou toque.
+ */
+export function enableMapInteractions(m: mapboxgl.Map): void {
+  try { m.dragPan.enable(); } catch { /* ignore */ }
+  try { m.boxZoom.enable(); } catch { /* ignore */ }
+  try { m.doubleClickZoom.enable(); } catch { /* ignore */ }
+  try { m.keyboard.enable(); } catch { /* ignore */ }
+  try { m.dragRotate.enable(); } catch { /* ignore */ }
+  try { m.touchZoomRotate.enable(); } catch { /* ignore */ }
+  applyMapScrollZoomSettings(m);
+}
+
 export function captureMapCamera(m: mapboxgl.Map): SavedMapCamera {
   const center = m.getCenter();
   return {

@@ -46,6 +46,7 @@ import {
   restoreMapCamera,
   fitMapToBrazilOverview,
   applyMapScrollZoomSettings,
+  enableMapInteractions,
   getPointCoordinates,
   type SavedMapCamera,
 } from '@/lib/mapCameraFocus';
@@ -83,7 +84,11 @@ import {
 } from '@/lib/mapDataApi';
 import { fetchExpressoProductivityRows, fetchExpressoStateMetrics } from '@/lib/expressoApi';
 import { loadSupervisionAreas } from '@/lib/supervisionAreas';
-import { getVisitRouteBounds, syncVisitRouteOnMap } from '@/lib/visitRouteMapLayer';
+import {
+  getVisitRouteBounds,
+  removeVisitRouteFromMap,
+  syncVisitRouteOnMap,
+} from '@/lib/visitRouteMapLayer';
 import { fetchDrivingGeometry } from '@/lib/mapboxDirections';
 import {
   addPlannerPriorityBadgeLayers,
@@ -91,6 +96,10 @@ import {
   PLANNER_PRIORITY_BADGE_LAYER_IDS,
   syncPlannerPriorityBadges,
 } from '@/lib/plannerPriorityBadges';
+import {
+  clearPlannerMapArtifacts,
+  PLANNER_TRANSIENT_SOURCE_IDS,
+} from '@/lib/plannerMapArtifacts';
 import RouteLegend from '@/components/navigator/RouteLegend';
 import { isCompareScopeHierarchy } from '@/lib/compareAreasScope';
 import {
@@ -1844,6 +1853,7 @@ interface MapComponentProps {
   } | null;
   plannerHoveredStoreId?: string | null;
   plannerStoreClassifications?: Record<string, 'alta' | 'media' | 'baixa'>;
+  plannerResultsPanelExpanded?: boolean;
   onPlannerStoresChange?: (points: SqlMapPoint[]) => void;
   /** Painéis flutuantes do Navegar (abaixo da UI do mapa: busca, AG, lojas, equipe). */
   navigatorOverlays?: React.ReactNode;
@@ -2027,6 +2037,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
   plannerOpportunityFocus = null,
   plannerHoveredStoreId = null,
   plannerStoreClassifications = {},
+  plannerResultsPanelExpanded = false,
   onPlannerStoresChange,
   navigatorOverlays,
 }) => {
@@ -3039,8 +3050,20 @@ const MapComponent: React.FC<MapComponentProps> = ({
     if (!plannerAgencyFocus) return;
     const m = map.current;
     if (!m) return;
+
+    let released = false;
+    let fallbackTimer: number | null = null;
+    const releaseInteractions = () => {
+      if (released) return;
+      released = true;
+      if (fallbackTimer != null) window.clearTimeout(fallbackTimer);
+      m.off('moveend', releaseInteractions);
+      enableMapInteractions(m);
+    };
+
     try {
       m.stop();
+      m.once('moveend', releaseInteractions);
       m.easeTo({
         center: plannerAgencyFocus.lngLat,
         zoom: Math.max(m.getZoom(), 9.4),
@@ -3052,9 +3075,19 @@ const MapComponent: React.FC<MapComponentProps> = ({
         easing: (progress) => 1 - Math.pow(1 - progress, 3),
         essential: true,
       });
+      // Protege contra estilos/dispositivos que nao disparam moveend ao
+      // interromper a animacao. O usuario volta a controlar o mapa logo apos o foco.
+      fallbackTimer = window.setTimeout(releaseInteractions, 220);
     } catch {
       /* mapa ainda ajustando o estilo */
+      releaseInteractions();
     }
+
+    return () => {
+      if (fallbackTimer != null) window.clearTimeout(fallbackTimer);
+      m.off('moveend', releaseInteractions);
+      enableMapInteractions(m);
+    };
   }, [plannerAgencyFocus]);
 
   useEffect(() => {
@@ -3362,6 +3395,34 @@ const MapComponent: React.FC<MapComponentProps> = ({
   }, [plannerMode, plannerAgencyFocus, plannerRouteAgencies]);
 
   useEffect(() => {
+    if (plannerMode) return;
+    const mapInstance = map.current;
+    if (!mapInstance) return;
+    ++plannerStoreFetchGenRef.current;
+    setPlannerStorePoints([]);
+    setOverlayMarkerSelection(null);
+
+    const clearArtifacts = () => {
+      clearPlannerMapArtifacts(mapInstance);
+      if (!visitRoute) {
+        removeVisitRouteFromMap(mapInstance);
+        visitRouteFitIdRef.current = null;
+      }
+      for (const sourceId of PLANNER_TRANSIENT_SOURCE_IDS) {
+        delete lastOverlayFcSignatureRef.current[sourceId];
+        delete lastOverlaySourceRef.current[sourceId];
+      }
+    };
+    const cancelReadyClear = runWhenMapStyleReady(mapInstance, clearArtifacts);
+    // Garante a limpeza mesmo se o fechamento ocorrer durante uma troca de estilo.
+    mapInstance.once('idle', clearArtifacts);
+    return () => {
+      cancelReadyClear();
+      mapInstance.off('idle', clearArtifacts);
+    };
+  }, [mapReadyVersion, plannerMode, visitRoute]);
+
+  useEffect(() => {
     onPlannerStoresChange?.(plannerMode ? plannerStorePoints : []);
   }, [onPlannerStoresChange, plannerMode, plannerStorePoints]);
 
@@ -3447,6 +3508,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
   const [statePanelMinimized, setStatePanelMinimized] = useState(false);
   /** Painel ocupando a tela (expandido). Minimizado mantém a seleção mas libera o layout. */
   const statePanelExpanded = hasStatePanel && !statePanelMinimized;
+  const rightSidePanelExpanded = plannerResultsPanelExpanded || (statePanelExpanded && !plannerMode);
 
   /** Toda nova seleção de estado/município reabre o painel (cancela o estado minimizado). */
   useEffect(() => {
@@ -5927,6 +5989,39 @@ const MapComponent: React.FC<MapComponentProps> = ({
     }
   }, [municipalityChoroplethEnabled, activeBaseStyle]);
 
+  const fitVisitRouteInAvailableViewport = useCallback((m: mapboxgl.Map, route: VisitRoute, duration: number) => {
+    const bounds = getVisitRouteBounds(route);
+    if (!bounds) return false;
+    const containerWidth = m.getContainer().clientWidth;
+    const plannerPreview = plannerMode && route.id.startsWith('planner-preview-');
+    const plannerGeneratedRoute = plannerMode && route.id.startsWith('planejado-');
+    const resultsPanelVisible = plannerResultsPanelExpanded && containerWidth >= 920;
+    const desiredRightPadding = resultsPanelVisible
+      ? (plannerGeneratedRoute ? 884 : 520)
+      : 100;
+    const rightPadding = Math.min(desiredRightPadding, Math.max(100, containerWidth - 300));
+    try {
+      m.stop();
+      m.fitBounds(bounds, {
+        padding: plannerMode
+          ? {
+              top: 80,
+              bottom: plannerGeneratedRoute ? 130 : 90,
+              left: 80,
+              right: rightPadding,
+            }
+          : 120,
+        maxZoom: plannerPreview ? 9.5 : 11.5,
+        duration,
+        easing: (progress: number) => 1 - Math.pow(1 - progress, 3),
+        essential: true,
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  }, [plannerMode, plannerResultsPanelExpanded]);
+
   /** Camada do roteiro de visitas (linha + paradas numeradas por status). */
   useEffect(() => {
     const m = map.current;
@@ -5942,65 +6037,28 @@ const MapComponent: React.FC<MapComponentProps> = ({
     }
     if (visitRouteFitIdRef.current !== visitRoute.id) {
       visitRouteFitIdRef.current = visitRoute.id;
-      const bounds = getVisitRouteBounds(visitRoute);
-      if (bounds) {
-        try {
-          const plannerPreview = plannerMode && visitRoute.origin && visitRoute.destination;
-          const wideViewport = m.getContainer().clientWidth >= 900;
-          m.stop();
-          m.fitBounds(bounds, {
-            padding: plannerPreview
-              ? { top: 80, bottom: 80, left: wideViewport ? 480 : 70, right: 100 }
-              : 120,
-            maxZoom: plannerPreview ? 8.8 : 11,
-            duration: plannerPreview ? 240 : 1100,
-            ...(plannerPreview
-              ? { easing: (progress: number) => 1 - Math.pow(1 - progress, 3) }
-              : {}),
-            essential: true,
-          });
-        } catch {
-          /* viewport pequena para o padding */
-        }
-      }
+      fitVisitRouteInAvailableViewport(
+        m,
+        visitRoute,
+        visitRoute.id.startsWith('planner-preview-') ? 240 : 700
+      );
     }
     return cancelSync;
-  }, [visitRoute, selectedVisitStopId, mapReadyVersion, plannerMode]);
+  }, [fitVisitRouteInAvailableViewport, visitRoute, selectedVisitStopId, mapReadyVersion]);
 
   /** Foco de câmera pedido pelos painéis ("Abrir no mapa" / "Ver roteiro completo"). */
   useEffect(() => {
     const m = map.current;
     if (!m || !visitFocus || !visitRoute) return;
     if (visitFocus.stopId == null) {
-      const bounds = getVisitRouteBounds(visitRoute);
-      if (bounds) {
-        try {
-          const plannerPreview = plannerMode && visitRoute.origin && visitRoute.destination;
-          const wideViewport = m.getContainer().clientWidth >= 900;
-          m.stop();
-          m.fitBounds(bounds, {
-            padding: plannerPreview
-              ? { top: 80, bottom: 80, left: wideViewport ? 480 : 70, right: 100 }
-              : 120,
-            maxZoom: plannerPreview ? 8.8 : 11,
-            duration: plannerPreview ? 240 : 1100,
-            ...(plannerPreview
-              ? { easing: (progress: number) => 1 - Math.pow(1 - progress, 3) }
-              : {}),
-            essential: true,
-          });
-        } catch {
-          /* viewport pequena para o padding */
-        }
-      } else if (visitRoute.origin) {
+      if (!fitVisitRouteInAvailableViewport(m, visitRoute, 700) && visitRoute.origin) {
         animateToPointFocus(m, [visitRoute.origin.lng, visitRoute.origin.lat]);
       }
       return;
     }
     const stop = visitRoute.stops.find((s) => s.id === visitFocus.stopId);
     if (stop) animateToPointFocus(m, [stop.lng, stop.lat]);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visitFocus, visitRoute, plannerMode]);
+  }, [fitVisitRouteInAvailableViewport, visitFocus, visitRoute]);
 
   useEffect(() => {
     return () => {
@@ -6290,7 +6348,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
       </div>
       <div
         className={`absolute top-4 z-20 flex flex-col items-end gap-2 overflow-visible transition-[right] duration-500 ease-out ${
-          statePanelExpanded ? 'right-[calc(min(96vw,480px)+0.75rem)]' : 'right-4'
+          rightSidePanelExpanded ? 'right-[calc(min(96vw,480px)+0.75rem)]' : 'right-4'
         }`}
       >
         <div className="rounded-3xl border border-slate-200/90 bg-white/95 p-2 shadow-lg shadow-slate-900/10 backdrop-blur-sm">
@@ -6412,8 +6470,9 @@ const MapComponent: React.FC<MapComponentProps> = ({
         </div>
       </div>
       <div
+        data-map-bottom-controls
         className={`absolute bottom-4 z-20 flex max-w-[min(96vw,calc(100%-2rem))] items-end gap-3 overflow-visible pb-[env(safe-area-inset-bottom,0px)] transition-[right] duration-500 ease-out ${
-          statePanelExpanded ? 'right-[calc(min(96vw,480px)+0.75rem)]' : 'right-4'
+          rightSidePanelExpanded ? 'right-[calc(min(96vw,480px)+0.75rem)]' : 'right-4'
         }`}
       >
         {overlaySupervisores &&
@@ -6720,7 +6779,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
           </p>
         </div>
       )}
-      {hasStatePanel && (
+      {hasStatePanel && !plannerMode && (
         <ExpressoStatePanel
           regionName={selectedStateLabel}
           cityFocus={selectedCityLabel}
@@ -6733,7 +6792,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
         />
       )}
       {(() => {
-        const productivityDockInset = statePanelExpanded ? 'left-0 right-[min(96vw,480px)]' : 'left-0 right-0';
+        const productivityDockInset = rightSidePanelExpanded ? 'left-0 right-[min(96vw,480px)]' : 'left-0 right-0';
         const showChoroplethLegend =
           municipalityChoroplethEnabled && choroplethLegend != null && selectedBottomProduct != null;
 
@@ -6786,7 +6845,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
                     if (scope === 'municipio' && !selectedStateFeature) return;
                     setProductivityScope(scope);
                   }}
-                  rightInsetClass={statePanelExpanded ? 'right-[min(96vw,480px)]' : 'right-0'}
+                  rightInsetClass={rightSidePanelExpanded ? 'right-[min(96vw,480px)]' : 'right-0'}
                   onClose={() => {
                     setProductivitySheetOpen(false);
                     setSelectedBottomProduct(null);

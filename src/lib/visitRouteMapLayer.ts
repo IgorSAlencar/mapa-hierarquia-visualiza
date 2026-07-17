@@ -214,14 +214,25 @@ function applyStreetGeometry(m: mapboxgl.Map, route: VisitRoute): void {
 }
 
 export function removeVisitRouteFromMap(m: mapboxgl.Map): void {
+  activeRouteIds.delete(m);
   renderedDataKeys.delete(m);
-  try {
-    for (const layerId of [STOP_NUMBER_LAYER_ID, STOP_CIRCLE_LAYER_ID, LINE_LAYER_ID]) {
-      if (m.getLayer(layerId)) m.removeLayer(layerId);
+  for (const layerId of [STOP_NUMBER_LAYER_ID, STOP_CIRCLE_LAYER_ID, LINE_LAYER_ID]) {
+    try {
+      if (!m.getLayer(layerId)) continue;
+      // Esconde primeiro para a rota sumir imediatamente, mesmo se a remocao
+      // definitiva precisar aguardar a troca de estilo terminar.
+      m.setLayoutProperty(layerId, 'visibility', 'none');
+      m.removeLayer(layerId);
+    } catch {
+      /* camada recarregando; as demais ainda devem ser limpas */
     }
+  }
+  try {
+    const source = m.getSource(SOURCE_ID) as mapboxgl.GeoJSONSource | undefined;
+    source?.setData({ type: 'FeatureCollection', features: [] });
     if (m.getSource(SOURCE_ID)) m.removeSource(SOURCE_ID);
   } catch {
-    /* estilo recarregando */
+    /* fonte recarregando */
   }
 }
 

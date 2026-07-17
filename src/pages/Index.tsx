@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
 import MapComponent from '@/components/MapComponent';
 import CommercialStructureFilters from '@/components/CommercialStructureFilters';
@@ -50,6 +50,7 @@ const Index = () => {
   const [navigatorMinimized, setNavigatorMinimized] = useState(true);
   const [activeSection, setActiveSection] = useState<NavigatorSection | null>(null);
   const [activeRoute, setActiveRoute] = useState<VisitRoute | null>(null);
+  const activeRouteIdRef = useRef<string | null>(null);
   const [routeDetailsOpen, setRouteDetailsOpen] = useState(false);
   const [selectedStopId, setSelectedStopId] = useState<number | null>(null);
   const [visitFocus, setVisitFocus] = useState<{ tick: number; stopId: number | null } | null>(null);
@@ -64,6 +65,7 @@ const Index = () => {
   const [plannerOpportunityFocus, setPlannerOpportunityFocus] = useState<PlannerOpportunityFocus | null>(null);
   const [plannerHoveredStoreId, setPlannerHoveredStoreId] = useState<string | null>(null);
   const [plannerStoreClassifications, setPlannerStoreClassifications] = useState<Record<string, 'alta' | 'media' | 'baixa'>>({});
+  const [plannerResultsPanelExpanded, setPlannerResultsPanelExpanded] = useState(false);
   const [compareSupervisionAreas, setCompareSupervisionAreas] = useState(false);
   const [compareApplyTick, setCompareApplyTick] = useState(0);
   /** "Todos" em GG e GC III: compara as áreas de toda a estrutura. */
@@ -81,6 +83,7 @@ const Index = () => {
     y: 16,
   }));
   const routeDetailsDrag = usePanelDrag(routeDetailsInitial);
+  const setRouteDetailsPosition = routeDetailsDrag.setPosition;
   const [stopDetailInitial] = useState(() => ({
     x: typeof window !== 'undefined' ? Math.max(16, window.innerWidth - 400) : 16,
     y: 96,
@@ -103,6 +106,24 @@ const Index = () => {
     () => activeRoute?.stops.find((stop) => stop.id === selectedStopId) ?? null,
     [activeRoute, selectedStopId]
   );
+
+  const positionRouteDetails = useCallback((resultsPanelExpanded: boolean) => {
+    const viewportWidth = window.innerWidth;
+    const resultsPanelWidth = Math.min(viewportWidth * 0.96, 480);
+    const canPlaceBesideResults = resultsPanelExpanded && viewportWidth >= resultsPanelWidth + 420;
+    setRouteDetailsPosition({
+      x: canPlaceBesideResults
+        ? Math.max(16, Math.round(viewportWidth - resultsPanelWidth - 320 - 84))
+        : Math.max(16, viewportWidth - 320 - 84),
+      y: 16,
+    });
+  }, [setRouteDetailsPosition]);
+
+  const activeRouteId = activeRoute?.id ?? null;
+  useEffect(() => {
+    if (!activeRouteId || !routeDetailsOpen || activeSection !== 'planejar') return;
+    positionRouteDetails(plannerResultsPanelExpanded);
+  }, [activeRouteId, activeSection, plannerResultsPanelExpanded, positionRouteDetails, routeDetailsOpen]);
 
   const plannerPreviewRoute = useMemo<VisitRoute | null>(() => {
     if (!plannerOriginAgency || activeSection !== 'planejar') return null;
@@ -240,6 +261,7 @@ const Index = () => {
   }, []);
 
   const clearVisitState = () => {
+    activeRouteIdRef.current = null;
     setActiveRoute(null);
     setRouteDetailsOpen(false);
     setSelectedStopId(null);
@@ -259,9 +281,20 @@ const Index = () => {
 
   const handleSelectSection = (section: NavigatorSection | null) => {
     const leavingComparar = activeSection === 'comparar' && section !== 'comparar';
+    const leavingPlanner = activeSection === 'planejar' && section !== 'planejar';
     setActiveSection(section);
     if (section === 'planejar') {
+      const viewportHeight = window.innerHeight;
+      const compactPlannerHeight = viewportHeight <= 580 ? 400 : 460;
+      const availableMapHeight = Math.max(0, viewportHeight - 80);
+      const responsivePlannerTop = viewportHeight <= 720
+        ? Math.max(12, Math.round((availableMapHeight - compactPlannerHeight) / 2))
+        : Math.round(Math.min(150, Math.max(88, viewportHeight * 0.15)));
       navigatorDrag.setPosition(NAVIGATOR_PANEL_DOCK);
+      plannerDrag.setPosition({
+        x: NAVIGATOR_PANEL_DOCK.x,
+        y: responsivePlannerTop,
+      });
       setNavigatorMinimized(true);
     }
     if (section !== 'planejar') {
@@ -272,10 +305,13 @@ const Index = () => {
       setPlannerDestination(null);
       setPlannerSqlStores([]);
       setPlannerSelectedStoreIds([]);
+      setPlannerVisibleStoreIds(null);
       setPlannerOpportunityFocus(null);
       setPlannerHoveredStoreId(null);
+      setPlannerStoreClassifications({});
+      setPlannerResultsPanelExpanded(false);
     }
-    if (section !== 'visitas' && section !== 'planejar') clearVisitState();
+    if (leavingPlanner || (section !== 'visitas' && section !== 'planejar')) clearVisitState();
     if (leavingComparar) clearCompareState();
   };
 
@@ -299,15 +335,21 @@ const Index = () => {
     if (!active) setCompareAllTerritory(false);
   };
 
-  const handleRouteChange = (route: VisitRoute | null) => {
-    if (route) {
-      setPlannerOriginAgency(null);
-      setPlannerDestination(null);
-      setPlannerTerritoryRadiusKm(null);
+  const handleRouteChange = (route: VisitRoute | null, options?: { resultsPanelExpanded?: boolean }) => {
+    const isNewRoute = Boolean(route && activeRouteIdRef.current !== route.id);
+    activeRouteIdRef.current = route?.id ?? null;
+    if (route && isNewRoute) {
+      positionRouteDetails(options?.resultsPanelExpanded ?? plannerResultsPanelExpanded);
+      setRouteDetailsOpen(true);
+      setSelectedStopId(null);
+      setVisitFocus({ tick: Date.now(), stopId: null });
     }
     setActiveRoute(route);
-    setRouteDetailsOpen(route != null);
-    setSelectedStopId(null);
+    if (!route) {
+      setRouteDetailsOpen(false);
+      setSelectedStopId(null);
+      setVisitFocus(null);
+    }
   };
 
   const handleStopStep = (direction: -1 | 1) => {
@@ -386,6 +428,7 @@ const Index = () => {
           onOpportunityFocus={handlePlannerOpportunityFocus}
           onOpportunityHover={setPlannerHoveredStoreId}
           onOpportunityClassificationsChange={setPlannerStoreClassifications}
+          onResultsPanelExpandedChange={setPlannerResultsPanelExpanded}
           plannerStores={plannerSqlStores}
           territory={plannerTerritory}
           shellStyle={plannerDrag.shellStyle}
@@ -454,7 +497,7 @@ const Index = () => {
           hierarchyFilter={buildSqlHierarchyFilterFromUi(filters)}
           filtersPanelOpen={filtersPanelOpen}
           onOpenFilters={() => setFiltersPanelOpen(true)}
-          visitRoute={plannerPreviewRoute ?? activeRoute}
+          visitRoute={activeRoute ?? plannerPreviewRoute}
           selectedVisitStopId={selectedStopId}
           onVisitStopSelect={setSelectedStopId}
           visitFocus={visitFocus}
@@ -468,6 +511,7 @@ const Index = () => {
           plannerOpportunityFocus={plannerOpportunityFocus}
           plannerHoveredStoreId={plannerHoveredStoreId}
           plannerStoreClassifications={plannerStoreClassifications}
+          plannerResultsPanelExpanded={plannerResultsPanelExpanded}
           onPlannerStoresChange={setPlannerSqlStores}
           compareSupervisionAreas={compareSupervisionAreas}
           onCompareSupervisionAreasChange={handleCompareActiveChange}

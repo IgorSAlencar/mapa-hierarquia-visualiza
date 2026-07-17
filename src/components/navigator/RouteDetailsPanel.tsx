@@ -5,6 +5,7 @@ import RouteStopsList from './RouteStopsList';
 import type { VisitRoute } from '@/data/visitRoutesMock';
 import type { PanelHeaderDragProps } from '@/hooks/usePanelDrag';
 import { mergeHeaderDrag } from '@/components/navigator/mergeHeaderDrag';
+import RouteQrCodeDialog from './RouteQrCodeDialog';
 
 interface RouteDetailsPanelProps {
   route: VisitRoute;
@@ -77,6 +78,7 @@ const RouteDetailsPanel: React.FC<RouteDetailsPanelProps> = ({
           selectedStopId={selectedStopId}
           onStopSelect={onStopSelect}
           onViewFullRoute={onViewFullRoute}
+          footerAction={<RouteQrCodeDialog route={route} />}
         />
       </div>
     </div>

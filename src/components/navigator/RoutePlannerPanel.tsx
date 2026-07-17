@@ -5,6 +5,7 @@ import {
   ArrowLeft,
   ArrowUp,
   ArrowUpDown,
+  CalendarDays,
   Check,
   MapPin,
   Maximize2,
@@ -30,11 +31,13 @@ import RoutePlanningJourney, { type PlanningPriority, type RoutePlanningScreen }
 import { fetchAgencyPoints, type SqlMapPoint } from '@/lib/mapDataApi';
 import type { RegionMapPoint } from '@/data/regionMapPointsMock';
 import type { DeviceLocation } from '@/lib/deviceGeolocation';
+import RouteOpportunitiesSidePanel from './RouteOpportunitiesSidePanel';
+import { fetchDrivingRoute } from '@/lib/mapboxDirections';
 
 interface Props {
   onBack: () => void;
   onClose: () => void;
-  onRouteChange: (route: VisitRoute | null) => void;
+  onRouteChange: (route: VisitRoute | null, options?: { resultsPanelExpanded?: boolean }) => void;
   onAgencyFocus?: (agency: RegionMapPoint) => void;
   onOriginLocationFocus?: (location: DeviceLocation) => void;
   onOriginClear?: () => void;
@@ -47,6 +50,7 @@ interface Props {
   onOpportunityFocus?: (opportunity: { id: string; lngLat: [number, number] }) => void;
   onOpportunityHover?: (id: string | null) => void;
   onOpportunityClassificationsChange?: (classifications: Record<string, PriorityBand>) => void;
+  onResultsPanelExpandedChange?: (expanded: boolean) => void;
   plannerStores: SqlMapPoint[];
   territory: string | null;
   shellStyle?: CSSProperties;
@@ -67,6 +71,10 @@ type OpportunitySortKey = 'localidade' | 'desvio' | 'prioridade' | 'sem_visita';
 type SortDirection = 'asc' | 'desc';
 type ResizeCorner = 'north-west' | 'north-east' | 'south-west' | 'south-east';
 type OpportunityFilterKey = 'cielo' | 'credito' | 'negocio' | 'ativo_pade' | 'proposta_valor';
+type DrivingMetricStatus = 'idle' | 'loading' | 'actual' | 'approximate';
+
+const VISIT_DURATION_MINUTES = 40;
+const ROUTE_START_MINUTES = 8 * 60;
 
 const OPPORTUNITY_FILTER_OPTIONS: Array<{ key: OpportunityFilterKey; label: string }> = [
   { key: 'cielo', label: 'Cielo' },
@@ -187,6 +195,74 @@ function distanceKm(a: [number, number], b: [number, number]): number {
   return 2 * 6371 * Math.asin(Math.sqrt(h));
 }
 
+function orderStoresByNearestNeighbor(
+  originCoordinates: [number, number],
+  stores: PlannerOpportunity[]
+): PlannerOpportunity[] {
+  const ordered: PlannerOpportunity[] = [];
+  const remaining = [...stores];
+  let current = originCoordinates;
+  while (remaining.length) {
+    remaining.sort((a, b) => distanceKm(current, a.lngLat) - distanceKm(current, b.lngLat));
+    const next = remaining.shift()!;
+    ordered.push(next);
+    current = next.lngLat;
+  }
+  return ordered;
+}
+
+function formatDurationMinutes(minutes: number): string {
+  const safeMinutes = Math.max(0, Math.round(minutes));
+  return `${Math.floor(safeMinutes / 60)}h${String(safeMinutes % 60).padStart(2, '0')}`;
+}
+
+function formatClockMinutes(totalMinutes: number): string {
+  const safeMinutes = Math.max(0, Math.round(totalMinutes));
+  const dayOffset = Math.floor(safeMinutes / (24 * 60));
+  const clockMinutes = safeMinutes % (24 * 60);
+  const clock = `${String(Math.floor(clockMinutes / 60)).padStart(2, '0')}:${String(clockMinutes % 60).padStart(2, '0')}`;
+  return dayOffset > 0 ? `+${dayOffset}d ${clock}` : clock;
+}
+
+function drivingRouteCacheKey(date: string, coordinates: [number, number][]): string {
+  let hash = 2166136261;
+  const signature = `${date}|${coordinates.map(([lng, lat]) => `${lng.toFixed(5)},${lat.toFixed(5)}`).join(';')}`;
+  for (const char of signature) {
+    hash ^= char.charCodeAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `planejado-${date}-${(hash >>> 0).toString(36)}`;
+}
+
+function enrichRouteWithDrivingData(
+  route: VisitRoute,
+  distanceMeters: number,
+  durationSeconds: number,
+  legDurationsSeconds: number[]
+): VisitRoute {
+  let elapsedMinutes = 0;
+  const stops = route.stops.map((stop, index) => {
+    elapsedMinutes += Math.ceil((legDurationsSeconds[index] ?? 0) / 60);
+    const horario = formatClockMinutes(ROUTE_START_MINUTES + elapsedMinutes);
+    elapsedMinutes += VISIT_DURATION_MINUTES;
+    return { ...stop, horario };
+  });
+  const travelMinutes = Math.ceil(durationSeconds / 60);
+  const visitMinutes = stops.length * VISIT_DURATION_MINUTES;
+  return {
+    ...route,
+    distanciaKm: Math.max(1, Math.round(distanceMeters / 1000)),
+    duracaoEstimada: formatDurationMinutes(travelMinutes + visitMinutes),
+    durationBreakdown: {
+      travelMinutes,
+      visitMinutes,
+      minutesPerVisit: VISIT_DURATION_MINUTES,
+      source: 'calculated',
+    },
+    stops,
+  };
+}
+
 function createSqlSuggestedRoute({
   date,
   originName,
@@ -203,21 +279,25 @@ function createSqlSuggestedRoute({
   stores: PlannerOpportunity[];
 }): VisitRoute | null {
   if (stores.length === 0) return null;
-  const ordered: PlannerOpportunity[] = [];
-  const remaining = [...stores];
-  let current = originCoordinates;
-  while (remaining.length) {
-    remaining.sort((a, b) => distanceKm(current, a.lngLat) - distanceKm(current, b.lngLat));
-    const next = remaining.shift()!;
-    ordered.push(next);
-    current = next.lngLat;
-  }
-
-  const stops = ordered.map((store, index) => ({
+  const ordered = orderStoresByNearestNeighbor(originCoordinates, stores);
+  const linePoints = [
+    originCoordinates,
+    ...ordered.map((store) => store.lngLat),
+    ...(destinationCoordinates ? [destinationCoordinates] : []),
+  ];
+  const fallbackLegMinutes = linePoints.slice(1).map(
+    (point, index) => Math.ceil((distanceKm(linePoints[index], point) / 45) * 60)
+  );
+  let elapsedMinutes = 0;
+  const stops = ordered.map((store, index) => {
+    elapsedMinutes += fallbackLegMinutes[index] ?? 0;
+    const horario = formatClockMinutes(ROUTE_START_MINUTES + elapsedMinutes);
+    elapsedMinutes += VISIT_DURATION_MINUTES;
+    return {
     id: index + 1,
     ordem: index + 1,
     nome: store.nome,
-    horario: `${String(9 + Math.floor(index * 1.25)).padStart(2, '0')}:${index % 4 === 0 ? '00' : '30'}`,
+    horario,
     status: 'pendente' as const,
     endereco: store.endereco || [store.municipio, store.uf].filter(Boolean).join('/'),
     cep: store.codAg ? `Agência vinculada: ${store.codAg}` : 'Visita planejada',
@@ -228,25 +308,28 @@ function createSqlSuggestedRoute({
       : `Desenvolver ${store.focus} e registrar a visita.`,
     lat: store.lngLat[1],
     lng: store.lngLat[0],
-  }));
-  const linePoints = [
-    originCoordinates,
-    ...ordered.map((store) => store.lngLat),
-    ...(destinationCoordinates ? [destinationCoordinates] : []),
-  ];
+  };
+  });
   const totalKm = linePoints.slice(1).reduce(
     (total, point, index) => total + distanceKm(linePoints[index], point),
     0
   );
+  const fallbackTravelMinutes = fallbackLegMinutes.reduce((total, minutes) => total + minutes, 0);
 
   return {
-    id: `planejado-${date}-${ordered.map((store) => store.id).join('-')}`,
+    id: drivingRouteCacheKey(date, linePoints),
     chaveSupervisao: 0,
     gerenteComercial: 'Meu roteiro',
     nome: `${originName} → ${destinationName}`,
     data: new Intl.DateTimeFormat('pt-BR', { dateStyle: 'full' }).format(new Date(`${date}T12:00:00`)),
     distanciaKm: Math.round(totalKm),
-    duracaoEstimada: `${Math.max(1, Math.round(totalKm / 45 + stops.length * 0.65))}h`,
+    duracaoEstimada: `≈ ${formatDurationMinutes(fallbackTravelMinutes + stops.length * VISIT_DURATION_MINUTES)}`,
+    durationBreakdown: {
+      travelMinutes: fallbackTravelMinutes,
+      visitMinutes: stops.length * VISIT_DURATION_MINUTES,
+      minutesPerVisit: VISIT_DURATION_MINUTES,
+      source: 'approximate',
+    },
     stops,
     origin: { nome: originName, lng: originCoordinates[0], lat: originCoordinates[1] },
     destination: destinationCoordinates
@@ -271,6 +354,7 @@ const RoutePlannerPanel: React.FC<Props> = ({
   onOpportunityFocus,
   onOpportunityHover,
   onOpportunityClassificationsChange,
+  onResultsPanelExpandedChange,
   plannerStores,
   territory,
   shellStyle,
@@ -293,9 +377,18 @@ const RoutePlannerPanel: React.FC<Props> = ({
   const [selectedOpportunityFilters, setSelectedOpportunityFilters] = useState<OpportunityFilterKey[]>([]);
   const [selectedPriorityBands, setSelectedPriorityBands] = useState<PriorityBand[]>([]);
   const [onlyWithoutVisit, setOnlyWithoutVisit] = useState(false);
+  const [drivingMetrics, setDrivingMetrics] = useState<{
+    distanceKm: number;
+    travelMinutes: number;
+    status: DrivingMetricStatus;
+  }>({ distanceKm: 0, travelMinutes: 0, status: 'idle' });
+  const [optimizing, setOptimizing] = useState(false);
+  const drivingMetricsRequestRef = useRef(0);
+  const optimizationRequestRef = useRef(0);
   const [originLocation, setOriginLocation] = useState<DeviceLocation | null>(null);
   const [destinationLocation, setDestinationLocation] = useState<DeviceLocation | null>(null);
   const [headerSummaryTarget, setHeaderSummaryTarget] = useState<HTMLElement | null>(null);
+  const [viewportWidth, setViewportWidth] = useState(() => typeof window === 'undefined' ? 1440 : window.innerWidth);
   const [resultsPanelSize, setResultsPanelSize] = useState<{
     width: number;
     height: number;
@@ -371,6 +464,17 @@ const RoutePlannerPanel: React.FC<Props> = ({
   useEffect(() => {
     setHeaderSummaryTarget(document.getElementById('route-planner-header-summary'));
   }, []);
+
+  useEffect(() => {
+    const updateViewportWidth = () => setViewportWidth(window.innerWidth);
+    window.addEventListener('resize', updateViewportWidth);
+    return () => window.removeEventListener('resize', updateViewportWidth);
+  }, []);
+
+  useEffect(() => {
+    onResultsPanelExpandedChange?.(journeyComplete && !resultsMinimized);
+    return () => onResultsPanelExpandedChange?.(false);
+  }, [journeyComplete, onResultsPanelExpandedChange, resultsMinimized]);
 
   useEffect(() => {
     if (!opportunityFiltersOpen) return;
@@ -514,23 +618,80 @@ const RoutePlannerPanel: React.FC<Props> = ({
     onOpportunityHover?.(null);
     return () => onOpportunityHover?.(null);
   }, [onOpportunityHover, opportunityView, onlyWithoutVisit, selectedOpportunityFilters, selectedPriorityBands]);
-  const selected = suggestions.filter((store) => selectedIds.includes(store.id));
+  const selected = useMemo(
+    () => sqlOpportunities.filter((store) => selectedIds.includes(store.id)),
+    [selectedIds, sqlOpportunities]
+  );
   const totalDaysWithoutVisit = opportunityFilteredSuggestions.filter((store) => store.daysWithoutVisit > 30).length;
   const alertPriorityCount = opportunityFilteredSuggestions.filter((store) => priorityBand(store, planningPriority) === 'alta').length;
   const attentionPriorityCount = opportunityFilteredSuggestions.filter((store) => priorityBand(store, planningPriority) === 'media').length;
   const optimalPriorityCount = opportunityFilteredSuggestions.filter((store) => priorityBand(store, planningPriority) === 'baixa').length;
-  const originCoordinates: [number, number] | null = originLocation
+  const originCoordinates = useMemo<[number, number] | null>(() => originLocation
     ? [originLocation.longitude, originLocation.latitude]
-    : origin?.lngLat ?? null;
-  const routePoints = originCoordinates ? [originCoordinates, ...selected.map((store) => store.lngLat)] : [];
-  const routeKm = Math.round(routePoints.slice(1).reduce(
-    (total, point, index) => total + distanceKm(routePoints[index], point),
-    0
-  ));
-  const travelMinutes = Math.round((routeKm / 45) * 60);
-  const visitMinutes = selected.length * 40;
-  const finishHour = 8 * 60 + travelMinutes + visitMinutes;
-  const finish = `${String(Math.floor(finishHour / 60)).padStart(2, '0')}:${String(finishHour % 60).padStart(2, '0')}`;
+    : origin?.lngLat ?? null, [origin, originLocation]);
+  const destinationCoordinates = useMemo<[number, number] | null>(() => destinationLocation
+    ? [destinationLocation.longitude, destinationLocation.latitude]
+    : null, [destinationLocation]);
+  const orderedSelected = useMemo(
+    () => originCoordinates ? orderStoresByNearestNeighbor(originCoordinates, selected) : selected,
+    [originCoordinates, selected]
+  );
+  const routePoints = useMemo<[number, number][]>(() => {
+    if (!originCoordinates || orderedSelected.length === 0) return [];
+    return [
+      originCoordinates,
+      ...orderedSelected.map((store) => store.lngLat),
+      ...(destinationCoordinates ? [destinationCoordinates] : []),
+    ];
+  }, [destinationCoordinates, orderedSelected, originCoordinates]);
+  const routeMetricsCacheKey = useMemo(
+    () => routePoints.length >= 2 ? drivingRouteCacheKey(date, routePoints) : '',
+    [date, routePoints]
+  );
+
+  useEffect(() => {
+    const requestId = ++drivingMetricsRequestRef.current;
+    if (!routeMetricsCacheKey || routePoints.length < 2) {
+      setDrivingMetrics({ distanceKm: 0, travelMinutes: 0, status: 'idle' });
+      return;
+    }
+
+    setDrivingMetrics({ distanceKm: 0, travelMinutes: 0, status: 'loading' });
+    const timer = window.setTimeout(() => {
+      void fetchDrivingRoute(routeMetricsCacheKey, routePoints).then((route) => {
+        if (drivingMetricsRequestRef.current !== requestId) return;
+        if (route) {
+          setDrivingMetrics({
+            distanceKm: Math.max(1, Math.round(route.distanceMeters / 1000)),
+            travelMinutes: Math.max(1, Math.ceil(route.durationSeconds / 60)),
+            status: 'actual',
+          });
+          return;
+        }
+        const directKm = routePoints.slice(1).reduce(
+          (total, point, index) => total + distanceKm(routePoints[index], point),
+          0
+        );
+        setDrivingMetrics({
+          distanceKm: Math.max(1, Math.round(directKm)),
+          travelMinutes: Math.max(1, Math.ceil((directKm / 45) * 60)),
+          status: 'approximate',
+        });
+      });
+    }, 220);
+    return () => window.clearTimeout(timer);
+  }, [routeMetricsCacheKey, routePoints]);
+
+  const routeKm = drivingMetrics.distanceKm;
+  const travelMinutes = drivingMetrics.travelMinutes;
+  const visitMinutes = selected.length * VISIT_DURATION_MINUTES;
+  const finish = formatClockMinutes(ROUTE_START_MINUTES + travelMinutes + visitMinutes);
+  const routeMetricsLoading = drivingMetrics.status === 'loading';
+  const routeMetricsApproximate = drivingMetrics.status === 'approximate';
+  const routeDistanceValue = routeMetricsLoading ? '…' : `${routeMetricsApproximate ? '≈ ' : ''}${routeKm} km`;
+  const routeTravelValue = routeMetricsLoading
+    ? '…'
+    : `${routeMetricsApproximate ? '≈ ' : ''}${formatDurationMinutes(travelMinutes)}`;
   const toggle = (store: PlannerOpportunity) => {
     const selecting = !selectedIds.includes(store.id);
     setSelectedIds((items) => items.includes(store.id)
@@ -559,6 +720,7 @@ const RoutePlannerPanel: React.FC<Props> = ({
       : [...current, band]);
   };
   const editJourney = (screen: RoutePlanningScreen) => {
+    onRouteChange(null);
     setJourneyStartScreen(screen);
     setJourneyComplete(false);
   };
@@ -569,13 +731,42 @@ const RoutePlannerPanel: React.FC<Props> = ({
       originName: originLocation?.label ?? origin?.nome ?? 'Origem selecionada',
       originCoordinates,
       destinationName: destination,
-      destinationCoordinates: destinationLocation
-        ? [destinationLocation.longitude, destinationLocation.latitude]
-        : null,
+      destinationCoordinates,
       stores: selected,
     });
     if (!route) return;
-    onRouteChange(route);
+    const initialRoute = drivingMetrics.status === 'idle' || drivingMetrics.status === 'loading'
+      ? route
+      : {
+          ...route,
+          distanciaKm: routeKm,
+          duracaoEstimada: `${routeMetricsApproximate ? '≈ ' : ''}${formatDurationMinutes(travelMinutes + visitMinutes)}`,
+          durationBreakdown: {
+            travelMinutes,
+            visitMinutes,
+            minutesPerVisit: VISIT_DURATION_MINUTES,
+            source: routeMetricsApproximate ? 'approximate' as const : 'calculated' as const,
+          },
+        };
+    setResultsMinimized(true);
+    onResultsPanelExpandedChange?.(false);
+    setOptimizing(true);
+    onRouteChange(initialRoute, { resultsPanelExpanded: false });
+
+    const requestId = ++optimizationRequestRef.current;
+    void fetchDrivingRoute(initialRoute.id, routePoints)
+      .then((drivingRoute) => {
+        if (!drivingRoute || optimizationRequestRef.current !== requestId) return;
+        onRouteChange(enrichRouteWithDrivingData(
+          initialRoute,
+          drivingRoute.distanceMeters,
+          drivingRoute.durationSeconds,
+          drivingRoute.legDurationsSeconds
+        ), { resultsPanelExpanded: false });
+      })
+      .finally(() => {
+        if (optimizationRequestRef.current === requestId) setOptimizing(false);
+      });
   };
   const header = mergeHeaderDrag(
     'flex shrink-0 items-center gap-2 border-b border-slate-200 px-3 py-2',
@@ -759,16 +950,77 @@ const RoutePlannerPanel: React.FC<Props> = ({
             <p className="mt-1 text-[10px] font-medium text-slate-500">visitas selecionadas</p>
           </div>
         </div>
-        <Metric label="Distância total" value={`${routeKm} km`} />
-        <Metric label="Deslocamento" value={`${Math.floor(travelMinutes / 60)}h${String(travelMinutes % 60).padStart(2, '0')}`} />
-        <Metric label="Tempo de visitas" value={`${Math.floor(visitMinutes / 60)}h${String(visitMinutes % 60).padStart(2, '0')}`} />
-        <Metric label="Término previsto" value={finish} />
-        <button type="button" disabled={!selected.length} onClick={optimize} className="ml-auto flex min-h-10 shrink-0 items-center gap-2 rounded-lg bg-violet-600 px-4 py-2 text-xs font-bold text-white shadow-md shadow-violet-300/40 transition-colors hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-50">
+        <Metric label="Distância pela rota" value={routeDistanceValue} title={routeMetricsApproximate ? 'Aproximação temporária: não foi possível consultar a malha viária.' : 'Distância calculada pela malha viária.'} />
+        <Metric label="Deslocamento" value={routeTravelValue} title={routeMetricsApproximate ? 'Tempo aproximado enquanto a rota viária está indisponível.' : 'Tempo de direção calculado pela rota.'} />
+        <Metric label="Visitas estim." value={formatDurationMinutes(visitMinutes)} title={`Estimativa operacional de ${VISIT_DURATION_MINUTES} minutos por loja selecionada.`} />
+        <Metric label="Término previsto" value={routeMetricsLoading ? '…' : finish} />
+        <button type="button" disabled={!selected.length || optimizing || routeMetricsLoading} onClick={optimize} className="ml-auto flex min-h-10 shrink-0 items-center gap-2 rounded-lg bg-violet-600 px-4 py-2 text-xs font-bold text-white shadow-md shadow-violet-300/40 transition-colors hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-50">
           <Sparkles className="h-4 w-4" />
-          Sugerir melhor rota
+          {optimizing ? 'Traçando rota...' : routeMetricsLoading ? 'Calculando trajeto...' : 'Sugerir melhor rota'}
         </button>
       </div>
     </section>
+  );
+  const plannerSidePanelWidth = resultsMinimized ? 0 : Math.min(viewportWidth * 0.96, 480);
+  const routeSummaryAvailableWidth = Math.max(320, viewportWidth - plannerSidePanelWidth);
+  const routeSummaryLayout = !resultsMinimized && viewportWidth < 1536
+    ? {
+        left: 12,
+        width: Math.min(900, Math.max(280, routeSummaryAvailableWidth - 306)),
+      }
+    : (() => {
+        const center = routeSummaryAvailableWidth / 2;
+        const halfWidth = Math.min(450, Math.max(140, center - 294));
+        return { left: Math.round(center - halfWidth), width: Math.round(halfWidth * 2) };
+      })();
+  const routeSummaryDock = (
+    <div
+      style={{
+        bottom: 'calc(16px + env(safe-area-inset-bottom, 0px))',
+        left: routeSummaryLayout.left,
+        width: routeSummaryLayout.width,
+      }}
+      className="pointer-events-none absolute z-40 flex justify-center transition-[left,width] duration-300 lg:z-20"
+    >
+      <section
+        data-route-planner-summary-dock
+        aria-label="Resumo do roteiro selecionado"
+        className="pointer-events-auto flex w-full flex-wrap items-center justify-center gap-2 rounded-2xl border border-white/70 bg-white/90 p-2.5 font-sans text-slate-700 shadow-2xl shadow-slate-900/20 backdrop-blur-xl"
+      >
+        <label className="flex min-h-11 min-w-[142px] flex-1 items-center gap-2 rounded-xl border border-slate-200/90 bg-slate-50/85 px-3 sm:flex-none">
+          <CalendarDays className="h-4 w-4 shrink-0 text-violet-600" />
+          <span className="min-w-0 flex-1">
+            <span className="block text-[8px] font-semibold uppercase tracking-wide text-slate-500">Data do roteiro</span>
+            <input
+              type="date"
+              aria-label="Data do roteiro"
+              value={date}
+              onChange={(event) => setDate(event.target.value)}
+              className="mt-0.5 w-full bg-transparent text-[11px] font-bold text-slate-800 outline-none"
+            />
+          </span>
+        </label>
+        <div className="flex min-h-11 min-w-[112px] items-center gap-2 rounded-xl border border-violet-100 bg-violet-50/90 px-3">
+          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-violet-600 text-white shadow-sm shadow-violet-300">
+            <Check className="h-3.5 w-3.5" />
+          </span>
+          <div>
+            <p className="text-sm font-bold leading-none text-slate-900">{selected.length}</p>
+            <p className="mt-1 text-[8px] font-semibold uppercase tracking-wide text-slate-500">Selecionadas</p>
+          </div>
+        </div>
+        <div className="grid min-w-[260px] flex-1 grid-cols-2 gap-1.5 sm:grid-cols-4">
+          <Metric label="Distância pela rota" value={routeDistanceValue} title={routeMetricsApproximate ? 'Aproximação temporária: não foi possível consultar a malha viária.' : 'Distância calculada pela malha viária.'} />
+          <Metric label="Deslocamento" value={routeTravelValue} title={routeMetricsApproximate ? 'Tempo aproximado enquanto a rota viária está indisponível.' : 'Tempo de direção calculado pela rota.'} />
+          <Metric label="Visitas estim." value={formatDurationMinutes(visitMinutes)} title={`Estimativa operacional de ${VISIT_DURATION_MINUTES} minutos por loja selecionada.`} />
+          <Metric label="Término" value={routeMetricsLoading ? '…' : finish} />
+        </div>
+        <button type="button" disabled={!selected.length || optimizing || routeMetricsLoading} onClick={optimize} className="flex min-h-11 flex-1 items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-violet-600 to-blue-600 px-4 text-xs font-bold text-white shadow-md shadow-violet-300/45 transition hover:from-violet-700 hover:to-blue-700 disabled:cursor-not-allowed disabled:opacity-45 sm:flex-none">
+          <Sparkles className="h-4 w-4" />
+          {optimizing ? 'Traçando rota...' : routeMetricsLoading ? 'Calculando trajeto...' : 'Sugerir melhor rota'}
+        </button>
+      </section>
+    </div>
   );
   const headerSummaryPortal = headerSummaryTarget && journeyComplete
     ? createPortal(
@@ -840,38 +1092,59 @@ const RoutePlannerPanel: React.FC<Props> = ({
     }} /></div>;
   }
 
-  if (resultsMinimized) {
-    return <>
-      <section
-        data-route-planner-results
-        style={shellStyle}
-        className="pointer-events-auto w-[min(360px,calc(100vw-32px))] overflow-hidden rounded-xl border border-slate-200/90 bg-white/95 font-sans text-slate-700 shadow-xl shadow-slate-900/15 backdrop-blur-md"
-      >
-        <header className={cn(header.className, 'border-b-0')} style={header.dragStyle} {...header.dragHandlers} title="Arraste para mover o painel">
-          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-violet-50 text-violet-700">
-            <Navigation className="h-3.5 w-3.5" />
-          </span>
-          <div className="min-w-0 flex-1">
-            <p className="truncate text-[11px] font-bold text-slate-800">Montamos um roteiro para você</p>
-            <p className="text-[9px] text-slate-500">{selected.length} visita{selected.length === 1 ? '' : 's'} selecionada{selected.length === 1 ? '' : 's'}</p>
-          </div>
-          <button type="button" data-panel-drag-ignore onClick={() => setResultsMinimized(false)} className="rounded-lg p-1.5 text-violet-600 transition-colors hover:bg-violet-50 hover:text-violet-800" aria-label="Restaurar painel" title="Restaurar painel">
-            <Maximize2 className="h-4 w-4" />
-          </button>
-          <button type="button" data-panel-drag-ignore onClick={onClose} className="rounded-lg p-1.5 text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-700" aria-label="Fechar" title="Fechar">
-            <X className="h-4 w-4" />
-          </button>
-        </header>
-      </section>
-      {opportunitySummaryDock}
-      {bottomDock}
-      {headerSummaryPortal}
-    </>;
-  }
-
+  const showLegacyResults = false;
   return (
     <>
-    <section
+    <RouteOpportunitiesSidePanel
+      minimized={resultsMinimized}
+      stores={suggestions}
+      selectedIds={selectedIds}
+      priorityByStoreId={opportunityClassifications}
+      summary={{
+        opportunities: suggestions.length,
+        alert: alertPriorityCount,
+        attention: attentionPriorityCount,
+        optimal: optimalPriorityCount,
+        withoutVisit: totalDaysWithoutVisit,
+        regions: nearbyGroups.length,
+      }}
+      regions={nearbyGroups}
+      selectedRegionKeys={selectedRegionKeys}
+      query={query}
+      filtersOpen={opportunityFiltersOpen}
+      filtersContainerRef={opportunityFiltersRef}
+      opportunityFilters={OPPORTUNITY_FILTER_OPTIONS}
+      selectedOpportunityFilters={selectedOpportunityFilters}
+      selectedPriorityBands={selectedPriorityBands}
+      onlyWithoutVisit={onlyWithoutVisit}
+      onlyOnPath={onlyOnPath}
+      date={date}
+      routeMetrics={{ distanceKm: routeKm, travelMinutes, visitMinutes, finish }}
+      onQueryChange={setQuery}
+      onToggleFilters={() => setOpportunityFiltersOpen((current) => !current)}
+      onToggleOpportunityFilter={toggleOpportunityFilter}
+      onClearOpportunityFilters={() => setSelectedOpportunityFilters([])}
+      onTogglePriorityBand={togglePriorityBand}
+      onToggleWithoutVisit={() => setOnlyWithoutVisit((current) => !current)}
+      onClearSummaryFilters={() => {
+        setSelectedPriorityBands([]);
+        setOnlyWithoutVisit(false);
+      }}
+      onClearRegions={() => setSelectedRegionKeys([])}
+      onToggleRegion={toggleRegion}
+      onToggleOnlyOnPath={() => setOnlyOnPath((current) => !current)}
+      onToggleStore={(panelStore) => {
+        const store = sqlOpportunities.find((item) => item.id === panelStore.id);
+        if (store) toggle(store);
+      }}
+      onStoreHover={onOpportunityHover}
+      onDateChange={setDate}
+      onOptimize={optimize}
+      onMinimize={() => setResultsMinimized(true)}
+      onRestore={() => setResultsMinimized(false)}
+      onClose={onClose}
+    />
+    {showLegacyResults && <section
       data-route-planner-results
       style={{
         ...shellStyle,
@@ -992,9 +1265,9 @@ const RoutePlannerPanel: React.FC<Props> = ({
 
       </main>
       {resultsResizeHandles}
-    </section>
+    </section>}
     {opportunitySummaryDock}
-    {bottomDock}
+    {routeSummaryDock}
     {headerSummaryPortal}
     </>
   );
@@ -1033,8 +1306,8 @@ function HeaderRouteSummaryItem({
   );
 }
 
-function Metric({ label, value }: { label: string; value: string }) {
-  return <div className="hidden min-w-[72px] sm:block"><p className="text-sm font-bold leading-none text-slate-900">{value}</p><p className="mt-1 text-[9px] font-medium text-slate-500">{label}</p></div>;
+function Metric({ label, value, title }: { label: string; value: string; title?: string }) {
+  return <div className="min-w-0 rounded-xl border border-slate-100 bg-slate-50/85 px-2.5 py-2 text-center" title={title}><p className="truncate text-xs font-bold leading-none text-slate-900">{value}</p><p className="mt-1 truncate text-[8px] font-semibold uppercase tracking-wide text-slate-500">{label}</p></div>;
 }
 
 function SortableTableHeader({

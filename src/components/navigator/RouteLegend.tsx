@@ -29,7 +29,7 @@ const RouteLegend: React.FC<RouteLegendProps> = ({
   territoryStoreCount,
   selectedStoreCount = 0,
 }) => (
-  <div className="pointer-events-none w-[12.5rem] rounded-2xl border border-slate-200/90 bg-white/95 px-2.5 py-2 shadow-lg shadow-slate-900/10 backdrop-blur-sm">
+  <div data-route-legend className="pointer-events-none w-[12.5rem] rounded-2xl border border-slate-200/90 bg-white/95 px-2.5 py-2 shadow-lg shadow-slate-900/10 backdrop-blur-sm">
     <p className="mb-1.5 text-center text-[9px] font-semibold uppercase tracking-wide text-slate-500">
       {plannerMode ? 'Legenda do roteiro' : 'Legenda'}
     </p>
