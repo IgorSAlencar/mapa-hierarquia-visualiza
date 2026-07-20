@@ -68,7 +68,7 @@ export function mergeChoroplethIntoFeatureCollection(
 export function computeValueRange(values: number[]): { min: number; max: number } {
   const filtered = values.filter((v) => Number.isFinite(v));
   if (filtered.length === 0) return { min: 0, max: 1 };
-  let min = Math.min(...filtered);
+  const min = Math.min(...filtered);
   let max = Math.max(...filtered);
   if (max <= min) max = min + 1;
   return { min, max };

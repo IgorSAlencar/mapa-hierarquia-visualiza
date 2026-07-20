@@ -2,6 +2,7 @@ import {
   fetchAllCoordenacoes,
   fetchAllSupervisoes,
   fetchCoordenacoesByGerenciaArea,
+  fetchAgencias,
   fetchGerenciasArea,
   fetchSupervisoesByCoordenacao,
 } from '../repositories/commercialStructureRepository.js';
@@ -13,22 +14,22 @@ function normalizeListRow(row, keyField, labelField) {
   return { chave: Math.trunc(chave), descricao };
 }
 
-export async function getGerenciasArea() {
-  const rows = await fetchGerenciasArea();
+export async function getGerenciasArea(user) {
+  const rows = await fetchGerenciasArea(user);
   return rows
     .map((row) => normalizeListRow(row, 'CHAVE_GERENCIA_AREA', 'DESC_GERENCIA_AREA'))
     .filter(Boolean);
 }
 
-export async function getCoordenacoesByGerenciaArea(chaveGerenciaArea) {
-  const rows = await fetchCoordenacoesByGerenciaArea(chaveGerenciaArea);
+export async function getCoordenacoesByGerenciaArea(chaveGerenciaArea, user) {
+  const rows = await fetchCoordenacoesByGerenciaArea(chaveGerenciaArea, user);
   return rows
     .map((row) => normalizeListRow(row, 'CHAVE_COORDENACAO', 'DESC_COORDENACAO'))
     .filter(Boolean);
 }
 
-export async function getSupervisoesByCoordenacao(chaveCoordenacao) {
-  const rows = await fetchSupervisoesByCoordenacao(chaveCoordenacao);
+export async function getSupervisoesByCoordenacao(chaveCoordenacao, user) {
+  const rows = await fetchSupervisoesByCoordenacao(chaveCoordenacao, user);
   return rows
     .map((row) => normalizeListRow(row, 'CHAVE_SUPERVISAO', 'DESC_SUPERVISAO'))
     .filter(Boolean);
@@ -56,12 +57,24 @@ function normalizeSupervisaoRow(row) {
   };
 }
 
-export async function getAllCoordenacoes() {
-  const rows = await fetchAllCoordenacoes();
+export async function getAllCoordenacoes(user) {
+  const rows = await fetchAllCoordenacoes(user);
   return rows.map((row) => normalizeCoordenacaoRow(row)).filter(Boolean);
 }
 
-export async function getAllSupervisoes() {
-  const rows = await fetchAllSupervisoes();
+export async function getAllSupervisoes(user) {
+  const rows = await fetchAllSupervisoes(user);
   return rows.map((row) => normalizeSupervisaoRow(row)).filter(Boolean);
+}
+
+export async function getAgencias(user) {
+  const rows = await fetchAgencias(user);
+  return rows
+    .map((row) => {
+      const codAg = String(row.COD_AG ?? '').trim();
+      const nome = String(row.NOME_AG ?? '').trim();
+      if (!codAg || !nome) return null;
+      return { codAg, nome };
+    })
+    .filter(Boolean);
 }

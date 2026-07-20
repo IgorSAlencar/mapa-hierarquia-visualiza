@@ -1,5 +1,5 @@
 import { MOCK_REGION_AGENCIAS, MOCK_REGION_LOJAS } from '@/data/regionMapPointsMock';
-import type { VisitRoute, VisitStop } from '@/data/visitRoutesMock';
+import type { VisitRoute, VisitStop } from '@/data/visitRoutes';
 
 export type StoreScore = 'otimo' | 'atencao' | 'alerta';
 

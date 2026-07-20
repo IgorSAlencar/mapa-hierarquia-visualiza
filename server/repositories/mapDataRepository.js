@@ -1,4 +1,5 @@
 import { pool } from '../db/sqlServer.js';
+import { applyAccessScope, accessScopeExistsForEntity } from '../auth/scopeSql.js';
 
 function applyBboxFilter(request, bbox, lonExpr, latExpr) {
   if (!bbox) return '';
@@ -18,6 +19,14 @@ function normalizeCodAgParam(codAg) {
   const asNumber = Number(raw.replace(',', '.'));
   if (Number.isFinite(asNumber)) return String(Math.trunc(asNumber));
   return raw;
+}
+
+function normalizeStoreSearchParam(search) {
+  return String(search ?? '').trim().replace(/\s+/g, ' ');
+}
+
+function escapeSqlLike(value) {
+  return value.replace(/[\\%_[\]]/g, '\\$&');
 }
 
 function applyHierarchyFilter(request, hierarchy = null, escadaAlias = 'esc') {
@@ -47,7 +56,7 @@ const AGENCY_CONS_MATCH_SQL = `
   TRY_CAST(esc.COD_AG AS NVARCHAR(50)) = LTRIM(RTRIM(CAST(a.COD_AG AS NVARCHAR(50))))
 `;
 
-export async function fetchAgencyCoordinates({ bbox = null, limit = null, hierarchy = null } = {}) {
+export async function fetchAgencyCoordinates({ bbox = null, limit = null, hierarchy = null, user = null } = {}) {
   const request = pool.request();
   const hasLimit = Number.isFinite(limit) && Number(limit) > 0;
   if (hasLimit) request.input('limit', Math.round(limit));
@@ -58,14 +67,16 @@ export async function fetchAgencyCoordinates({ bbox = null, limit = null, hierar
     'CAST(a.LATITUDE AS float)'
   );
   const hierarchySql = applyHierarchyFilter(request, hierarchy, 'esc');
+  const authSql = applyAccessScope(request, user, 'esc');
   const topSql = hasLimit ? 'TOP (@limit)' : '';
-  const hierarchyFilterSql = hierarchySql
+  const hierarchyFilterSql = hierarchySql || authSql
     ? `
     AND EXISTS (
       SELECT 1
       FROM MESU..CONS_DISTRIBUICAO_ENTIDADES AS esc
       WHERE ${AGENCY_CONS_MATCH_SQL}
       ${hierarchySql}
+      ${authSql}
     )
   `
     : '';
@@ -93,13 +104,21 @@ export async function fetchAgencyCoordinates({ bbox = null, limit = null, hierar
   return result.recordset;
 }
 
-export async function fetchStoreCoordinates({ bbox = null, limit = null, codAg = null, hierarchy = null, sortByCenter = false } = {}) {
+export async function fetchStoreCoordinates({ bbox = null, limit = null, codAg = null, hierarchy = null, sortByCenter = false, search = null, user = null } = {}) {
   const request = pool.request();
   const hasLimit = Number.isFinite(limit) && Number(limit) > 0;
   if (hasLimit) request.input('limit', Math.round(limit));
   const codAgNorm = normalizeCodAgParam(codAg);
   const hasCodAg = codAgNorm.length > 0;
   if (hasCodAg) request.input('codAg', codAgNorm);
+  const storeSearch = normalizeStoreSearchParam(search);
+  const hasStoreSearch = storeSearch.length >= 2;
+  if (hasStoreSearch) {
+    const escapedSearch = escapeSqlLike(storeSearch);
+    request.input('storeSearchExact', storeSearch);
+    request.input('storeSearchPrefix', `${escapedSearch}%`);
+    request.input('storeSearchContains', `%${escapedSearch}%`);
+  }
 
   const bboxSql = hasCodAg
     ? ''
@@ -120,13 +139,25 @@ export async function fetchStoreCoordinates({ bbox = null, limit = null, codAg =
         })()
       : hierarchy;
   const hierarchySql = applyHierarchyFilter(request, hierarchyForFilter, 'esc');
-  const hierarchyFilterSql = hierarchySql
+  const authSql = applyAccessScope(request, user, 'esc');
+  const hierarchyFilterSql = hierarchySql || authSql
     ? `
       AND EXISTS (
         SELECT 1
         FROM MESU..CONS_DISTRIBUICAO_ENTIDADES AS esc
         WHERE TRY_CAST(esc.COD_AG AS NVARCHAR(50)) = LTRIM(RTRIM(CAST(be.COD_AG_LOJA AS NVARCHAR(50))))
         ${hierarchySql}
+        ${authSql}
+      )
+    `
+    : '';
+  const storeKeySql = `LTRIM(RTRIM(CONVERT(NVARCHAR(100), l.CHAVE_LOJA))) COLLATE Latin1_General_100_CI_AI`;
+  const storeNameSql = `LTRIM(RTRIM(CONVERT(NVARCHAR(255), be.NOME_LOJA))) COLLATE Latin1_General_100_CI_AI`;
+  const searchFilterSql = hasStoreSearch
+    ? `
+      AND (
+        ${storeKeySql} LIKE @storeSearchPrefix ESCAPE N'\\'
+        OR ${storeNameSql} LIKE @storeSearchContains ESCAPE N'\\'
       )
     `
     : '';
@@ -136,7 +167,20 @@ export async function fetchStoreCoordinates({ bbox = null, limit = null, codAg =
     request.input('centerLng', (bbox.minLng + bbox.maxLng) / 2);
     request.input('centerLat', (bbox.minLat + bbox.maxLat) / 2);
   }
-  const orderBySql = shouldSortByCenter
+  const orderBySql = hasStoreSearch
+    ? `
+      ORDER BY
+        CASE
+          WHEN ${storeKeySql} = @storeSearchExact THEN 0
+          WHEN ${storeKeySql} LIKE @storeSearchPrefix ESCAPE N'\\' THEN 1
+          WHEN ${storeNameSql} = @storeSearchExact THEN 2
+          WHEN ${storeNameSql} LIKE @storeSearchPrefix ESCAPE N'\\' THEN 3
+          ELSE 4
+        END,
+        ${storeNameSql},
+        ${storeKeySql}
+    `
+    : shouldSortByCenter
     ? `
       ORDER BY
         POWER((CAST(l.LONGITUDE AS float) - @centerLng) * COS(RADIANS(@centerLat)), 2) +
@@ -179,6 +223,7 @@ export async function fetchStoreCoordinates({ bbox = null, limit = null, codAg =
       ${codAgSql}
       ${hierarchyFilterSql}
       ${bboxSql}
+      ${searchFilterSql}
     ${orderBySql}
   `;
 
@@ -193,6 +238,25 @@ export async function fetchStoreCoordinates({ bbox = null, limit = null, codAg =
  * limita a leitura aos 13 períodos mais recentes (12 meses visíveis + base
  * suficiente para comparações de variação).
  */
+export async function hasStoreAccess(chaveLoja, user) {
+  const request = pool.request();
+  request.input('accessChaveLoja', String(chaveLoja ?? '').trim());
+  const authSql = accessScopeExistsForEntity(
+    request,
+    user,
+    `TRY_CAST(auth_ent.COD_AG AS NVARCHAR(50)) =
+      LTRIM(RTRIM(CAST(store_auth.COD_AG_LOJA AS NVARCHAR(50))))`,
+    'auth_ent'
+  );
+  const result = await request.query(`
+    SELECT TOP (1) 1 AS allowed
+    FROM DATALAKE..DL_BRADESCO_EXPRESSO AS store_auth
+    WHERE LTRIM(RTRIM(CAST(store_auth.CHAVE_LOJA AS NVARCHAR(100)))) = @accessChaveLoja
+      ${authSql}
+  `);
+  return result.recordset.length > 0;
+}
+
 export async function fetchStoreProductionHistory(chaveLoja) {
   const request = pool.request();
   request.input('chaveLoja', String(chaveLoja ?? '').trim());
@@ -201,6 +265,7 @@ export async function fetchStoreProductionHistory(chaveLoja) {
     SELECT
       historico.periodo,
       historico.qtdTrxContabil,
+      historico.qtdTrxNegocio,
       historico.qtdContas,
       historico.qtdConsig,
       historico.qtdLime,
@@ -220,6 +285,53 @@ export async function fetchStoreProductionHistory(chaveLoja) {
       SELECT TOP (13)
         TRY_CONVERT(int, A.PERIODO) AS periodo,
         ISNULL(A.QTD_TRX_CONTABIL_DTLHES, 0) AS qtdTrxContabil,
+
+        CASE
+          WHEN TRY_CONVERT(int, A.PERIODO) <= 202606 THEN
+            ISNULL(A.QTD_CONTAS_TABLET_POS, 0)
+              + ISNULL(A.QTD_CONTA_SALARIO, 0)
+              + ISNULL(A.QTD_CONSIG_AVERBADO, 0)
+              + ISNULL(A.QTD_CONSIG_AVERBADO_PLATAF, 0)
+              + ISNULL(A.QTD_LIME_DTLHES, 0)
+              + ISNULL(A.QTD_LIME_DTLHES_PLATAFORMA, 0)
+              + ISNULL(A.QTD_CREDITO_PARCEL_DTLHES, 0)
+              + ISNULL(A.QTD_CARTAO_CONTRATADO, 0)
+              + ISNULL(A.QTD_CARTAO_CONTRATADO_PLATAFORMA, 0)
+              + ISNULL(A.QTD_CARTAO_AVULSO_PLATAFORMA, 0)
+              + ISNULL(A.QTD_FGTS, 0)
+              + ISNULL(A.QTD_MICRO_VIVAVIDA, 0)
+              + ISNULL(A.QTD_MICROSSEGUROS, 0)
+              + ISNULL(A.QTD_SEG_RESIDENCIAL, 0)
+              + ISNULL(A.QTD_PLANO_ODONTO, 0)
+              + ISNULL(A.QTD_DEPENDENTES_ODONTO, 0)
+              + ISNULL(A.QTD_SUPER_PROTEGIDO, 0)
+              + ISNULL(A.QTD_SUPERPROTEGIDO_PLATAFORMA, 0)
+              + ISNULL(A.QTD_SEG_CARTAO_DEB_CTA, 0)
+              + ISNULL(A.QTD_SEG_CARTAO_DEB_DESBL, 0)
+              + (ISNULL(A.VLR_EXP_SORTE, 0) / 50.0)
+          ELSE
+            ISNULL(A.QTD_CONTAS_TABLET_POS, 0)
+              + ISNULL(A.QTD_CONTA_SALARIO, 0)
+              + ISNULL(A.QTD_CONSIG_AVERBADO, 0)
+              + ISNULL(A.QTD_CONSIG_AVERBADO_PLATAF, 0)
+              + ISNULL(A.QTD_LIME_DTLHES, 0)
+              + ISNULL(A.QTD_LIME_DTLHES_PLATAFORMA, 0)
+              + ISNULL(A.QTD_CREDITO_PARCEL_DTLHES, 0)
+              + ISNULL(A.QTD_CARTAO_CONTRATADO, 0)
+              + ISNULL(A.QTD_CARTAO_CONTRATADO_PLATAFORMA, 0)
+              + ISNULL(A.QTD_CARTAO_AVULSO_PLATAFORMA, 0)
+              + ISNULL(A.QTD_FGTS, 0)
+              + FLOOR(ISNULL(A.QTD_MICRO_VIVAVIDA, 0) / 3.0)
+              + FLOOR(ISNULL(A.QTD_MICROSSEGUROS, 0) / 3.0)
+              + ISNULL(A.QTD_SEG_RESIDENCIAL, 0)
+              + ISNULL(A.QTD_PLANO_ODONTO, 0)
+              + ISNULL(A.QTD_DEPENDENTES_ODONTO, 0)
+              + ISNULL(A.QTD_SUPER_PROTEGIDO, 0)
+              + ISNULL(A.QTD_SUPERPROTEGIDO_PLATAFORMA, 0)
+              + ISNULL(A.QTD_SEG_CARTAO_DEB_CTA, 0)
+              + ISNULL(A.QTD_SEG_CARTAO_DEB_DESBL, 0)
+              + FLOOR(ISNULL(A.VLR_EXP_SORTE, 0) / 50.0)
+        END AS qtdTrxNegocio,
 
         ISNULL(A.QTD_CONTAS_TABLET_POS, 0)
           + ISNULL(A.QTD_CONTAS_FOLHA, 0) AS qtdContas,
@@ -304,7 +416,7 @@ function normalizeSeatHierarchy(hierarchy = null) {
   };
 }
 
-export async function fetchCommercialSeatCoordinates({ hierarchy = null } = {}) {
+export async function fetchCommercialSeatCoordinates({ hierarchy = null, user = null } = {}) {
   const request = pool.request();
   const normalized = normalizeSeatHierarchy(hierarchy);
   const hasSupervisao = Number.isFinite(normalized.sup);
@@ -321,6 +433,25 @@ export async function fetchCommercialSeatCoordinates({ hierarchy = null } = {}) 
   const gaDirectFilterSql = hasGerenciaArea ? ' AND g.CHAVE_GERENCIA_AREA = @seatChaveGerenciaArea' : '';
   const coordDirectFilterSql = hasCoordenacao ? ' AND c.CHAVE_COORDENACAO = @seatChaveCoordenacao' : '';
   const supDirectFilterSql = hasSupervisao ? ' AND s.CHAVE_SUPERVISAO = @seatChaveSupervisao' : '';
+  const entAuthSql = applyAccessScope(request, user, 'ent');
+  const gaAccessSql = accessScopeExistsForEntity(
+    request,
+    user,
+    'auth_ent.CHAVE_GERENCIA_AREA = g.CHAVE_GERENCIA_AREA',
+    'auth_ent'
+  );
+  const coordAccessSql = accessScopeExistsForEntity(
+    request,
+    user,
+    'auth_ent.CHAVE_COORDENACAO = c.CHAVE_COORDENACAO',
+    'auth_ent'
+  );
+  const supAccessSql = accessScopeExistsForEntity(
+    request,
+    user,
+    'auth_ent.CHAVE_SUPERVISAO = s.CHAVE_SUPERVISAO',
+    'auth_ent'
+  );
 
   let query = '';
   if (hasSupervisao) {
@@ -346,6 +477,7 @@ export async function fetchCommercialSeatCoordinates({ hierarchy = null } = {}) 
       WHERE s.LON IS NOT NULL
         AND s.LAT IS NOT NULL
         ${supDirectFilterSql}
+        ${supAccessSql}
     `;
   } else if (hasCoordenacao) {
     query = `
@@ -366,6 +498,7 @@ export async function fetchCommercialSeatCoordinates({ hierarchy = null } = {}) 
       WHERE c.LON IS NOT NULL
         AND c.LAT IS NOT NULL
         ${coordDirectFilterSql}
+        ${coordAccessSql}
       UNION ALL
       SELECT
         CAST(s.CHAVE_SUPERVISAO AS BIGINT) AS entidadeChave,
@@ -392,6 +525,7 @@ export async function fetchCommercialSeatCoordinates({ hierarchy = null } = {}) 
           FROM MESU..CONS_DISTRIBUICAO_ENTIDADES AS ent
           WHERE ent.CHAVE_SUPERVISAO = s.CHAVE_SUPERVISAO
           ${coordFilterSql}
+          ${entAuthSql}
         )
     `;
   } else if (hasGerenciaArea) {
@@ -409,6 +543,7 @@ export async function fetchCommercialSeatCoordinates({ hierarchy = null } = {}) 
       WHERE g.LON IS NOT NULL
         AND g.LAT IS NOT NULL
         ${gaDirectFilterSql}
+        ${gaAccessSql}
       UNION ALL
       SELECT
         CAST(c.CHAVE_COORDENACAO AS BIGINT) AS entidadeChave,
@@ -431,6 +566,7 @@ export async function fetchCommercialSeatCoordinates({ hierarchy = null } = {}) 
           FROM MESU..CONS_DISTRIBUICAO_ENTIDADES AS ent
           WHERE ent.CHAVE_COORDENACAO = c.CHAVE_COORDENACAO
           ${gaFilterSql}
+          ${entAuthSql}
         )
       UNION ALL
       SELECT
@@ -458,6 +594,7 @@ export async function fetchCommercialSeatCoordinates({ hierarchy = null } = {}) 
           FROM MESU..CONS_DISTRIBUICAO_ENTIDADES AS ent
           WHERE ent.CHAVE_SUPERVISAO = s.CHAVE_SUPERVISAO
           ${gaFilterSql}
+          ${entAuthSql}
         )
     `;
   } else {
@@ -474,6 +611,7 @@ export async function fetchCommercialSeatCoordinates({ hierarchy = null } = {}) 
       FROM TESTE..TB_COORD_GA AS g
       WHERE g.LON IS NOT NULL
         AND g.LAT IS NOT NULL
+        ${gaAccessSql}
       UNION ALL
       SELECT
         CAST(c.CHAVE_COORDENACAO AS BIGINT) AS entidadeChave,
@@ -491,6 +629,7 @@ export async function fetchCommercialSeatCoordinates({ hierarchy = null } = {}) 
       FROM TESTE..TB_COORD_COORDENADOR AS c
       WHERE c.LON IS NOT NULL
         AND c.LAT IS NOT NULL
+        ${coordAccessSql}
       UNION ALL
       SELECT
         CAST(s.CHAVE_SUPERVISAO AS BIGINT) AS entidadeChave,
@@ -512,6 +651,7 @@ export async function fetchCommercialSeatCoordinates({ hierarchy = null } = {}) 
       FROM TESTE..TB_COORD_SUP AS s
       WHERE s.LON IS NOT NULL
         AND s.LAT IS NOT NULL
+        ${supAccessSql}
     `;
   }
 

@@ -9,11 +9,6 @@ import {
   type CommercialStructureItem,
 } from '@/lib/commercialStructureApi';
 import {
-  FALLBACK_COORDENACOES,
-  FALLBACK_GERENCIAS,
-  FALLBACK_SUPERVISOES,
-} from '@/data/visitRoutesMock';
-import {
   COMMERCIAL_TEAM_LEVEL_LABEL,
   COMMERCIAL_TEAM_LEVEL_LABEL_PLURAL,
 } from '@/data/regionMapPointsMock';
@@ -44,9 +39,9 @@ const CompararAreasPanel: React.FC<CompararAreasPanelProps> = ({
   shellStyle,
   headerDragProps,
 }) => {
-  const [gerencias, setGerencias] = useState<CommercialStructureItem[]>(FALLBACK_GERENCIAS);
-  const [coordenacoes, setCoordenacoes] = useState<CommercialStructureItem[]>(FALLBACK_COORDENACOES);
-  const [supervisoes, setSupervisoes] = useState<CommercialStructureItem[]>(FALLBACK_SUPERVISOES);
+  const [gerencias, setGerencias] = useState<CommercialStructureItem[]>([]);
+  const [coordenacoes, setCoordenacoes] = useState<CommercialStructureItem[]>([]);
+  const [supervisoes, setSupervisoes] = useState<CommercialStructureItem[]>([]);
   const [gerenciaSel, setGerenciaSel] = useState(appliedGerenciaChave || HIERARCHY_ALL);
   const [coordenacaoSel, setCoordenacaoSel] = useState(appliedCoordenacaoChave || HIERARCHY_ALL);
 

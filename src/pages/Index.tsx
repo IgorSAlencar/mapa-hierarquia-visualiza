@@ -9,7 +9,7 @@ import VisitasRoteirosPanel from '@/components/navigator/VisitasRoteirosPanel';
 import VisitStopDetailCard from '@/components/navigator/VisitStopDetailCard';
 import RouteDetailsPanel from '@/components/navigator/RouteDetailsPanel';
 import RoutePlannerPanel from '@/components/navigator/RoutePlannerPanel';
-import type { VisitRoute } from '@/data/visitRoutesMock';
+import type { VisitRoute, VisitStop } from '@/data/visitRoutes';
 import type { RegionMapPoint } from '@/data/regionMapPointsMock';
 import type { DeviceLocation } from '@/lib/deviceGeolocation';
 import type { SqlMapPoint } from '@/lib/mapDataApi';
@@ -21,9 +21,57 @@ import {
   getMarcadoresParaFiltros,
 } from '@/data/commercialStructureMock';
 import { Map, Building2, X } from 'lucide-react';
+import { LogOut, UserRound } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { fetchDrivingRoute } from '@/lib/mapboxDirections';
+import { useAuth } from '@/context/AuthContext';
+import type { AuthUser } from '@/lib/authApi';
 
 const NAVIGATOR_PANEL_DOCK = { x: 16, y: 150 } as const;
+const PLANNER_ROUTE_START_MINUTES = 8 * 60;
+
+const ROLE_LABEL: Record<AuthUser['role'], string> = {
+  admin: 'Administrador',
+  gerente_area: 'Gerente de Gestão',
+  coordenador: 'Gerente Comercial III',
+  supervisor: 'Gerente Comercial',
+};
+
+function baseFiltersForUser(user: AuthUser | null): FiltrosEstrutura {
+  const base = { ...FILTROS_INICIAIS };
+  if (!user || user.isAdmin || !user.scope) return base;
+  if (user.scope.gerenciasArea.length === 1) {
+    base.chaveGerenciaArea = String(user.scope.gerenciasArea[0]);
+  }
+  if (user.role !== 'gerente_area' && user.scope.coordenacoes.length === 1) {
+    base.chaveCoordenacao = String(user.scope.coordenacoes[0]);
+  }
+  if (user.role === 'supervisor' && user.scope.supervisoes.length === 1) {
+    base.chaveSupervisao = String(user.scope.supervisoes[0]);
+  }
+  return base;
+}
+
+function formatRouteDuration(minutes: number): string {
+  const safeMinutes = Math.max(0, Math.round(minutes));
+  const hours = Math.floor(safeMinutes / 60);
+  const remainingMinutes = safeMinutes % 60;
+  if (hours === 0) return `${remainingMinutes} min`;
+  if (remainingMinutes === 0) return `${hours}h`;
+  return `${hours}h ${remainingMinutes}min`;
+}
+
+function formatRouteClock(minutes: number): string {
+  const normalized = ((minutes % (24 * 60)) + 24 * 60) % (24 * 60);
+  const hours = Math.floor(normalized / 60);
+  const remainingMinutes = normalized % 60;
+  return `${String(hours).padStart(2, '0')}:${String(remainingMinutes).padStart(2, '0')}`;
+}
+
+function manualRouteId(routeId: string, stops: VisitStop[]): string {
+  const baseId = routeId.replace(/-manual-order-[\d_-]+$/, '');
+  return `${baseId}-manual-order-${stops.map((stop) => stop.id).join('_')}`;
+}
 
 interface PlannerRouteEndpoint {
   id: string;
@@ -44,8 +92,15 @@ interface PlannerOpportunityFocus {
 }
 
 const Index = () => {
-  const [filters, setFilters] = useState<FiltrosEstrutura>(FILTROS_INICIAIS);
+  const { user, logout } = useAuth();
+  const baseFilters = useMemo(() => baseFiltersForUser(user), [user]);
+  const [filters, setFilters] = useState<FiltrosEstrutura>(() => baseFiltersForUser(user));
   const [filtersPanelOpen, setFiltersPanelOpen] = useState(false);
+  const [territoryFocusTick, setTerritoryFocusTick] = useState(0);
+
+  useEffect(() => {
+    setFilters(baseFilters);
+  }, [baseFilters]);
 
   const [navigatorMinimized, setNavigatorMinimized] = useState(true);
   const [activeSection, setActiveSection] = useState<NavigatorSection | null>(null);
@@ -186,6 +241,24 @@ const Index = () => {
     setPlannerAgencyFocus({ tick: Date.now(), ...endpoint });
   }, []);
 
+  const handlePlannerOriginStoreFocus = useCallback((store: SqlMapPoint) => {
+    const codAg = String(store.codAg ?? '').trim();
+    const endpoint: PlannerRouteEndpoint = {
+      id: store.id,
+      nome: store.nome,
+      codAg: codAg || undefined,
+      lngLat: store.lngLat,
+      enderecoFormatado: store.enderecoFormatado ?? undefined,
+    };
+    setPlannerOriginAgency(endpoint);
+    setPlannerDestination(null);
+    setPlannerTerritoryRadiusKm(null);
+    setPlannerSelectedStoreIds([]);
+    setPlannerOpportunityFocus(null);
+    setVisitFocus({ tick: Date.now(), stopId: null });
+    setPlannerAgencyFocus(codAg ? { tick: Date.now(), ...endpoint, codAg } : null);
+  }, []);
+
   const handlePlannerDestinationAgencyFocus = useCallback((agency: RegionMapPoint) => {
     const codAg = String(agency.codAg ?? '').trim();
     if (!codAg) return;
@@ -231,8 +304,8 @@ const Index = () => {
   const handlePlannerOriginLocationFocus = useCallback((location: DeviceLocation) => {
     const lngLat: [number, number] = [location.longitude, location.latitude];
     setPlannerOriginAgency({
-      id: `device-location-${location.longitude.toFixed(6)}-${location.latitude.toFixed(6)}`,
-      nome: location.label ?? 'Minha localização',
+      id: `origin-location-${location.longitude.toFixed(6)}-${location.latitude.toFixed(6)}`,
+      nome: location.label ?? 'Endereço selecionado',
       lngLat,
     });
     setPlannerDestination(null);
@@ -335,14 +408,23 @@ const Index = () => {
     if (!active) setCompareAllTerritory(false);
   };
 
-  const handleRouteChange = (route: VisitRoute | null, options?: { resultsPanelExpanded?: boolean }) => {
+  const handleRouteChange = (route: VisitRoute | null, options?: { resultsPanelExpanded?: boolean; resetManualOrder?: boolean }) => {
+    const currentRouteId = activeRouteIdRef.current;
+    if (
+      route &&
+      !options?.resetManualOrder &&
+      currentRouteId?.startsWith(`${route.id}-manual-order-`)
+    ) {
+      return;
+    }
     const isNewRoute = Boolean(route && activeRouteIdRef.current !== route.id);
     activeRouteIdRef.current = route?.id ?? null;
     if (route && isNewRoute) {
       positionRouteDetails(options?.resultsPanelExpanded ?? plannerResultsPanelExpanded);
       setRouteDetailsOpen(true);
       setSelectedStopId(null);
-      setVisitFocus({ tick: Date.now(), stopId: null });
+      // O MapComponent já faz fitBounds ao receber a nova rota; evitar um
+      // segundo movimento de câmera que competia com o sync das camadas.
     }
     setActiveRoute(route);
     if (!route) {
@@ -350,6 +432,73 @@ const Index = () => {
       setSelectedStopId(null);
       setVisitFocus(null);
     }
+  };
+
+  const handlePlannerStopsReorder = (stops: VisitStop[]) => {
+    if (!activeRoute || activeSection !== 'planejar') return;
+
+    const timeSlots = activeRoute.stops.map((stop) => stop.horario);
+    const reorderedStops = stops.map((stop, index) => ({
+      ...stop,
+      ordem: index + 1,
+      horario: timeSlots[index] ?? stop.horario,
+    }));
+    const reorderedRoute: VisitRoute = {
+      ...activeRoute,
+      id: manualRouteId(activeRoute.id, reorderedStops),
+      stops: reorderedStops,
+      routeGeometry: undefined,
+      distanceMeters: undefined,
+      saved: undefined,
+    };
+
+    activeRouteIdRef.current = reorderedRoute.id;
+    setActiveRoute(reorderedRoute);
+    setSelectedStopId((current) => reorderedStops.some((stop) => stop.id === current) ? current : null);
+
+    const coordinates: [number, number][] = [
+      ...(reorderedRoute.origin
+        ? [[reorderedRoute.origin.lng, reorderedRoute.origin.lat] as [number, number]]
+        : []),
+      ...reorderedStops.map((stop) => [stop.lng, stop.lat] as [number, number]),
+      ...(reorderedRoute.destination
+        ? [[reorderedRoute.destination.lng, reorderedRoute.destination.lat] as [number, number]]
+        : []),
+    ];
+    if (coordinates.length < 2) return;
+
+    void fetchDrivingRoute(reorderedRoute.id, coordinates).then((drivingRoute) => {
+      if (!drivingRoute) return;
+      const minutesPerVisit = reorderedRoute.durationBreakdown?.minutesPerVisit ?? 40;
+      let elapsedMinutes = 0;
+      const hasOrigin = Boolean(reorderedRoute.origin);
+      const recalculatedStops = reorderedStops.map((stop, index) => {
+        const legIndex = hasOrigin ? index : index - 1;
+        if (legIndex >= 0) {
+          elapsedMinutes += Math.ceil((drivingRoute.legDurationsSeconds[legIndex] ?? 0) / 60);
+        }
+        const horario = formatRouteClock(PLANNER_ROUTE_START_MINUTES + elapsedMinutes);
+        elapsedMinutes += minutesPerVisit;
+        return { ...stop, horario };
+      });
+      const travelMinutes = Math.ceil(drivingRoute.durationSeconds / 60);
+      const visitMinutes = recalculatedStops.length * minutesPerVisit;
+
+      setActiveRoute((current) => current?.id === reorderedRoute.id ? {
+        ...current,
+        distanceMeters: Math.round(drivingRoute.distanceMeters),
+        routeGeometry: drivingRoute.geometry,
+        stops: recalculatedStops,
+        distanciaKm: Math.max(1, Math.round(drivingRoute.distanceMeters / 1000)),
+        duracaoEstimada: formatRouteDuration(travelMinutes + visitMinutes),
+        durationBreakdown: {
+          travelMinutes,
+          visitMinutes,
+          minutesPerVisit,
+          source: 'calculated',
+        },
+      } : current);
+    });
   };
 
   const handleStopStep = (direction: -1 | 1) => {
@@ -417,6 +566,7 @@ const Index = () => {
           onClose={() => handleSelectSection(null)}
           onRouteChange={handleRouteChange}
           onAgencyFocus={handlePlannerOriginAgencyFocus}
+          onOriginStoreFocus={handlePlannerOriginStoreFocus}
           onOriginLocationFocus={handlePlannerOriginLocationFocus}
           onOriginClear={clearPlannerOrigin}
           onDestinationAgencyFocus={handlePlannerDestinationAgencyFocus}
@@ -441,9 +591,13 @@ const Index = () => {
           route={activeRoute}
           selectedStopId={selectedStopId}
           onStopSelect={setSelectedStopId}
-          onViewFullRoute={() => {
+          onStopsReorder={activeSection === 'planejar'
+            ? handlePlannerStopsReorder
+            : undefined}
+          onRouteSaved={(savedRoute) => {
+            activeRouteIdRef.current = savedRoute.id;
+            setActiveRoute(savedRoute);
             setSelectedStopId(null);
-            setVisitFocus({ tick: Date.now(), stopId: null });
           }}
           onClose={() => setRouteDetailsOpen(false)}
           shellStyle={routeDetailsDrag.shellStyle}
@@ -487,6 +641,22 @@ const Index = () => {
               className="ml-auto hidden min-w-0 items-center justify-end md:flex"
               aria-live="polite"
             />
+            {user && (
+              <div className="ml-auto flex shrink-0 items-center gap-2 md:ml-3">
+                <div className="hidden items-center gap-2 rounded-xl border bg-background/70 px-3 py-1.5 sm:flex">
+                  <UserRound className="h-4 w-4 text-map-primary" />
+                  <div className="max-w-[190px] leading-tight">
+                    <p className="truncate text-xs font-semibold">{user.nome}</p>
+                    <p className="truncate text-[10px] text-muted-foreground">
+                      {ROLE_LABEL[user.role]} · {user.funcional}
+                    </p>
+                  </div>
+                </div>
+                <Button type="button" variant="ghost" size="icon" onClick={() => void logout()} aria-label="Sair">
+                  <LogOut className="h-4 w-4" />
+                </Button>
+              </div>
+            )}
           </div>
         </div>
       </header>
@@ -495,6 +665,9 @@ const Index = () => {
         <MapComponent
           mapMarkers={mapMarkers}
           hierarchyFilter={buildSqlHierarchyFilterFromUi(filters)}
+          fitInitialAgencyScope={!user?.isAdmin}
+          initialTerritoryRole={user?.role}
+          territoryFocusTick={territoryFocusTick}
           filtersPanelOpen={filtersPanelOpen}
           onOpenFilters={() => setFiltersPanelOpen(true)}
           visitRoute={activeRoute ?? plannerPreviewRoute}
@@ -549,7 +722,12 @@ const Index = () => {
             </div>
 
             <div className="flex-1 overflow-y-auto p-4">
-              <CommercialStructureFilters filters={filters} onFiltersChange={setFilters} />
+              <CommercialStructureFilters
+                filters={filters}
+                onFiltersChange={setFilters}
+                baseFilters={baseFilters}
+                onReturnToTerritory={() => setTerritoryFocusTick((tick) => tick + 1)}
+              />
               {!hasActiveFilter && (
                 <div className="mt-4 rounded-lg border border-dashed p-4 text-sm text-muted-foreground flex gap-2">
                   <Building2 className="h-4 w-4 shrink-0 mt-0.5" />

@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { Check, Copy, ExternalLink, MapPin, QrCode, Route as RouteIcon } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
-import type { VisitRoute } from '@/data/visitRoutesMock';
+import type { VisitRoute } from '@/data/visitRoutes';
 import {
   Dialog,
   DialogContent,

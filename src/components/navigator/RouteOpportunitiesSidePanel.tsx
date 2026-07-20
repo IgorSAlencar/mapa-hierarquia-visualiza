@@ -18,16 +18,12 @@ import {
   X,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { OPPORTUNITY_DEFINITIONS, type OpportunityKey, type OpportunitySnapshot } from '@/data/opportunities';
 
 export type RouteOpportunityPriorityBand = 'alta' | 'media' | 'baixa';
-export type RouteOpportunityFilterKey =
-  | 'cielo'
-  | 'credito'
-  | 'negocio'
-  | 'ativo_pade'
-  | 'proposta_valor';
+export type RouteOpportunityFilterKey = OpportunityKey;
 
-export interface RouteOpportunityPanelItem {
+export interface RouteOpportunityPanelItem extends OpportunitySnapshot {
   id: string;
   nome: string;
   codAg: string;
@@ -37,11 +33,6 @@ export interface RouteOpportunityPanelItem {
   routeRole?: 'origin' | 'destination' | 'corridor';
   daysWithoutVisit: number;
   deviationMinutes: number;
-  oportunidadeCredito: boolean;
-  oportunidadeCielo: boolean;
-  oportunidadeNegocio: boolean;
-  oportunidadeAtivoPade: boolean;
-  oportunidadePropostaValor: boolean;
 }
 
 interface RegionOption {
@@ -77,7 +68,7 @@ interface Props {
   query: string;
   filtersOpen: boolean;
   filtersContainerRef: RefObject<HTMLDivElement>;
-  opportunityFilters: Array<{ key: RouteOpportunityFilterKey; label: string }>;
+  opportunityFilters: ReadonlyArray<{ key: RouteOpportunityFilterKey; label: string }>;
   selectedOpportunityFilters: RouteOpportunityFilterKey[];
   selectedPriorityBands: RouteOpportunityPriorityBand[];
   onlyWithoutVisit: boolean;
@@ -103,18 +94,7 @@ interface Props {
   onClose: () => void;
 }
 
-const opportunityBadges: Array<{
-  key: RouteOpportunityFilterKey;
-  label: string;
-  active: (store: RouteOpportunityPanelItem) => boolean;
-  className: string;
-}> = [
-  { key: 'cielo', label: 'Cielo', active: (store) => store.oportunidadeCielo, className: 'border-sky-200 bg-sky-50 text-sky-700' },
-  { key: 'credito', label: 'Crédito', active: (store) => store.oportunidadeCredito, className: 'border-violet-200 bg-violet-50 text-violet-700' },
-  { key: 'negocio', label: 'Negócio', active: (store) => store.oportunidadeNegocio, className: 'border-amber-200 bg-amber-50 text-amber-700' },
-  { key: 'ativo_pade', label: 'Ativo PADE', active: (store) => store.oportunidadeAtivoPade, className: 'border-emerald-200 bg-emerald-50 text-emerald-700' },
-  { key: 'proposta_valor', label: 'Proposta de Valor', active: (store) => store.oportunidadePropostaValor, className: 'border-rose-200 bg-rose-50 text-rose-700' },
-];
+const opportunityIndicators = OPPORTUNITY_DEFINITIONS;
 
 const priorityLabel: Record<RouteOpportunityPriorityBand, string> = {
   alta: 'Alerta',
@@ -424,7 +404,6 @@ function RegionChip({ label, count, active, onClick }: { label: string; count: n
 }
 
 function OpportunityCard({ store, priority, selected, onToggle, onHover }: { store: RouteOpportunityPanelItem; priority: RouteOpportunityPriorityBand; selected: boolean; onToggle: () => void; onHover?: (id: string | null) => void }) {
-  const activeOpportunities = opportunityBadges.filter((item) => item.active(store));
   return (
     <article
       role="button"
@@ -453,41 +432,52 @@ function OpportunityCard({ store, priority, selected, onToggle, onHover }: { sto
         <div className="min-w-0 flex-1">
           <div className="flex items-start gap-2">
             <div className="min-w-0 flex-1">
-              <h3 className="truncate text-[13px] font-bold leading-snug text-slate-900" title={store.nome}>{store.nome}</h3>
+              <h3 className="truncate text-[15px] font-bold leading-snug text-slate-900" title={store.nome}>{store.nome}</h3>
               <p className="mt-1 flex items-center gap-1 text-[10px] font-medium text-slate-500">
                 <MapPin className="h-3 w-3 shrink-0 text-slate-400" />
                 <span className="truncate">{[store.municipio, store.uf].filter(Boolean).join('/')}</span>
               </p>
+              <div className="mt-1.5 flex flex-wrap items-center gap-1 text-[8px] font-semibold uppercase tracking-wide text-slate-500">
+                {store.codAg && <span className="rounded-md bg-slate-100 px-1.5 py-1">Ag. {store.codAg}</span>}
+                {store.routeRole && <span className="rounded-md bg-blue-50 px-1.5 py-1 text-blue-700">{routeRoleLabel[store.routeRole]}</span>}
+                <span className="rounded-md bg-slate-50 px-1.5 py-1 text-slate-500">{priorityLabel[priority]}</span>
+              </div>
             </div>
-            <span className={cn('flex h-6 w-6 shrink-0 items-center justify-center rounded-lg border-2 transition-colors', selected ? 'border-violet-600 bg-violet-600 text-white' : 'border-slate-300 bg-white text-transparent group-hover:border-violet-400')}>
-              <Check className="h-4 w-4" />
-            </span>
-          </div>
-          <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[8px] font-semibold uppercase tracking-wide text-slate-500">
-            {store.codAg && <span className="rounded-md bg-slate-100 px-1.5 py-1">Ag. {store.codAg}</span>}
-            {store.routeRole && <span className="rounded-md bg-blue-50 px-1.5 py-1 text-blue-700">{routeRoleLabel[store.routeRole]}</span>}
-            <span className="rounded-md bg-slate-50 px-1.5 py-1 text-slate-500">{priorityLabel[priority]}</span>
+            <div className="flex shrink-0 flex-col items-end gap-1">
+              <span className={cn('flex h-6 w-6 items-center justify-center rounded-lg border-2 transition-colors', selected ? 'border-violet-600 bg-violet-600 text-white' : 'border-slate-300 bg-white text-transparent group-hover:border-violet-400')}>
+                <Check className="h-4 w-4" />
+              </span>
+              <div className="grid grid-cols-[64px_90px] gap-1">
+                <CardMetric icon={<Route className="h-3 w-3" />} label="Desvio" value={`+${store.deviationMinutes} min`} />
+                <CardMetric icon={<History className="h-3 w-3" />} label="Sem visita" value={`${store.daysWithoutVisit} dias`} />
+              </div>
+            </div>
           </div>
         </div>
       </div>
 
       <div className="mt-3 border-t border-slate-100 pt-2.5">
-        <p className="mb-1.5 text-[8px] font-bold uppercase tracking-[0.12em] text-slate-400">Oportunidades identificadas</p>
-        <div className="flex flex-wrap gap-1.5">
-          {activeOpportunities.length > 0 ? activeOpportunities.map((item) => (
-            <span key={item.key} className={cn('inline-flex items-center gap-1 rounded-full border px-2 py-1 text-[9px] font-bold', item.className)}>
-              <Check className="h-2.5 w-2.5" />
-              {item.label}
-            </span>
-          )) : <span className="text-[9px] font-medium text-slate-400">Nenhuma oportunidade sinalizada</span>}
+        <p className="mb-1.5 text-[10px] font-bold uppercase tracking-[0.12em] text-slate-400">Oportunidades identificadas</p>
+        <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-5">
+          {opportunityIndicators.map((item) => {
+            const active = store[item.field];
+            return <div
+              key={item.key}
+              className={cn(
+                'min-w-0 rounded-lg border px-2 py-1.5 last:col-span-2 sm:last:col-span-1',
+                active ? 'border-emerald-200 bg-emerald-50/80' : 'border-slate-200 bg-slate-50/90'
+              )}
+            >
+              <span className="block min-h-6 text-[10px] font-bold leading-tight text-slate-700">{item.label}</span>
+              <span className={cn('mt-1 inline-flex items-center gap-1 text-[11px] font-bold', active ? 'text-emerald-700' : 'text-slate-600')}>
+                {active ? <Check className="h-3 w-3" /> : <X className="h-3 w-3" />}
+                {active ? 'Sim' : 'Não'}
+              </span>
+            </div>;
+          })}
         </div>
       </div>
 
-      <div className="mt-3 grid grid-cols-3 gap-1.5">
-        <CardMetric icon={<Route className="h-3 w-3" />} label="Desvio" value={`+${store.deviationMinutes} min`} />
-        <CardMetric icon={<History className="h-3 w-3" />} label="Sem visita" value={`${store.daysWithoutVisit} dias`} />
-        <CardMetric icon={<Check className="h-3 w-3" />} label="No roteiro" value={selected ? 'Selecionada' : 'Adicionar'} active={selected} />
-      </div>
     </article>
   );
 }
@@ -503,9 +493,9 @@ function PriorityBadge({ band }: { band: RouteOpportunityPriorityBand }) {
 
 function CardMetric({ icon, label, value, active = false }: { icon: React.ReactNode; label: string; value: string; active?: boolean }) {
   return (
-    <div className={cn('min-w-0 rounded-xl border px-2 py-2', active ? 'border-violet-200 bg-violet-50 text-violet-700' : 'border-slate-100 bg-slate-50 text-slate-600')}>
+    <div className={cn('min-w-0 rounded-lg border px-1.5 py-1', active ? 'border-violet-200 bg-violet-50 text-violet-700' : 'border-slate-100 bg-slate-50 text-slate-600')}>
       <div className="flex items-center gap-1 text-[8px] font-semibold uppercase tracking-wide opacity-70">{icon}<span className="truncate">{label}</span></div>
-      <p className="mt-1 truncate text-[9px] font-bold" title={value}>{value}</p>
+      <p className="mt-0.5 truncate text-[9px] font-bold" title={value}>{value}</p>
     </div>
   );
 }

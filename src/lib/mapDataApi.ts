@@ -1,5 +1,7 @@
-export type SqlMapPointKind = 'agencia' | 'loja' | 'supervisor';
 import type { SqlHierarchyFilter } from '@/data/commercialStructureMock';
+import { apiFetch } from '@/lib/apiClient';
+
+export type SqlMapPointKind = 'agencia' | 'loja' | 'supervisor';
 
 export interface SqlMapPoint {
   id: string;
@@ -24,12 +26,14 @@ export interface SqlMapPoint {
   segmento?: string | null;
   dataUltimaTransacao?: string | null;
   cieloM0?: boolean | null;
+  propostaValor?: boolean | null;
   checklist?: boolean | null;
 }
 
 export interface StoreProductionPoint {
   periodo: number;
   qtdTrxContabil: number;
+  qtdTrxNegocio: number;
   qtdContas: number;
   qtdConsig: number;
   qtdLime: number;
@@ -51,6 +55,7 @@ const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? '';
 const POINTS_CACHE_MAX_ENTRIES = 120;
 const pointsResponseCache = new Map<string, { expiresAt: number; points: SqlMapPoint[] }>();
 const pendingPointsRequests = new Map<string, Promise<SqlMapPoint[]>>();
+let pointsCacheGeneration = 0;
 
 export interface BboxQuery {
   minLng: number;
@@ -59,7 +64,7 @@ export interface BboxQuery {
   maxLat: number;
 }
 
-interface FetchPointsOptions {
+export interface FetchPointsOptions {
   bbox?: BboxQuery | null;
   limit?: number;
   /** Ordena consultas espaciais do ponto mais próximo para o mais distante do centro da bbox. */
@@ -67,9 +72,12 @@ interface FetchPointsOptions {
   hierarchy?: SqlHierarchyFilter | null;
   /** Filtra lojas vinculadas à agência (COD_AG em TB_COORD_BE_IGOR). */
   codAg?: string | null;
+  /** Busca lojas por CHAVE_LOJA ou nome. Consultas com menos de 2 caracteres retornam vazio. */
+  search?: string | null;
 }
 
 function pointsCacheTtlMs(path: string, options: FetchPointsOptions): number {
+  if (path === '/api/map/lojas' && options.search != null) return 60_000;
   if (path === '/api/map/lojas' && options.codAg) return 2 * 60_000;
   if (path === '/api/map/lojas' && options.bbox) return 30_000;
   if (path === '/api/map/lojas' && options.hierarchy) return 30_000;
@@ -101,6 +109,7 @@ function buildQueryParams(options: FetchPointsOptions = {}) {
     params.set('limit', String(Math.max(1, Math.round(options.limit))));
   }
   if (options.sortByCenter && options.bbox) params.set('sortByCenter', '1');
+  if (options.search != null) params.set('search', String(options.search).trim());
   const codAgRaw = options.codAg != null ? String(options.codAg).trim() : '';
   const codAgNum = Number(codAgRaw.replace(',', '.'));
   const codAg =
@@ -134,7 +143,7 @@ async function fetchPointsFromApi(path: string, options: FetchPointsOptions = {}
   const url = `${API_BASE_URL}${path}${buildQueryParams(options)}`;
   let response: Response;
   try {
-    response = await fetch(url);
+    response = await apiFetch(url);
   } catch (error) {
     const detail = error instanceof Error ? ` Detalhe: ${error.message}` : '';
     throw new Error(
@@ -164,9 +173,10 @@ async function fetchPoints(path: string, options: FetchPointsOptions = {}): Prom
   const pending = pendingPointsRequests.get(url);
   if (pending) return pending;
 
+  const requestGeneration = pointsCacheGeneration;
   const request = fetchPointsFromApi(path, options)
     .then((points) => {
-      rememberPoints(url, points, ttlMs);
+      if (requestGeneration === pointsCacheGeneration) rememberPoints(url, points, ttlMs);
       return points;
     })
     .finally(() => {
@@ -189,6 +199,12 @@ export function fetchCommercialSeatPoints(options?: FetchPointsOptions) {
   return fetchPoints('/api/map/sedes', options);
 }
 
+export function clearMapDataCache() {
+  pointsCacheGeneration += 1;
+  pointsResponseCache.clear();
+  pendingPointsRequests.clear();
+}
+
 export async function fetchStoreProductionHistory(
   chaveLoja: string,
   signal?: AbortSignal
@@ -199,7 +215,7 @@ export async function fetchStoreProductionHistory(
   const url = `${API_BASE_URL}/api/map/lojas/${encodeURIComponent(key)}/producao`;
   let response: Response;
   try {
-    response = await fetch(url, { signal });
+    response = await apiFetch(url, { signal });
   } catch (error) {
     if (error instanceof DOMException && error.name === 'AbortError') throw error;
     const detail = error instanceof Error ? ` Detalhe: ${error.message}` : '';

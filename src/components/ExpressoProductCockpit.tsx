@@ -51,8 +51,8 @@ const CHART_STROKE_ANTERIOR = '#f87171';
 function chartYDomain(rows: { atualMil: number; anteriorMil: number }[]): [number, number] {
   if (rows.length === 0) return [0, 1];
   const vals = rows.flatMap((r) => [r.atualMil, r.anteriorMil]);
-  let min = Math.min(...vals);
-  let max = Math.max(...vals);
+  const min = Math.min(...vals);
+  const max = Math.max(...vals);
   if (!Number.isFinite(min) || !Number.isFinite(max)) return [0, 1];
   if (max === min) {
     const pad = Math.max(Math.abs(max) * 0.08, 0.5);

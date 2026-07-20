@@ -1,5 +1,5 @@
 import type mapboxgl from 'mapbox-gl';
-import type { VisitRoute } from '@/data/visitRoutesMock';
+import type { VisitRoute } from '@/data/visitRoutes';
 import { fetchDrivingGeometry, getCachedDrivingGeometry } from '@/lib/mapboxDirections';
 
 /**
@@ -23,6 +23,12 @@ const STATUS_COLOR: Record<string, string> = {
 
 const ROUTE_LINE_COLOR = '#3b82f6';
 
+const ROUTE_LAYER_IDS = [
+  LINE_LAYER_ID,
+  STOP_CIRCLE_LAYER_ID,
+  STOP_NUMBER_LAYER_ID,
+] as const;
+
 type StopClickHandler = (stopId: number) => void;
 
 const registeredHandlers = new WeakMap<
@@ -44,6 +50,28 @@ const activeRouteIds = new WeakMap<mapboxgl.Map, string>();
  * reprocessar o GeoJSON quando só a parada selecionada mudou.
  */
 const renderedDataKeys = new WeakMap<mapboxgl.Map, string>();
+
+/** Aceita array de [lng,lat] ou GeoJSON LineString vindo do banco. */
+function normalizeRouteGeometry(
+  value: VisitRoute['routeGeometry'] | GeoJSON.LineString | null | undefined
+): [number, number][] | null {
+  if (!value) return null;
+  const raw = Array.isArray(value)
+    ? value
+    : value && typeof value === 'object' && 'coordinates' in value && Array.isArray(value.coordinates)
+      ? value.coordinates
+      : null;
+  if (!raw || raw.length < 2) return null;
+  const coordinates: [number, number][] = [];
+  for (const point of raw) {
+    if (!Array.isArray(point) || point.length < 2) continue;
+    const lng = Number(point[0]);
+    const lat = Number(point[1]);
+    if (!Number.isFinite(lng) || !Number.isFinite(lat)) continue;
+    coordinates.push([lng, lat]);
+  }
+  return coordinates.length >= 2 ? coordinates : null;
+}
 
 function buildFeatureCollection(
   route: VisitRoute,
@@ -105,6 +133,7 @@ function ensureLayers(m: mapboxgl.Map): void {
       id: LINE_LAYER_ID,
       type: 'line',
       source: SOURCE_ID,
+      slot: 'top',
       filter: ['==', ['geometry-type'], 'LineString'],
       layout: { 'line-join': 'round', 'line-cap': 'round' },
       paint: {
@@ -120,6 +149,7 @@ function ensureLayers(m: mapboxgl.Map): void {
       id: STOP_CIRCLE_LAYER_ID,
       type: 'circle',
       source: SOURCE_ID,
+      slot: 'top',
       filter: ['==', ['geometry-type'], 'Point'],
       paint: {
         'circle-radius': 10,
@@ -151,18 +181,66 @@ function ensureLayers(m: mapboxgl.Map): void {
       id: STOP_NUMBER_LAYER_ID,
       type: 'symbol',
       source: SOURCE_ID,
+      slot: 'top',
       filter: ['==', ['geometry-type'], 'Point'],
       layout: {
         'text-field': ['get', 'ordem'],
         'text-size': 11,
         'text-allow-overlap': true,
-        'text-font': ['DIN Pro Bold', 'Arial Unicode MS Bold'],
+        'text-font': ['DIN Offc Pro Bold', 'Arial Unicode MS Bold'],
       },
       paint: {
         'text-color': '#ffffff',
       },
     });
   }
+}
+
+/** Standard ilumina o basemap; sem emissive a rota “some” (fica preta). */
+function applyRouteEmissive(m: mapboxgl.Map): void {
+  try {
+    m.setPaintProperty(LINE_LAYER_ID, 'line-emissive-strength', 1);
+  } catch {
+    /* estilo clássico sem emissive */
+  }
+  try {
+    m.setPaintProperty(STOP_CIRCLE_LAYER_ID, 'circle-emissive-strength', 1);
+  } catch {
+    /* estilo clássico sem emissive */
+  }
+  try {
+    m.setPaintProperty(STOP_NUMBER_LAYER_ID, 'text-emissive-strength', 1);
+  } catch {
+    /* estilo clássico sem emissive */
+  }
+}
+
+/**
+ * A limpeza da rota esconde as camadas antes de removê-las. Durante uma troca
+ * de estilo, o Mapbox pode aceitar o `visibility: none` e falhar na remoção;
+ * nesse caso a próxima rota reutilizava camadas ainda invisíveis. Reaplicamos
+ * a visibilidade e a ordem em toda sincronização, inclusive para camadas que
+ * sobreviveram à troca de estilo.
+ */
+function showRouteLayers(m: mapboxgl.Map): void {
+  for (const layerId of ROUTE_LAYER_IDS) {
+    if (!m.getLayer(layerId)) continue;
+    m.setLayoutProperty(layerId, 'visibility', 'visible');
+
+    // No Mapbox Standard, o slot `top` mantém a rota acima do mapa-base.
+    // Em estilos clássicos, `moveLayer` cumpre a mesma função.
+    try {
+      m.setSlot(layerId, 'top');
+    } catch {
+      /* o estilo atual não utiliza slots */
+    }
+    try {
+      m.moveLayer(layerId);
+    } catch {
+      /* a ordem pode estar temporariamente bloqueada durante style.load */
+    }
+  }
+  applyRouteEmissive(m);
 }
 
 function ensureInteractions(m: mapboxgl.Map): void {
@@ -216,7 +294,7 @@ function applyStreetGeometry(m: mapboxgl.Map, route: VisitRoute): void {
 export function removeVisitRouteFromMap(m: mapboxgl.Map): void {
   activeRouteIds.delete(m);
   renderedDataKeys.delete(m);
-  for (const layerId of [STOP_NUMBER_LAYER_ID, STOP_CIRCLE_LAYER_ID, LINE_LAYER_ID]) {
+  for (const layerId of [...ROUTE_LAYER_IDS].reverse()) {
     try {
       if (!m.getLayer(layerId)) continue;
       // Esconde primeiro para a rota sumir imediatamente, mesmo se a remocao
@@ -258,22 +336,30 @@ export function syncVisitRouteOnMap(
 
   try {
     ensureLayers(m);
+    showRouteLayers(m);
     ensureInteractions(m);
 
-    // Usa a geometria das ruas do cache se já disponível; senão, linha reta
-    // imediata enquanto a Directions API responde (uma única vez por roteiro).
-    const cachedGeometry = getCachedDrivingGeometry(route.id);
-    const dataKey = `${route.id}:${cachedGeometry ? 'street' : 'pending'}`;
+    // Prioridade: geometria persistida (roteiro salvo) → cache Directions →
+    // linha reta entre paradas. Em planejamento (não salvo), enquanto a API
+    // não responde, omitimos a linha reta para não “piscar” o caminho errado.
+    const persistedGeometry = normalizeRouteGeometry(route.routeGeometry);
+    const streetGeometry = persistedGeometry ?? getCachedDrivingGeometry(route.id);
+    const awaitingStreetGeometry = !streetGeometry && !route.saved;
+    const lineCoordinates: [number, number][] | undefined = awaitingStreetGeometry
+      ? []
+      : (streetGeometry ?? undefined);
+    const dataKey = `${route.id}:${persistedGeometry ? 'persisted' : streetGeometry ? 'street' : awaitingStreetGeometry ? 'pending' : 'straight'}`;
 
-    if (renderedDataKeys.get(m) !== dataKey) {
-      const src = m.getSource(SOURCE_ID) as mapboxgl.GeoJSONSource | undefined;
-      // Sem geometria em cache, envia uma lista vazia para desenhar apenas
-      // os markers. A linha aparece somente com o trajeto real das ruas.
-      src?.setData(buildFeatureCollection(route, cachedGeometry ?? []));
-      renderedDataKeys.set(m, dataKey);
-    }
+    const src = m.getSource(SOURCE_ID) as mapboxgl.GeoJSONSource | undefined;
+    if (!src) return;
+    // Sempre reescreve o GeoJSON: confiar só na chave falha quando um sync
+    // anterior marcou sucesso mas a fonte foi esvaziada no meio do fitBounds.
+    src.setData(buildFeatureCollection(route, lineCoordinates));
+    renderedDataKeys.set(m, dataKey);
 
-    if (!cachedGeometry) applyStreetGeometry(m, route);
+    // Snapshot salvo não recalcula Directions (preserva o caminho histórico).
+    // Sem geometria salva, a linha reta acima já cobre o "Ver rota".
+    if (awaitingStreetGeometry) applyStreetGeometry(m, route);
 
     const baseRadius: mapboxgl.ExpressionSpecification = [
       'match',

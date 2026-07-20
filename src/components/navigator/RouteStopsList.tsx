@@ -1,7 +1,7 @@
 import React from 'react';
-import { Clock3, HelpCircle, Route as RouteIcon, Store } from 'lucide-react';
+import { Clock3, GripVertical, HelpCircle, Route as RouteIcon, Store } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import type { VisitRoute, VisitStopStatus } from '@/data/visitRoutesMock';
+import type { VisitRoute, VisitStop, VisitStopStatus } from '@/data/visitRoutes';
 import {
   Tooltip,
   TooltipContent,
@@ -26,7 +26,7 @@ interface RouteStopsListProps {
   route: VisitRoute;
   selectedStopId: number | null;
   onStopSelect: (stopId: number) => void;
-  onViewFullRoute: () => void;
+  onStopsReorder?: (stops: VisitStop[]) => void;
   footerAction?: React.ReactNode;
 }
 
@@ -51,10 +51,14 @@ const RouteStopsList: React.FC<RouteStopsListProps> = ({
   route,
   selectedStopId,
   onStopSelect,
-  onViewFullRoute,
+  onStopsReorder,
   footerAction,
 }) => {
   const [isDurationTooltipOpen, setIsDurationTooltipOpen] = React.useState(false);
+  const [draggedStopId, setDraggedStopId] = React.useState<number | null>(null);
+  const [dragOverStopId, setDragOverStopId] = React.useState<number | null>(null);
+  const isSuggestedRoute = Boolean(onStopsReorder);
+  const canReorder = isSuggestedRoute && route.stops.length > 1;
   const concluidas = route.stops.filter((s) => s.status === 'concluida').length;
   const pendentes = route.stops.length - concluidas;
   const fallbackVisitMinutes = route.stops.length * DEFAULT_VISIT_MINUTES;
@@ -66,16 +70,45 @@ const RouteStopsList: React.FC<RouteStopsListProps> = ({
     source: 'planned' as const,
   };
 
-  const summary = [
+  const fullSummary = [
     { value: String(route.stops.length), label: 'Visitas planejadas', accent: 'text-slate-900' },
     { value: String(concluidas), label: 'Concluídas', accent: 'text-emerald-600' },
     { value: String(pendentes), label: 'Pendentes', accent: 'text-amber-600' },
     { value: `${route.distanciaKm} km`, label: 'Distância total', accent: 'text-slate-900' },
   ];
+  const summary = isSuggestedRoute
+    ? [fullSummary[0], fullSummary[3]]
+    : fullSummary;
+
+  const commitReorder = (sourceId: number, insertionIndex: number) => {
+    if (!onStopsReorder) return;
+    const sourceIndex = route.stops.findIndex((stop) => stop.id === sourceId);
+    if (sourceIndex < 0) return;
+
+    const nextStops = [...route.stops];
+    const [movedStop] = nextStops.splice(sourceIndex, 1);
+    const adjustedIndex = sourceIndex < insertionIndex ? insertionIndex - 1 : insertionIndex;
+    const safeIndex = Math.max(0, Math.min(adjustedIndex, nextStops.length));
+    nextStops.splice(safeIndex, 0, movedStop);
+
+    if (nextStops.every((stop, index) => stop.id === route.stops[index]?.id)) return;
+    onStopsReorder(nextStops.map((stop, index) => ({ ...stop, ordem: index + 1 })));
+  };
+
+  const moveStopWithKeyboard = (stopId: number, direction: -1 | 1) => {
+    const sourceIndex = route.stops.findIndex((stop) => stop.id === stopId);
+    const targetIndex = sourceIndex + direction;
+    if (sourceIndex < 0 || targetIndex < 0 || targetIndex >= route.stops.length) return;
+
+    const nextStops = [...route.stops];
+    const [movedStop] = nextStops.splice(sourceIndex, 1);
+    nextStops.splice(targetIndex, 0, movedStop);
+    onStopsReorder?.(nextStops.map((stop, index) => ({ ...stop, ordem: index + 1 })));
+  };
 
   return (
     <div className="space-y-3">
-      <div className="grid grid-cols-4 gap-2">
+      <div className={cn('grid gap-2', isSuggestedRoute ? 'grid-cols-2' : 'grid-cols-4')}>
         {summary.map((item) => (
           <div
             key={item.label}
@@ -107,7 +140,7 @@ const RouteStopsList: React.FC<RouteStopsListProps> = ({
           <TooltipContent
             side="left"
             align="center"
-            sideOffset={10}
+            sideOffset={15}
             className="w-72 rounded-xl border border-slate-200 bg-white p-3 text-slate-700 shadow-xl"
           >
             <p className="text-xs font-bold text-slate-900">Como chegamos a esse tempo?</p>
@@ -144,21 +177,79 @@ const RouteStopsList: React.FC<RouteStopsListProps> = ({
         </Tooltip>
       </TooltipProvider>
 
+      {canReorder && (
+        <p className="flex items-center gap-1.5 px-1 text-[10px] leading-relaxed text-slate-500">
+          <GripVertical className="h-3.5 w-3.5 shrink-0 text-slate-400" aria-hidden />
+          Arraste as visitas para alterar a ordem. <br/>O mapa e os horários serão atualizados.
+        </p>
+      )}
+
       <ol className="space-y-2">
         {route.stops.map((stop) => {
           const style = STOP_STATUS_STYLE[stop.status];
           const isSelected = selectedStopId === stop.id;
           return (
-            <li key={stop.id}>
+            <li
+              key={stop.id}
+              draggable={canReorder}
+              onDragStart={canReorder ? (event) => {
+                setDraggedStopId(stop.id);
+                event.dataTransfer.effectAllowed = 'move';
+                event.dataTransfer.setData('text/plain', String(stop.id));
+              } : undefined}
+              onDragEnd={canReorder ? () => {
+                setDraggedStopId(null);
+                setDragOverStopId(null);
+              } : undefined}
+              onDragOver={canReorder ? (event) => {
+                event.preventDefault();
+                event.dataTransfer.dropEffect = 'move';
+                setDragOverStopId(stop.id);
+              } : undefined}
+              onDrop={canReorder ? (event) => {
+                event.preventDefault();
+                if (draggedStopId == null) return;
+                const targetIndex = route.stops.findIndex((item) => item.id === stop.id);
+                if (targetIndex < 0) return;
+                const rect = event.currentTarget.getBoundingClientRect();
+                const insertAfter = event.clientY >= rect.top + rect.height / 2;
+                commitReorder(draggedStopId, targetIndex + (insertAfter ? 1 : 0));
+                setDraggedStopId(null);
+                setDragOverStopId(null);
+              } : undefined}
+              className={cn(
+                'flex items-stretch overflow-hidden rounded-xl border transition-colors',
+                isSelected
+                  ? 'border-blue-300 bg-blue-50/80'
+                  : 'border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50',
+                draggedStopId === stop.id && 'opacity-50',
+                dragOverStopId === stop.id && draggedStopId !== stop.id && 'border-blue-400 ring-2 ring-blue-100',
+                canReorder && 'cursor-grab active:cursor-grabbing'
+              )}
+            >
+              {canReorder && (
+                <button
+                  type="button"
+                  onKeyDown={(event) => {
+                    if (event.key === 'ArrowUp') {
+                      event.preventDefault();
+                      moveStopWithKeyboard(stop.id, -1);
+                    } else if (event.key === 'ArrowDown') {
+                      event.preventDefault();
+                      moveStopWithKeyboard(stop.id, 1);
+                    }
+                  }}
+                  className="flex w-8 shrink-0 cursor-grab items-center justify-center border-r border-slate-100 text-slate-400 outline-none transition-colors hover:bg-slate-100 hover:text-blue-600 focus-visible:bg-blue-50 focus-visible:text-blue-700 active:cursor-grabbing"
+                  aria-label={`Reordenar ${stop.nome}. Use as setas para cima ou para baixo.`}
+                  title="Arraste para alterar a ordem"
+                >
+                  <GripVertical className="h-4 w-4" aria-hidden />
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => onStopSelect(stop.id)}
-                className={cn(
-                  'flex w-full items-center gap-3 rounded-xl border px-3 py-2.5 text-left transition-colors',
-                  isSelected
-                    ? 'border-blue-300 bg-blue-50/80'
-                    : 'border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50'
-                )}
+                className="flex min-w-0 flex-1 items-center gap-3 px-3 py-2.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500"
               >
                 <span
                   className={cn(
@@ -186,16 +277,7 @@ const RouteStopsList: React.FC<RouteStopsListProps> = ({
         })}
       </ol>
 
-      <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
-        <button
-          type="button"
-          onClick={onViewFullRoute}
-          className="min-h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700 transition-colors hover:bg-slate-50"
-        >
-          Ver roteiro completo
-        </button>
-        {footerAction}
-      </div>
+      {footerAction ? <div className="flex gap-2">{footerAction}</div> : null}
     </div>
   );
 };

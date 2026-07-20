@@ -1,8 +1,8 @@
 import React from 'react';
 import { CalendarCheck, MapPin, TrendingUp, Users } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { getRouteForSupervisao } from '@/data/visitRoutesMock';
 import type { CommercialStructureItem } from '@/lib/commercialStructureApi';
+import type { VisitRouteSupervisionSummary } from '@/lib/visitRoutesApi';
 
 export interface RegionOverview {
   totalGerentes: number;
@@ -11,13 +11,15 @@ export interface RegionOverview {
   percentualCobertura: number;
 }
 
-export function calculateOverview(supervisoes: CommercialStructureItem[]): RegionOverview {
+export function calculateOverview(
+  supervisoes: CommercialStructureItem[],
+  summaries: VisitRouteSupervisionSummary[] = []
+): RegionOverview {
   const totalGerentes = supervisoes.length;
-  const gerentesComRoteiro = supervisoes.filter((s) => getRouteForSupervisao(s.chave)).length;
-  const totalVisitas = supervisoes.reduce((acc, s) => {
-    const route = getRouteForSupervisao(s.chave);
-    return acc + (route?.stops.length ?? 0);
-  }, 0);
+  const supervisionKeys = new Set(supervisoes.map((item) => item.chave));
+  const scopedSummaries = summaries.filter((item) => supervisionKeys.has(item.chaveSupervisao));
+  const gerentesComRoteiro = scopedSummaries.reduce((total, item) => total + item.managersWithRoute, 0);
+  const totalVisitas = scopedSummaries.reduce((total, item) => total + item.visits, 0);
   const percentualCobertura = totalGerentes > 0 ? Math.round((gerentesComRoteiro / totalGerentes) * 100) : 0;
 
   return { totalGerentes, gerentesComRoteiro, totalVisitas, percentualCobertura };
@@ -25,10 +27,11 @@ export function calculateOverview(supervisoes: CommercialStructureItem[]): Regio
 
 interface RegionOverviewCardsProps {
   supervisoes: CommercialStructureItem[];
+  summaries?: VisitRouteSupervisionSummary[];
 }
 
-const RegionOverviewCards: React.FC<RegionOverviewCardsProps> = ({ supervisoes }) => {
-  const overview = calculateOverview(supervisoes);
+const RegionOverviewCards: React.FC<RegionOverviewCardsProps> = ({ supervisoes, summaries = [] }) => {
+  const overview = calculateOverview(supervisoes, summaries);
 
   const cards = [
     {

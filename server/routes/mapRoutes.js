@@ -5,15 +5,29 @@ import {
   getStoreMapPoints,
   getStoreProductionHistory,
 } from '../services/mapDataService.js';
+import { authCacheKey } from '../auth/scopeSql.js';
+import { getAuthorizedSupervisionAreas } from '../services/supervisionAreasService.js';
 
 const router = Router();
 const STORE_POINTS_CACHE_MAX_ENTRIES = 120;
 const storePointsCache = new Map();
 
-function storePointsCacheTtlMs({ bbox, codAg, hierarchy }) {
+router.get('/areas-supervisao', async (req, res) => {
+  try {
+    const featureCollection = await getAuthorizedSupervisionAreas(req.user);
+    res.set('Cache-Control', 'private, max-age=300');
+    res.json(featureCollection);
+  } catch (error) {
+    console.error('Erro ao carregar áreas de supervisão:', error);
+    res.status(500).json({ message: 'Erro ao carregar áreas de supervisão.' });
+  }
+});
+
+function storePointsCacheTtlMs({ bbox, codAg, hierarchy, search }) {
   const hasAdditionalHierarchy = hierarchy && Object.entries(hierarchy)
     .some(([key, value]) => key !== 'codAg' && value != null);
   if (codAg) return 2 * 60_000;
+  if (search) return 60_000;
   if (bbox) return 30_000;
   if (hasAdditionalHierarchy) return 30_000;
   return 2 * 60_000;
@@ -26,8 +40,16 @@ function roundedBbox(bbox) {
   );
 }
 
-function storePointsCacheKey({ bbox, limit, codAg, hierarchy, sortByCenter }) {
-  return JSON.stringify({ bbox: roundedBbox(bbox), limit, codAg, hierarchy, sortByCenter });
+function storePointsCacheKey({ bbox, limit, codAg, hierarchy, sortByCenter, search, accessKey }) {
+  return JSON.stringify({
+    bbox: roundedBbox(bbox),
+    limit,
+    codAg,
+    hierarchy,
+    sortByCenter,
+    search,
+    accessKey,
+  });
 }
 
 function trimStorePointsCache() {
@@ -113,7 +135,7 @@ router.get('/agencias', async (req, res) => {
     const bbox = readBboxFromQuery(req.query);
     const limit = readLimitFromQuery(req.query, null, 250000);
     const hierarchy = readHierarchyFromQuery(req.query);
-    const points = await getAgencyMapPoints({ bbox, limit, hierarchy });
+    const points = await getAgencyMapPoints({ bbox, limit, hierarchy, user: req.user });
     res.json({ points });
   } catch (error) {
     console.error('Erro ao buscar agências:', error);
@@ -126,14 +148,35 @@ function readCodAgFromQuery(query) {
   return codAg.length > 0 ? codAg : null;
 }
 
+function readStoreSearchFromQuery(query) {
+  const search = String(query.search ?? '').trim().replace(/\s+/g, ' ');
+  return search.length > 0 ? search : null;
+}
+
 router.get('/lojas', async (req, res) => {
   try {
+    const searchProvided = Object.prototype.hasOwnProperty.call(req.query, 'search');
+    const search = readStoreSearchFromQuery(req.query);
+    if (searchProvided && (!search || search.length < 2)) {
+      res.json({ points: [] });
+      return;
+    }
     const bbox = readBboxFromQuery(req.query);
-    const limit = readLimitFromQuery(req.query, null, 300000);
+    const requestedLimit = readLimitFromQuery(req.query, search ? 20 : null, 300000);
+    const limit = search ? Math.min(requestedLimit ?? 20, 50) : requestedLimit;
     const codAg = readCodAgFromQuery(req.query);
     const sortByCenter = String(req.query.sortByCenter ?? '').trim() === '1';
     const hierarchy = readHierarchyFromQuery(req.query);
-    const options = { bbox, limit, codAg, hierarchy, sortByCenter };
+    const options = {
+      bbox,
+      limit,
+      codAg,
+      hierarchy,
+      sortByCenter,
+      search,
+      user: req.user,
+      accessKey: authCacheKey(req.user),
+    };
     const cacheTtlMs = storePointsCacheTtlMs(options);
     const cacheKey = storePointsCacheKey(options);
     const points = await loadCachedStorePoints(
@@ -158,7 +201,11 @@ router.get('/lojas/:chaveLoja/producao', async (req, res) => {
       res.status(400).json({ message: 'Parâmetro inválido: chaveLoja.' });
       return;
     }
-    const history = await getStoreProductionHistory(chaveLoja);
+    const history = await getStoreProductionHistory(chaveLoja, req.user);
+    if (history == null) {
+      res.status(404).json({ message: 'Loja não encontrada.' });
+      return;
+    }
     res.json({ history });
   } catch (error) {
     console.error('Erro ao buscar produção da loja:', error);
@@ -169,7 +216,7 @@ router.get('/lojas/:chaveLoja/producao', async (req, res) => {
 router.get('/sedes', async (req, res) => {
   try {
     const hierarchy = readHierarchyFromQuery(req.query);
-    const points = await getCommercialSeatMapPoints({ hierarchy });
+    const points = await getCommercialSeatMapPoints({ hierarchy, user: req.user });
     res.json({ points });
   } catch (error) {
     console.error('Erro ao buscar sedes da estrutura:', error);

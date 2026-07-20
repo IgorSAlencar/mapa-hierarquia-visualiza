@@ -43,6 +43,7 @@ export interface RegionMapPoint {
   segmento?: string | null;
   dataUltimaTransacao?: string | null;
   cieloM0?: boolean | null;
+  propostaValor?: boolean | null;
   checklist?: boolean | null;
 }
 
@@ -143,6 +144,7 @@ export function regionPointsToFeatureCollection(
         desc_segto: p.segmento ?? '',
         dt_ult_trx: p.dataUltimaTransacao ?? '',
         cielo_m0: p.cieloM0 == null ? '' : p.cieloM0 ? '1' : '0',
+        proposta_valor: p.propostaValor == null ? '' : p.propostaValor ? '1' : '0',
         checklist: p.checklist == null ? '' : p.checklist ? '1' : '0',
       },
       geometry: {

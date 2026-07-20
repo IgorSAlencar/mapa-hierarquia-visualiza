@@ -2,16 +2,18 @@ import React from 'react';
 import type { CSSProperties } from 'react';
 import { CalendarDays, Route as RouteIcon, X } from 'lucide-react';
 import RouteStopsList from './RouteStopsList';
-import type { VisitRoute } from '@/data/visitRoutesMock';
+import type { VisitRoute, VisitStop } from '@/data/visitRoutes';
 import type { PanelHeaderDragProps } from '@/hooks/usePanelDrag';
 import { mergeHeaderDrag } from '@/components/navigator/mergeHeaderDrag';
 import RouteQrCodeDialog from './RouteQrCodeDialog';
+import SaveRouteDialog from './SaveRouteDialog';
 
 interface RouteDetailsPanelProps {
   route: VisitRoute;
   selectedStopId: number | null;
   onStopSelect: (stopId: number) => void;
-  onViewFullRoute: () => void;
+  onStopsReorder?: (stops: VisitStop[]) => void;
+  onRouteSaved?: (route: VisitRoute) => void;
   /** Fecha apenas o painel; a rota permanece plotada no mapa. */
   onClose: () => void;
   shellStyle?: CSSProperties;
@@ -26,7 +28,8 @@ const RouteDetailsPanel: React.FC<RouteDetailsPanelProps> = ({
   route,
   selectedStopId,
   onStopSelect,
-  onViewFullRoute,
+  onStopsReorder,
+  onRouteSaved,
   onClose,
   shellStyle,
   headerDragProps,
@@ -77,8 +80,13 @@ const RouteDetailsPanel: React.FC<RouteDetailsPanelProps> = ({
           route={route}
           selectedStopId={selectedStopId}
           onStopSelect={onStopSelect}
-          onViewFullRoute={onViewFullRoute}
-          footerAction={<RouteQrCodeDialog route={route} />}
+          onStopsReorder={onStopsReorder}
+          footerAction={(
+            <div className="flex gap-2">
+              {onRouteSaved && <SaveRouteDialog route={route} onSaved={onRouteSaved} />}
+              <RouteQrCodeDialog route={route} />
+            </div>
+          )}
         />
       </div>
     </div>

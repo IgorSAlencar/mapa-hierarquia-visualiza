@@ -40,7 +40,7 @@ const MapOverlayMarkerInfoPanel: React.FC<MapOverlayMarkerInfoPanelProps> = ({
   if (storeSelection) {
     return (
       <div
-        className="mt-2 max-h-[calc(100vh-190px)] overflow-y-auto rounded-xl border border-slate-200/90 bg-white/95 shadow-md shadow-slate-900/5 backdrop-blur-sm"
+        className="mt-2 rounded-xl border border-slate-200/90 bg-white/95 shadow-md shadow-slate-900/5 backdrop-blur-sm"
         role="region"
         aria-label={`Produção da loja ${storeSelection.nome}`}
       >
@@ -85,6 +85,7 @@ const MapOverlayMarkerInfoPanel: React.FC<MapOverlayMarkerInfoPanelProps> = ({
           <StoreProductionChart
             chaveLoja={storeSelection.chaveLoja}
             cieloM0={storeSelection.cieloM0}
+            propostaValor={storeSelection.propostaValor}
           />
         ) : (
           <div className="border-t border-slate-100 px-3 py-4 text-xs text-slate-500">

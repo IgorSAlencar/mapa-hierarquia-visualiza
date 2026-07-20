@@ -1,49 +1,17 @@
 import type { CommercialStructureItem } from '@/lib/commercialStructureApi';
+import type { VisitRoute } from '@/data/visitRoutes';
+export type {
+  VisitRoute,
+  VisitRouteDurationBreakdown,
+  VisitStop,
+  VisitStopStatus,
+} from '@/data/visitRoutes';
 
 /**
  * Dados estáticos de visitas e roteiros (entrega inicial).
  * Estrutura pronta para ser substituída por uma API: basta trocar a origem
  * de `VISIT_ROUTES` mantendo os tipos abaixo.
  */
-
-export type VisitStopStatus = 'concluida' | 'pendente';
-
-export interface VisitStop {
-  id: number;
-  ordem: number;
-  nome: string;
-  horario: string;
-  status: VisitStopStatus;
-  endereco: string;
-  cep: string;
-  produtoFoco: string;
-  ultimaVisita: string;
-  proximaAcao: string;
-  lat: number;
-  lng: number;
-}
-
-export interface VisitRouteDurationBreakdown {
-  travelMinutes: number;
-  visitMinutes: number;
-  minutesPerVisit: number;
-  source: 'calculated' | 'approximate' | 'planned';
-}
-
-export interface VisitRoute {
-  id: string;
-  /** Chave da supervisão (Gerente Comercial) dona do roteiro. */
-  chaveSupervisao: number;
-  gerenteComercial: string;
-  nome: string;
-  data: string;
-  distanciaKm: number;
-  duracaoEstimada: string;
-  durationBreakdown?: VisitRouteDurationBreakdown;
-  stops: VisitStop[];
-  origin?: { nome: string; lat: number; lng: number };
-  destination?: { nome: string; lat: number; lng: number };
-}
 
 export const VISIT_ROUTES: VisitRoute[] = [
   {

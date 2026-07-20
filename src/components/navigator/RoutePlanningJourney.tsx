@@ -7,7 +7,6 @@ import {
   Check,
   CheckCircle2,
   Clock3,
-  Crosshair,
   ListChecks,
   Map,
   MapPin,
@@ -26,7 +25,8 @@ import {
 import { cn } from '@/lib/utils';
 import type { RegionMapPoint } from '@/data/regionMapPointsMock';
 import type { PanelHeaderDragProps } from '@/hooks/usePanelDrag';
-import { requestDeviceLocation, type DeviceLocation } from '@/lib/deviceGeolocation';
+import type { DeviceLocation } from '@/lib/deviceGeolocation';
+import { fetchStorePoints, type SqlMapPoint } from '@/lib/mapDataApi';
 import {
   fetchAddressSuggestions,
   fetchMunicipalitySuggestions,
@@ -43,21 +43,27 @@ interface JourneyResult {
   destination: string;
   initialScreen?: RoutePlanningScreen;
   initialPriority?: PlanningPriority;
-  initialOriginLocation?: DeviceLocation | null;
   initialDestinationLocation?: DeviceLocation | null;
   territoryRadiusKm: number | null;
   priority: PlanningPriority;
 }
 
 type DestinationType = 'agencia' | 'municipio' | 'endereco' | 'territorio';
+type OriginType = 'agencia' | 'endereco' | 'loja';
 
 interface Props {
   agencies: RegionMapPoint[];
   originId: string;
   destination: string;
+  initialScreen?: RoutePlanningScreen;
+  initialPriority?: PlanningPriority;
+  initialDestinationLocation?: DeviceLocation | null;
   onClose: () => void;
   onComplete: (result: JourneyResult) => void;
+  initialOriginStore?: SqlMapPoint | null;
+  initialOriginLocation?: DeviceLocation | null;
   onOriginAgencySelect?: (agency: RegionMapPoint) => void;
+  onOriginStoreSelect?: (store: SqlMapPoint | null) => void;
   onOriginLocationSelect?: (location: DeviceLocation | null) => void;
   onDestinationAgencySelect?: (agency: RegionMapPoint) => void;
   onDestinationLocationSelect?: (location: DeviceLocation | null) => void;
@@ -97,7 +103,7 @@ const ROUTE_PLANNER_HERO_EDGE_FADE: React.CSSProperties = {
   WebkitMaskComposite: 'source-in',
 };
 
-const RoutePlanningJourney: React.FC<Props> = ({ agencies, originId, destination, initialScreen = 0, initialPriority = 'potencial', initialOriginLocation = null, initialDestinationLocation = null, onClose, onComplete, onOriginAgencySelect, onOriginLocationSelect, onDestinationAgencySelect, onDestinationLocationSelect, onDestinationClear, onTerritoryRadiusSelect, headerDragProps }) => {
+const RoutePlanningJourney: React.FC<Props> = ({ agencies, originId, destination, initialScreen = 0, initialPriority = 'potencial', initialOriginStore = null, initialOriginLocation = null, initialDestinationLocation = null, onClose, onComplete, onOriginAgencySelect, onOriginStoreSelect, onOriginLocationSelect, onDestinationAgencySelect, onDestinationLocationSelect, onDestinationClear, onTerritoryRadiusSelect, headerDragProps }) => {
   const initialDestinationAgencyId = agencies.find((agency) => agency.nome === destination)?.id ?? '';
   const initialTerritoryRadius = /^Território em um raio de (\d+(?:[.,]\d+)?) km$/i.exec(destination)?.[1];
   const parsedInitialTerritoryRadius = initialTerritoryRadius
@@ -105,8 +111,9 @@ const RoutePlanningJourney: React.FC<Props> = ({ agencies, originId, destination
     : null;
   const [screen, setScreen] = useState<RoutePlanningScreen>(initialScreen);
   const [intention, setIntention] = useState('rotina');
-  const [originType, setOriginType] = useState(initialOriginLocation ? 'localizacao' : 'agencia');
+  const [originType, setOriginType] = useState<OriginType>(initialOriginStore ? 'loja' : initialOriginLocation ? 'endereco' : 'agencia');
   const [selectedOriginId, setSelectedOriginId] = useState(originId);
+  const [selectedOriginStore, setSelectedOriginStore] = useState<SqlMapPoint | null>(initialOriginStore);
   const [destinationType, setDestinationType] = useState<DestinationType>(
     initialDestinationAgencyId
       ? 'agencia'
@@ -114,18 +121,14 @@ const RoutePlanningJourney: React.FC<Props> = ({ agencies, originId, destination
         ? 'territorio'
         : initialDestinationLocation
           ? 'municipio'
-          : 'agencia'
+          : 'municipio'
   );
   const [destinationAgencyId, setDestinationAgencyId] = useState(initialDestinationAgencyId);
   const [selectedDestination, setSelectedDestination] = useState(destination);
   const [destinationLocation, setDestinationLocation] = useState<DeviceLocation | null>(initialDestinationLocation);
   const [territoryRadiusKm, setTerritoryRadiusKm] = useState<number | null>(parsedInitialTerritoryRadius);
   const [priority, setPriority] = useState<PlanningPriority>(initialPriority);
-  const [originLocation, setOriginLocation] = useState<DeviceLocation | null>(initialOriginLocation);
-  const [locationLoading, setLocationLoading] = useState(false);
-  const [locationError, setLocationError] = useState<string | null>(null);
-  const [addressLocation, setAddressLocation] = useState<DeviceLocation | null>(null);
-  const locationRequestIdRef = useRef(0);
+  const [addressLocation, setAddressLocation] = useState<DeviceLocation | null>(initialOriginLocation);
   const notifiedOriginAgencyIdRef = useRef<string | null>(null);
   const notifiedDestinationAgencyIdRef = useRef<string | null>(null);
 
@@ -164,7 +167,7 @@ const RoutePlanningJourney: React.FC<Props> = ({ agencies, originId, destination
     const agencyDestination = agencies.find((agency) => agency.id === destinationAgencyId)?.nome;
     onComplete({
       intention,
-      originId: selectedOriginId || originId,
+      originId: originType === 'agencia' ? selectedOriginId : '',
       destination: destinationType === 'agencia' ? agencyDestination ?? selectedDestination : selectedDestination,
       territoryRadiusKm,
       priority,
@@ -173,43 +176,31 @@ const RoutePlanningJourney: React.FC<Props> = ({ agencies, originId, destination
 
   const handleContinue = () => {
     if (screen === 4) finish();
-    else setScreen((value) => value + 1);
+    else setScreen((value) => Math.min(4, value + 1) as RoutePlanningScreen);
   };
 
-  const handleCurrentLocation = async () => {
-    if (locationLoading) return;
-    const requestId = ++locationRequestIdRef.current;
-    setOriginType('localizacao');
-    setAddressLocation(null);
-    setOriginLocation(null);
-    onOriginLocationSelect?.(null);
-    setLocationLoading(true);
-    setLocationError(null);
-    try {
-      const location = await requestDeviceLocation();
-      if (requestId !== locationRequestIdRef.current) return;
-      setOriginLocation(location);
-      onOriginLocationSelect?.(location);
-    } catch (error) {
-      if (requestId !== locationRequestIdRef.current) return;
-      setOriginLocation(null);
-      setLocationError(
-        error instanceof Error ? error.message : 'Não foi possível obter sua localização.'
-      );
-    } finally {
-      if (requestId === locationRequestIdRef.current) setLocationLoading(false);
+  const handleOriginTypeSelect = (type: OriginType) => {
+    if (type === originType) return;
+    setOriginType(type);
+    if (type !== 'agencia') setSelectedOriginId('');
+    if (type !== 'loja') {
+      setSelectedOriginStore(null);
+      onOriginStoreSelect?.(null);
+    }
+    if (type !== 'endereco') {
+      setAddressLocation(null);
+      onOriginLocationSelect?.(null);
     }
   };
 
-  const handleOriginTypeSelect = (type: string) => {
-    if (type === originType) return;
-    ++locationRequestIdRef.current;
-    setOriginType(type);
-    setLocationLoading(false);
-    setLocationError(null);
-    if (type !== 'localizacao') setOriginLocation(null);
-    if (type !== 'endereco') setAddressLocation(null);
-    onOriginLocationSelect?.(null);
+  const handleOriginStoreSelect = (store: SqlMapPoint | null) => {
+    setSelectedOriginStore(store);
+    if (store) {
+      setSelectedOriginId('');
+      setAddressLocation(null);
+      onOriginLocationSelect?.(null);
+    }
+    onOriginStoreSelect?.(store);
   };
 
   const handleDestinationTypeSelect = (type: DestinationType) => {
@@ -237,8 +228,8 @@ const RoutePlanningJourney: React.FC<Props> = ({ agencies, originId, destination
 
   const canContinue =
     (screen !== 2 || originType !== 'agencia' || Boolean(selectedOriginId)) &&
-    (screen !== 2 || originType !== 'localizacao' || Boolean(originLocation)) &&
     (screen !== 2 || originType !== 'endereco' || Boolean(addressLocation)) &&
+    (screen !== 2 || originType !== 'loja' || Boolean(selectedOriginStore)) &&
     (screen !== 3 || destinationType !== 'agencia' || Boolean(destinationAgencyId)) &&
     (screen !== 3 || destinationType !== 'municipio' || Boolean(destinationLocation)) &&
     (screen !== 3 || destinationType !== 'endereco' || Boolean(destinationLocation)) &&
@@ -302,17 +293,6 @@ const RoutePlanningJourney: React.FC<Props> = ({ agencies, originId, destination
             <ChoiceRow icon={UsersRound} title="Agência" description="Sair de uma agência" selected={originType === 'agencia'} onClick={() => handleOriginTypeSelect('agencia')}>
               {originType === 'agencia' && <AgencySearchSelect agencies={agencies} value={selectedOriginId} onChange={setSelectedOriginId} placeholder="Buscar agência por código ou nome..." />}
             </ChoiceRow>
-            <ChoiceRow icon={Crosshair} title="Minha localização" description="Usar a localização atual do dispositivo" selected={originType === 'localizacao'} onClick={() => void handleCurrentLocation()}>
-              {originType === 'localizacao' && <p className={cn('mt-2 text-[10px] leading-snug', locationError ? 'text-rose-600' : originLocation ? 'text-emerald-600' : 'text-slate-500')}>
-                {locationLoading
-                  ? 'Aguardando autorização do dispositivo...'
-                  : locationError
-                    ? locationError
-                    : originLocation
-                      ? `Localização obtida · precisão aproximada de ${Math.round(originLocation.accuracy)} m`
-                      : 'Clique novamente para solicitar a localização.'}
-              </p>}
-            </ChoiceRow>
             <ChoiceRow icon={MapPin} title="Endereço" description="Digitar um endereço específico" selected={originType === 'endereco'} onClick={() => handleOriginTypeSelect('endereco')}>
               {originType === 'endereco' && <AddressAutocomplete
                 value={addressLocation}
@@ -323,17 +303,19 @@ const RoutePlanningJourney: React.FC<Props> = ({ agencies, originId, destination
                 }}
               />}
             </ChoiceRow>
-            <ChoiceRow icon={Store} title="Loja específica" description="Sair de uma loja" selected={originType === 'loja'} onClick={() => handleOriginTypeSelect('loja')} />
+            <ChoiceRow icon={Store} title="Loja específica" description="Sair de uma loja" selected={originType === 'loja'} onClick={() => handleOriginTypeSelect('loja')}>
+              {originType === 'loja' && <StoreSearchSelect value={selectedOriginStore} onChange={handleOriginStoreSelect} />}
+            </ChoiceRow>
           </div>
         </>}
         {screen === 3 && <>
           <JourneyTitle title="Para onde pretende ir?" subtitle="Defina seu destino ou área de atuação." />
           <div className="route-planning-choice-list route-planning-destination-list mt-4 space-y-2 sm:mt-5">
-            <ChoiceRow icon={Building2} title="Agência" description="Escolher uma agência como destino" selected={destinationType === 'agencia'} onClick={() => handleDestinationTypeSelect('agencia')}>
-              {destinationType === 'agencia' && <AgencySearchSelect agencies={agencies} value={destinationAgencyId} onChange={setDestinationAgencyId} placeholder="Buscar agência de destino..." />}
-            </ChoiceRow>
             <ChoiceRow icon={MapPin} title="Município" description="Buscar uma cidade pelo nome" selected={destinationType === 'municipio'} onClick={() => handleDestinationTypeSelect('municipio')}>
               {destinationType === 'municipio' && <MunicipalityAutocomplete value={destinationLocation} onChange={handleDestinationLocation} />}
+            </ChoiceRow>
+            <ChoiceRow icon={Building2} title="Agência" description="Escolher uma agência como destino" selected={destinationType === 'agencia'} onClick={() => handleDestinationTypeSelect('agencia')}>
+              {destinationType === 'agencia' && <AgencySearchSelect agencies={agencies} value={destinationAgencyId} onChange={setDestinationAgencyId} placeholder="Buscar agência de destino..." />}
             </ChoiceRow>
             <ChoiceRow icon={Navigation} title="Endereço" description="Digitar um endereço específico" selected={destinationType === 'endereco'} onClick={() => handleDestinationTypeSelect('endereco')}>
               {destinationType === 'endereco' && <AddressAutocomplete value={destinationLocation} inputLabel="Buscar endereço de destino" onChange={handleDestinationLocation} />}
@@ -349,7 +331,7 @@ const RoutePlanningJourney: React.FC<Props> = ({ agencies, originId, destination
         </>}
         </div>
         <div className="route-planning-footer grid shrink-0 grid-cols-2 gap-2 border-t border-slate-100 bg-white pt-3 sm:gap-3">
-          <button type="button" onClick={() => setScreen((value) => Math.max(0, value - 1))} className="flex min-w-0 items-center justify-center gap-1.5 rounded-xl border border-slate-200 px-2 py-2.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 sm:gap-2 sm:px-4 sm:py-3 sm:text-sm"><ArrowLeft className="h-4 w-4 shrink-0" />Voltar</button>
+          <button type="button" onClick={() => setScreen((value) => Math.max(0, value - 1) as RoutePlanningScreen)} className="flex min-w-0 items-center justify-center gap-1.5 rounded-xl border border-slate-200 px-2 py-2.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 sm:gap-2 sm:px-4 sm:py-3 sm:text-sm"><ArrowLeft className="h-4 w-4 shrink-0" />Voltar</button>
           <button type="button" disabled={!canContinue} onClick={handleContinue} className="flex min-w-0 items-center justify-center gap-1.5 rounded-xl bg-gradient-to-r from-blue-700 to-sky-600 px-2 py-2.5 text-center text-xs font-semibold leading-tight text-white shadow-md shadow-blue-200 disabled:cursor-not-allowed disabled:opacity-45 sm:gap-2 sm:px-4 sm:py-3 sm:text-sm"><span>{screen === 4 ? 'Gerar oportunidades' : 'Continuar'}</span> {screen === 4 ? <Sparkles className="h-4 w-4 shrink-0" /> : <ArrowRight className="h-4 w-4 shrink-0" />}</button>
         </div>
       </div>
@@ -455,6 +437,143 @@ function AgencySearchSelect({ agencies, value, onChange, placeholder }: { agenci
       {matches.length === 0 ? <p className="px-3 py-2.5 text-xs text-slate-500">Nenhuma agência encontrada.</p> : matches.map((agency) => <button key={agency.id} type="button" onMouseDown={(event) => event.preventDefault()} onClick={() => { onChange(agency.id); setQuery(agencyLabel(agency)); setOpen(false); }} className={cn('flex w-full items-start gap-2 rounded-lg px-3 py-2 text-left transition-colors hover:bg-blue-50', agency.id === value && 'bg-blue-50')} role="option" aria-selected={agency.id === value}>
         <Building2 className="mt-0.5 h-4 w-4 shrink-0 text-blue-700" />
         <span className="min-w-0"><span className="block truncate text-sm font-medium text-slate-700">{agency.codAg ? `${agency.codAg} - ` : ''}{agency.nome}</span>{agency.enderecoFormatado ? <span className="mt-0.5 block truncate text-[10px] text-slate-500">{agency.enderecoFormatado}</span> : null}</span>
+      </button>)}
+    </div>}
+  </div>;
+}
+
+function storeLabel(store: SqlMapPoint | null | undefined): string {
+  if (!store) return '';
+  return store.chaveLoja ? `${store.chaveLoja} - ${store.nome}` : store.nome;
+}
+
+function StoreSearchSelect({ value, onChange }: { value: SqlMapPoint | null; onChange: (store: SqlMapPoint | null) => void }) {
+  const [query, setQuery] = useState(() => storeLabel(value));
+  const [matches, setMatches] = useState<SqlMapPoint[]>([]);
+  const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [activeIndex, setActiveIndex] = useState(-1);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!open) setQuery(storeLabel(value));
+  }, [open, value]);
+
+  useEffect(() => {
+    const search = query.trim();
+    if (!open || value || search.length < 2) {
+      setMatches([]);
+      setLoading(false);
+      setError(null);
+      setActiveIndex(-1);
+      return;
+    }
+
+    let active = true;
+    setMatches([]);
+    setActiveIndex(-1);
+    const timeout = window.setTimeout(() => {
+      setLoading(true);
+      setError(null);
+      void fetchStorePoints({ search, limit: 20 })
+        .then((points) => {
+          if (!active) return;
+          const stores = points.filter((point) => point.kind === 'loja').slice(0, 20);
+          setMatches(stores);
+          setActiveIndex(stores.length ? 0 : -1);
+        })
+        .catch((requestError) => {
+          if (!active) return;
+          setMatches([]);
+          setError(requestError instanceof Error ? requestError.message : 'Não foi possível buscar lojas.');
+        })
+        .finally(() => {
+          if (active) setLoading(false);
+        });
+    }, 320);
+
+    return () => {
+      active = false;
+      window.clearTimeout(timeout);
+    };
+  }, [open, query, value]);
+
+  const selectStore = (store: SqlMapPoint) => {
+    setQuery(storeLabel(store));
+    setMatches([]);
+    setOpen(false);
+    setActiveIndex(-1);
+    onChange(store);
+  };
+
+  const search = query.trim();
+  const status = search.length < 2
+    ? 'Digite pelo menos 2 caracteres.'
+    : loading
+      ? 'Buscando lojas...'
+      : error
+        ? error
+        : matches.length === 0
+          ? 'Nenhuma loja encontrada.'
+          : '';
+
+  return <div className="route-planning-inline-control relative mt-2" onClick={(event) => event.stopPropagation()}>
+    <div className={cn('route-planning-input-shell relative h-10 rounded-full border bg-white/95 shadow-md shadow-slate-900/5', value ? 'border-emerald-300' : 'border-slate-200/90')}>
+      <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
+      <input
+        ref={inputRef}
+        value={query}
+        onChange={(event) => {
+          setQuery(event.target.value);
+          setOpen(true);
+          if (value) onChange(null);
+        }}
+        onFocus={() => setOpen(true)}
+        onBlur={() => window.setTimeout(() => setOpen(false), 160)}
+        onKeyDown={(event) => {
+          event.stopPropagation();
+          if (event.key === 'ArrowDown' && matches.length) {
+            event.preventDefault();
+            setActiveIndex((index) => (index + 1) % matches.length);
+          } else if (event.key === 'ArrowUp' && matches.length) {
+            event.preventDefault();
+            setActiveIndex((index) => (index <= 0 ? matches.length - 1 : index - 1));
+          } else if (event.key === 'Enter' && open && activeIndex >= 0) {
+            event.preventDefault();
+            selectStore(matches[activeIndex]);
+          } else if (event.key === 'Escape') {
+            setOpen(false);
+            inputRef.current?.blur();
+          }
+        }}
+        placeholder="Buscar por chave ou nome da loja..."
+        className="h-full w-full rounded-full border-0 bg-transparent pl-9 pr-9 text-sm text-slate-700 outline-none placeholder:text-slate-400"
+        aria-label="Buscar loja de origem por chave ou nome"
+        aria-autocomplete="list"
+        aria-expanded={open}
+        aria-controls="origin-store-suggestions"
+        autoComplete="off"
+      />
+      {value ? <CheckCircle2 className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-emerald-600" aria-hidden /> : null}
+    </div>
+    {value ? <p className="mt-1.5 px-2 text-[10px] leading-snug text-emerald-700">Loja confirmada · ponto de saída localizado no mapa.</p> : null}
+    {open && !value && <div id="origin-store-suggestions" className="absolute left-0 right-0 top-full z-50 mt-2 max-h-52 overflow-auto rounded-xl border border-slate-200 bg-white p-1.5 shadow-lg shadow-slate-900/15 ring-1 ring-slate-900/5" role="listbox">
+      {status ? <p className={cn('px-3 py-2.5 text-xs', error ? 'text-rose-600' : 'text-slate-500')}>{status}</p> : matches.map((store, index) => <button
+        key={store.id}
+        type="button"
+        onMouseDown={(event) => event.preventDefault()}
+        onMouseEnter={() => setActiveIndex(index)}
+        onClick={() => selectStore(store)}
+        className={cn('flex w-full items-start gap-2 rounded-lg px-3 py-2 text-left transition-colors', index === activeIndex ? 'bg-blue-50' : 'hover:bg-slate-50')}
+        role="option"
+        aria-selected={index === activeIndex}
+      >
+        <Store className="mt-0.5 h-4 w-4 shrink-0 text-blue-700" />
+        <span className="min-w-0">
+          <span className="block truncate text-sm font-medium text-slate-700">{storeLabel(store)}</span>
+          <span className="mt-0.5 block truncate text-[10px] text-slate-500">{[store.municipio, store.uf].filter(Boolean).join('/') || 'Localidade não informada'}{store.codAg ? ` · Agência ${store.codAg}` : ''}</span>
+        </span>
       </button>)}
     </div>}
   </div>;

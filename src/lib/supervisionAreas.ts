@@ -1,12 +1,12 @@
 /**
- * Lazy-loader e cache do GeoJSON com a área de atuação geográfica de cada supervisão.
- *
- * O arquivo é servido estaticamente em `/geo/areas_atuacao_supervisoes.geojson` e
- * só é baixado/parseado quando algum consumidor pedir a primeira supervisão.
- * Chamadas concorrentes compartilham a mesma Promise para evitar fetches duplicados.
+ * Lazy-loader das áreas de supervisão autorizadas pela sessão atual.
+ * O GeoJSON integral permanece privado no servidor; o navegador recebe somente
+ * as features permitidas por `/api/map/areas-supervisao`.
  */
 
-const SUPERVISION_AREAS_URL = '/geo/areas_atuacao_supervisoes.geojson';
+import { apiFetch } from '@/lib/apiClient';
+
+const SUPERVISION_AREAS_URL = '/api/map/areas-supervisao';
 
 export interface SupervisionAreasIndex {
   /**
@@ -81,7 +81,7 @@ export function loadSupervisionAreas(): Promise<SupervisionAreasIndex> {
   if (cachedIndexPromise) return cachedIndexPromise;
 
   cachedIndexPromise = (async () => {
-    const response = await fetch(SUPERVISION_AREAS_URL, { cache: 'force-cache' });
+    const response = await apiFetch(SUPERVISION_AREAS_URL, { cache: 'force-cache' });
     if (!response.ok) {
       throw new Error(
         `Falha ao carregar ${SUPERVISION_AREAS_URL}: HTTP ${response.status}`
@@ -98,4 +98,8 @@ export function loadSupervisionAreas(): Promise<SupervisionAreasIndex> {
   });
 
   return cachedIndexPromise;
+}
+
+export function clearSupervisionAreasCache() {
+  cachedIndexPromise = null;
 }

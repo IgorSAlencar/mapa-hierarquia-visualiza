@@ -10,6 +10,7 @@ export interface StorePopupInfo {
   segmento: string;
   dataUltimaTransacao: string;
   cieloM0: boolean | null;
+  propostaValor: boolean | null;
   checklist: boolean | null;
 }
 
@@ -41,6 +42,7 @@ export function readStorePopupInfoFromProperties(
     segmento: text(p.desc_segto),
     dataUltimaTransacao: text(p.dt_ult_trx),
     cieloM0: readFlag(p.cielo_m0),
+    propostaValor: readFlag(p.proposta_valor),
     checklist: readFlag(p.checklist),
   };
 }

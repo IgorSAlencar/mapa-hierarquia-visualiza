@@ -1,3 +1,5 @@
+import { apiFetch } from '@/lib/apiClient';
+
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? '';
 
 export interface CommercialStructureItem {
@@ -7,9 +9,14 @@ export interface CommercialStructureItem {
   chaveCoordenacao?: number | null;
 }
 
+export interface CommercialAgencyItem {
+  codAg: string;
+  nome: string;
+}
+
 async function fetchList(path: string): Promise<CommercialStructureItem[]> {
   const url = `${API_BASE_URL}${path}`;
-  const response = await fetch(url);
+  const response = await apiFetch(url);
   if (!response.ok) {
     throw new Error(`Falha na API de estrutura comercial (${response.status})`);
   }
@@ -33,4 +40,14 @@ export function fetchSupervisoes(chaveCoordenacao?: number | null) {
     return fetchList(`/api/estrutura/supervisoes?chaveCoordenacao=${Math.round(chaveCoordenacao)}`);
   }
   return fetchList('/api/estrutura/supervisoes');
+}
+
+export async function fetchAgencias(): Promise<CommercialAgencyItem[]> {
+  const url = `${API_BASE_URL}/api/estrutura/agencias`;
+  const response = await apiFetch(url);
+  if (!response.ok) {
+    throw new Error(`Falha na API de agências (${response.status})`);
+  }
+  const data = (await response.json()) as { items?: CommercialAgencyItem[] };
+  return Array.isArray(data.items) ? data.items : [];
 }

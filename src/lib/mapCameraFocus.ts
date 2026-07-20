@@ -48,7 +48,7 @@ export function applyMapScrollZoomSettings(m: mapboxgl.Map): void {
   if (!cfg) return;
   try {
     m.scrollZoom.enable();
-    const handler = m.scrollZoom as mapboxgl.ScrollZoomHandler & {
+    const handler = m.scrollZoom as typeof m.scrollZoom & {
       setWheelZoomRate?: (rate: number) => void;
       setZoomRate?: (rate: number) => void;
     };

@@ -500,11 +500,13 @@ export function buildSqlHierarchyFilterFromUi(filters: FiltrosEstrutura): SqlHie
   const chaveGerenciaArea = parseChave(filters.chaveGerenciaArea);
   const chaveCoordenacao = parseChave(filters.chaveCoordenacao);
   const chaveSupervisao = parseChave(filters.chaveSupervisao);
-  if (chaveGerenciaArea || chaveCoordenacao || chaveSupervisao) {
+  const codAg = parseChave(filters.agenciaId);
+  if (chaveGerenciaArea || chaveCoordenacao || chaveSupervisao || codAg) {
     return {
       chaveGerenciaArea: chaveGerenciaArea ?? undefined,
       chaveCoordenacao: chaveCoordenacao ?? undefined,
       chaveSupervisao: chaveSupervisao ?? undefined,
+      codAg: codAg ?? undefined,
     };
   }
 

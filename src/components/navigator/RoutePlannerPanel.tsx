@@ -23,7 +23,7 @@ import {
   X,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import type { VisitRoute } from '@/data/visitRoutesMock';
+import type { VisitRoute } from '@/data/visitRoutes';
 import type { CSSProperties } from 'react';
 import type { PanelHeaderDragProps } from '@/hooks/usePanelDrag';
 import { mergeHeaderDrag } from './mergeHeaderDrag';
@@ -33,12 +33,20 @@ import type { RegionMapPoint } from '@/data/regionMapPointsMock';
 import type { DeviceLocation } from '@/lib/deviceGeolocation';
 import RouteOpportunitiesSidePanel from './RouteOpportunitiesSidePanel';
 import { fetchDrivingRoute } from '@/lib/mapboxDirections';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import {
+  OPPORTUNITY_DEFINITIONS,
+  opportunityFocus,
+  type OpportunityKey,
+  type OpportunitySnapshot,
+} from '@/data/opportunities';
 
 interface Props {
   onBack: () => void;
   onClose: () => void;
-  onRouteChange: (route: VisitRoute | null, options?: { resultsPanelExpanded?: boolean }) => void;
+  onRouteChange: (route: VisitRoute | null, options?: { resultsPanelExpanded?: boolean; resetManualOrder?: boolean }) => void;
   onAgencyFocus?: (agency: RegionMapPoint) => void;
+  onOriginStoreFocus?: (store: SqlMapPoint) => void;
   onOriginLocationFocus?: (location: DeviceLocation) => void;
   onOriginClear?: () => void;
   onDestinationAgencyFocus?: (agency: RegionMapPoint) => void;
@@ -70,22 +78,17 @@ type PriorityBand = 'alta' | 'media' | 'baixa';
 type OpportunitySortKey = 'localidade' | 'desvio' | 'prioridade' | 'sem_visita';
 type SortDirection = 'asc' | 'desc';
 type ResizeCorner = 'north-west' | 'north-east' | 'south-west' | 'south-east';
-type OpportunityFilterKey = 'cielo' | 'credito' | 'negocio' | 'ativo_pade' | 'proposta_valor';
+type OpportunityFilterKey = OpportunityKey;
 type DrivingMetricStatus = 'idle' | 'loading' | 'actual' | 'approximate';
 
 const VISIT_DURATION_MINUTES = 40;
 const ROUTE_START_MINUTES = 8 * 60;
 
-const OPPORTUNITY_FILTER_OPTIONS: Array<{ key: OpportunityFilterKey; label: string }> = [
-  { key: 'cielo', label: 'Cielo' },
-  { key: 'credito', label: 'Crédito' },
-  { key: 'negocio', label: 'Negócio' },
-  { key: 'ativo_pade', label: 'Ativo PADE' },
-  { key: 'proposta_valor', label: 'Proposta de Valor' },
-];
+const OPPORTUNITY_FILTER_OPTIONS = OPPORTUNITY_DEFINITIONS;
 
-interface PlannerOpportunity {
+interface PlannerOpportunity extends OpportunitySnapshot {
   id: string;
+  chaveLoja: string;
   nome: string;
   codAg: string;
   endereco: string;
@@ -97,20 +100,17 @@ interface PlannerOpportunity {
   daysWithoutVisit: number;
   alerts: number;
   deviationMinutes: number;
-  focus: string;
-  oportunidadeCredito: boolean;
-  oportunidadeCielo: boolean;
-  oportunidadeNegocio: boolean;
-  oportunidadeAtivoPade: boolean;
-  oportunidadePropostaValor: boolean;
 }
 
-function storeHasOpportunity(store: PlannerOpportunity, filter: OpportunityFilterKey): boolean {
-  if (filter === 'cielo') return store.oportunidadeCielo;
-  if (filter === 'credito') return store.oportunidadeCredito;
-  if (filter === 'negocio') return store.oportunidadeNegocio;
-  if (filter === 'ativo_pade') return store.oportunidadeAtivoPade;
-  return store.oportunidadePropostaValor;
+function storeHasMissingOpportunity(store: PlannerOpportunity, filter: OpportunityFilterKey): boolean {
+  const definition = OPPORTUNITY_DEFINITIONS.find((item) => item.key === filter);
+  return definition ? !store[definition.field] : false;
+}
+
+function formatAgencyLabel(agency: RegionMapPoint | undefined): string {
+  if (!agency) return '';
+  const codAg = String(agency.codAg ?? '').trim();
+  return codAg ? `${codAg} - ${agency.nome}` : agency.nome;
 }
 
 function stableMetric(seed: string, salt: string, min: number, max: number): number {
@@ -129,14 +129,6 @@ function sqlStoreLocation(point: SqlMapPoint): { municipio: string; uf: string }
   };
 }
 
-function sqlStoreFocus(point: SqlMapPoint): string {
-  if (point.cieloM0 === false) return 'Cielo M0';
-  if (point.checklist === false) return 'Checklist';
-  if (point.segmento) return point.segmento;
-  if (point.statusTablet) return `Tablet: ${point.statusTablet}`;
-  return 'Relacionamento';
-}
-
 function opportunityRegionKey(store: Pick<PlannerOpportunity, 'municipio' | 'uf'>): string {
   return [store.municipio.trim(), store.uf.trim().toUpperCase()].join('|');
 }
@@ -145,8 +137,17 @@ function toPlannerOpportunity(point: SqlMapPoint): PlannerOpportunity {
   const location = sqlStoreLocation(point);
   const seed = `${point.id}|${point.chaveLoja ?? ''}|${point.lngLat.join(',')}`;
   const baseDeviation = point.routeRole === 'corridor' ? 5 : 2;
+  const opportunities: OpportunitySnapshot = {
+    // Flags provisórias e estáveis até esses campos serem fornecidos pela API.
+    oportunidadeCredito: stableMetric(seed, 'oportunidade-credito', 0, 1) === 1,
+    oportunidadeCielo: stableMetric(seed, 'oportunidade-cielo', 0, 1) === 1,
+    oportunidadeNegocio: stableMetric(seed, 'oportunidade-negocio', 0, 1) === 1,
+    oportunidadeAtivoPade: stableMetric(seed, 'oportunidade-ativo-pade', 0, 1) === 1,
+    oportunidadePropostaValor: stableMetric(seed, 'oportunidade-proposta-valor', 0, 1) === 1,
+  };
   return {
     id: point.id || seed,
+    chaveLoja: String(point.chaveLoja ?? '').trim(),
     nome: point.nome,
     codAg: String(point.codAg ?? '').trim(),
     endereco: String(point.enderecoFormatado ?? '').trim(),
@@ -158,13 +159,7 @@ function toPlannerOpportunity(point: SqlMapPoint): PlannerOpportunity {
     daysWithoutVisit: stableMetric(seed, 'days-without-visit', 4, 95),
     alerts: stableMetric(seed, 'alerts', 0, 3),
     deviationMinutes: stableMetric(seed, 'deviation', baseDeviation, point.routeRole === 'corridor' ? 28 : 14),
-    focus: sqlStoreFocus(point),
-    // Flags provisórias e estáveis até esses campos serem fornecidos pela API.
-    oportunidadeCredito: stableMetric(seed, 'oportunidade-credito', 0, 1) === 1,
-    oportunidadeCielo: stableMetric(seed, 'oportunidade-cielo', 0, 1) === 1,
-    oportunidadeNegocio: stableMetric(seed, 'oportunidade-negocio', 0, 1) === 1,
-    oportunidadeAtivoPade: stableMetric(seed, 'oportunidade-ativo-pade', 0, 1) === 1,
-    oportunidadePropostaValor: stableMetric(seed, 'oportunidade-proposta-valor', 0, 1) === 1,
+    ...opportunities,
   };
 }
 
@@ -181,9 +176,15 @@ function priorityScore(store: PlannerOpportunity, priority: PlanningPriority): n
   );
 }
 
-function priorityBand(store: PlannerOpportunity, priority: PlanningPriority): PriorityBand {
-  const score = priorityScore(store, priority);
-  return score >= 70 ? 'alta' : score >= 45 ? 'media' : 'baixa';
+function completedPillarCount(store: PlannerOpportunity): number {
+  return OPPORTUNITY_DEFINITIONS.filter((item) => store[item.field]).length;
+}
+
+function priorityBand(store: PlannerOpportunity): PriorityBand {
+  const completedPillars = completedPillarCount(store);
+  if (completedPillars <= 2) return 'alta';
+  if (completedPillars <= 4) return 'media';
+  return 'baixa';
 }
 
 function distanceKm(a: [number, number], b: [number, number]): number {
@@ -238,7 +239,8 @@ function enrichRouteWithDrivingData(
   route: VisitRoute,
   distanceMeters: number,
   durationSeconds: number,
-  legDurationsSeconds: number[]
+  legDurationsSeconds: number[],
+  geometry: [number, number][]
 ): VisitRoute {
   let elapsedMinutes = 0;
   const stops = route.stops.map((stop, index) => {
@@ -251,6 +253,8 @@ function enrichRouteWithDrivingData(
   const visitMinutes = stops.length * VISIT_DURATION_MINUTES;
   return {
     ...route,
+    distanceMeters: Math.round(distanceMeters),
+    routeGeometry: geometry,
     distanciaKm: Math.max(1, Math.round(distanceMeters / 1000)),
     duracaoEstimada: formatDurationMinutes(travelMinutes + visitMinutes),
     durationBreakdown: {
@@ -293,6 +297,14 @@ function createSqlSuggestedRoute({
     elapsedMinutes += fallbackLegMinutes[index] ?? 0;
     const horario = formatClockMinutes(ROUTE_START_MINUTES + elapsedMinutes);
     elapsedMinutes += VISIT_DURATION_MINUTES;
+    const opportunities: OpportunitySnapshot = {
+      oportunidadeCielo: store.oportunidadeCielo,
+      oportunidadeCredito: store.oportunidadeCredito,
+      oportunidadeNegocio: store.oportunidadeNegocio,
+      oportunidadeAtivoPade: store.oportunidadeAtivoPade,
+      oportunidadePropostaValor: store.oportunidadePropostaValor,
+    };
+    const focus = opportunityFocus(opportunities);
     return {
     id: index + 1,
     ordem: index + 1,
@@ -301,11 +313,15 @@ function createSqlSuggestedRoute({
     status: 'pendente' as const,
     endereco: store.endereco || [store.municipio, store.uf].filter(Boolean).join('/'),
     cep: store.codAg ? `Agência vinculada: ${store.codAg}` : 'Visita planejada',
-    produtoFoco: store.focus,
+    chaveLoja: store.chaveLoja,
+    codAg: store.codAg,
+    oportunidades: opportunities,
+    focos: focus.labels,
+    produtoFoco: focus.text,
     ultimaVisita: `Há ${store.daysWithoutVisit} dias`,
     proximaAcao: store.alerts > 0
-      ? `Verificar ${store.alerts} alerta${store.alerts === 1 ? '' : 's'} e desenvolver ${store.focus}.`
-      : `Desenvolver ${store.focus} e registrar a visita.`,
+      ? `Verificar ${store.alerts} alerta${store.alerts === 1 ? '' : 's'} e desenvolver ${focus.text}.`
+      : `Desenvolver ${focus.text} e registrar a visita.`,
     lat: store.lngLat[1],
     lng: store.lngLat[0],
   };
@@ -318,6 +334,7 @@ function createSqlSuggestedRoute({
 
   return {
     id: drivingRouteCacheKey(date, linePoints),
+    plannedDate: date,
     chaveSupervisao: 0,
     gerenteComercial: 'Meu roteiro',
     nome: `${originName} → ${destinationName}`,
@@ -343,6 +360,7 @@ const RoutePlannerPanel: React.FC<Props> = ({
   onClose,
   onRouteChange,
   onAgencyFocus,
+  onOriginStoreFocus,
   onOriginLocationFocus,
   onOriginClear,
   onDestinationAgencyFocus,
@@ -386,6 +404,7 @@ const RoutePlannerPanel: React.FC<Props> = ({
   const drivingMetricsRequestRef = useRef(0);
   const optimizationRequestRef = useRef(0);
   const [originLocation, setOriginLocation] = useState<DeviceLocation | null>(null);
+  const [originStore, setOriginStore] = useState<SqlMapPoint | null>(null);
   const [destinationLocation, setDestinationLocation] = useState<DeviceLocation | null>(null);
   const [headerSummaryTarget, setHeaderSummaryTarget] = useState<HTMLElement | null>(null);
   const [viewportWidth, setViewportWidth] = useState(() => typeof window === 'undefined' ? 1440 : window.innerWidth);
@@ -517,6 +536,7 @@ const RoutePlannerPanel: React.FC<Props> = ({
   }, [territory]);
 
   const origin = agencies.find((agency) => agency.id === originId);
+  const originAgencyLabel = formatAgencyLabel(origin);
   const sqlOpportunities = useMemo(() => {
     const unique = new Map<string, PlannerOpportunity>();
     for (const point of plannerStores) {
@@ -527,8 +547,8 @@ const RoutePlannerPanel: React.FC<Props> = ({
     return [...unique.values()];
   }, [plannerStores]);
   const opportunityClassifications = useMemo(() => Object.fromEntries(
-    sqlOpportunities.map((store) => [store.id, priorityBand(store, planningPriority)])
-  ) as Record<string, PriorityBand>, [planningPriority, sqlOpportunities]);
+    sqlOpportunities.map((store) => [store.id, priorityBand(store)])
+  ) as Record<string, PriorityBand>, [sqlOpportunities]);
   useEffect(() => {
     onOpportunityClassificationsChange?.(opportunityClassifications);
   }, [onOpportunityClassificationsChange, opportunityClassifications]);
@@ -583,15 +603,15 @@ const RoutePlannerPanel: React.FC<Props> = ({
   const opportunityFilteredSuggestions = useMemo(() => {
     if (selectedOpportunityFilters.length === 0) return regionFilteredSuggestions;
     return regionFilteredSuggestions.filter((store) =>
-      selectedOpportunityFilters.some((filter) => storeHasOpportunity(store, filter))
+      selectedOpportunityFilters.some((filter) => storeHasMissingOpportunity(store, filter))
     );
   }, [regionFilteredSuggestions, selectedOpportunityFilters]);
   const suggestions = useMemo(() => opportunityFilteredSuggestions.filter((store) => {
-    if (selectedPriorityBands.length > 0 && !selectedPriorityBands.includes(priorityBand(store, planningPriority))) {
+    if (selectedPriorityBands.length > 0 && !selectedPriorityBands.includes(priorityBand(store))) {
       return false;
     }
     return !onlyWithoutVisit || store.daysWithoutVisit > 30;
-  }), [onlyWithoutVisit, opportunityFilteredSuggestions, planningPriority, selectedPriorityBands]);
+  }), [onlyWithoutVisit, opportunityFilteredSuggestions, selectedPriorityBands]);
   const mapVisibleStoreIds = useMemo(() => {
     const hasActiveFilter = selectedRegionKeys.length > 0 ||
       selectedOpportunityFilters.length > 0 ||
@@ -602,12 +622,12 @@ const RoutePlannerPanel: React.FC<Props> = ({
     return sqlOpportunities
       .filter((store) => selectedRegionKeys.length === 0 || selectedRegions.has(opportunityRegionKey(store)))
       .filter((store) => selectedOpportunityFilters.length === 0 ||
-        selectedOpportunityFilters.some((filter) => storeHasOpportunity(store, filter)))
+        selectedOpportunityFilters.some((filter) => storeHasMissingOpportunity(store, filter)))
       .filter((store) => selectedPriorityBands.length === 0 ||
-        selectedPriorityBands.includes(priorityBand(store, planningPriority)))
+        selectedPriorityBands.includes(priorityBand(store)))
       .filter((store) => !onlyWithoutVisit || store.daysWithoutVisit > 30)
       .map((store) => store.id);
-  }, [onlyWithoutVisit, planningPriority, selectedOpportunityFilters, selectedPriorityBands, selectedRegionKeys, sqlOpportunities]);
+  }, [onlyWithoutVisit, selectedOpportunityFilters, selectedPriorityBands, selectedRegionKeys, sqlOpportunities]);
   useEffect(() => {
     onOpportunityVisibilityChange?.(mapVisibleStoreIds);
   }, [mapVisibleStoreIds, onOpportunityVisibilityChange]);
@@ -623,12 +643,12 @@ const RoutePlannerPanel: React.FC<Props> = ({
     [selectedIds, sqlOpportunities]
   );
   const totalDaysWithoutVisit = opportunityFilteredSuggestions.filter((store) => store.daysWithoutVisit > 30).length;
-  const alertPriorityCount = opportunityFilteredSuggestions.filter((store) => priorityBand(store, planningPriority) === 'alta').length;
-  const attentionPriorityCount = opportunityFilteredSuggestions.filter((store) => priorityBand(store, planningPriority) === 'media').length;
-  const optimalPriorityCount = opportunityFilteredSuggestions.filter((store) => priorityBand(store, planningPriority) === 'baixa').length;
-  const originCoordinates = useMemo<[number, number] | null>(() => originLocation
-    ? [originLocation.longitude, originLocation.latitude]
-    : origin?.lngLat ?? null, [origin, originLocation]);
+  const alertPriorityCount = opportunityFilteredSuggestions.filter((store) => priorityBand(store) === 'alta').length;
+  const attentionPriorityCount = opportunityFilteredSuggestions.filter((store) => priorityBand(store) === 'media').length;
+  const optimalPriorityCount = opportunityFilteredSuggestions.filter((store) => priorityBand(store) === 'baixa').length;
+  const originCoordinates = useMemo<[number, number] | null>(() => originStore?.lngLat
+    ?? (originLocation ? [originLocation.longitude, originLocation.latitude] : origin?.lngLat ?? null),
+  [origin, originLocation, originStore]);
   const destinationCoordinates = useMemo<[number, number] | null>(() => destinationLocation
     ? [destinationLocation.longitude, destinationLocation.latitude]
     : null, [destinationLocation]);
@@ -728,7 +748,7 @@ const RoutePlannerPanel: React.FC<Props> = ({
     if (!originCoordinates) return;
     const route = createSqlSuggestedRoute({
       date,
-      originName: originLocation?.label ?? origin?.nome ?? 'Origem selecionada',
+      originName: originStore?.nome ?? originLocation?.label ?? (originAgencyLabel || 'Origem selecionada'),
       originCoordinates,
       destinationName: destination,
       destinationCoordinates,
@@ -751,7 +771,7 @@ const RoutePlannerPanel: React.FC<Props> = ({
     setResultsMinimized(true);
     onResultsPanelExpandedChange?.(false);
     setOptimizing(true);
-    onRouteChange(initialRoute, { resultsPanelExpanded: false });
+    onRouteChange(initialRoute, { resultsPanelExpanded: false, resetManualOrder: true });
 
     const requestId = ++optimizationRequestRef.current;
     void fetchDrivingRoute(initialRoute.id, routePoints)
@@ -761,7 +781,8 @@ const RoutePlannerPanel: React.FC<Props> = ({
           initialRoute,
           drivingRoute.distanceMeters,
           drivingRoute.durationSeconds,
-          drivingRoute.legDurationsSeconds
+          drivingRoute.legDurationsSeconds,
+          drivingRoute.geometry
         ), { resultsPanelExpanded: false });
       })
       .finally(() => {
@@ -772,7 +793,9 @@ const RoutePlannerPanel: React.FC<Props> = ({
     'flex shrink-0 items-center gap-2 border-b border-slate-200 px-3 py-2',
     headerDragProps
   );
-  const originSummaryLabel = originLocation?.label ?? (originLocation ? 'Minha localização' : origin?.nome ?? 'Não definida');
+  const originSummaryLabel = originStore
+    ? `${originStore.chaveLoja ? `${originStore.chaveLoja} - ` : ''}${originStore.nome}`
+    : originLocation?.label ?? (originLocation ? 'Endereço selecionado' : originAgencyLabel || 'Não definida');
   const resultsResizeHandles = (['north-west', 'north-east', 'south-west', 'south-east'] as const).map((corner) => {
     const north = corner.startsWith('north');
     const west = corner.endsWith('west');
@@ -830,42 +853,56 @@ const RoutePlannerPanel: React.FC<Props> = ({
       <div className="px-2.5 py-2.5">
         <p className="mb-1.5 px-1 text-[9px] font-semibold uppercase tracking-wide text-slate-500">Classificação</p>
         {[
-          { band: 'alta' as const, Icon: TriangleAlert, iconClass: 'bg-rose-100 text-rose-600', badgeClass: 'bg-rose-50 text-rose-700', value: alertPriorityCount, label: 'Alerta' },
-          { band: 'media' as const, Icon: TriangleAlert, iconClass: 'bg-amber-100 text-amber-600', badgeClass: 'bg-amber-50 text-amber-700', value: attentionPriorityCount, label: 'Atenção' },
-          { band: 'baixa' as const, Icon: Check, iconClass: 'bg-emerald-100 text-emerald-600', badgeClass: 'bg-emerald-50 text-emerald-700', value: optimalPriorityCount, label: 'Ótimo' },
-        ].map(({ band, Icon, iconClass, badgeClass, value, label }) => {
+          { band: 'alta' as const, Icon: TriangleAlert, iconClass: 'bg-rose-100 text-rose-600', badgeClass: 'bg-rose-50 text-rose-700', value: alertPriorityCount, label: 'Alerta', tooltip: 'Está em 2 ou menos pilares.' },
+          { band: 'media' as const, Icon: TriangleAlert, iconClass: 'bg-amber-100 text-amber-600', badgeClass: 'bg-amber-50 text-amber-700', value: attentionPriorityCount, label: 'Atenção', tooltip: 'Está em 3 ou 4 pilares.' },
+          { band: 'baixa' as const, Icon: Check, iconClass: 'bg-emerald-100 text-emerald-600', badgeClass: 'bg-emerald-50 text-emerald-700', value: optimalPriorityCount, label: 'Ótimo', tooltip: 'Está nos 5 pilares: todos os indicadores estão como Sim.' },
+        ].map(({ band, Icon, iconClass, badgeClass, value, label, tooltip }) => {
           const active = selectedPriorityBands.includes(band);
-          return <button
-            type="button"
-            key={label}
-            onClick={() => togglePriorityBand(band)}
-            aria-pressed={active}
-            className={cn('flex w-full items-center gap-2 rounded-lg border px-1 py-1.5 text-left transition-all', active ? 'border-violet-200 bg-violet-50/90 shadow-sm' : 'border-transparent hover:bg-white/70')}
-          >
-            <span className={cn('flex h-7 w-7 shrink-0 items-center justify-center rounded-full', iconClass)}>
-              <Icon className="h-3.5 w-3.5" />
-            </span>
-            <span className="text-[10px] font-medium text-slate-600">{label}</span>
-            <span className={cn('ml-auto min-w-7 rounded-full px-1.5 py-0.5 text-center text-[10px] font-bold', badgeClass)}>{value}</span>
-          </button>;
+          return <Tooltip key={label}>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                onClick={() => togglePriorityBand(band)}
+                aria-pressed={active}
+                className={cn('flex w-full items-center gap-2 rounded-lg border px-1 py-1.5 text-left transition-all', active ? 'border-violet-200 bg-violet-50/90 shadow-sm' : 'border-transparent hover:bg-white/70')}
+              >
+                <span className={cn('flex h-7 w-7 shrink-0 items-center justify-center rounded-full', iconClass)}>
+                  <Icon className="h-3.5 w-3.5" />
+                </span>
+                <span className="text-[10px] font-medium text-slate-600">{label}</span>
+                <span className={cn('ml-auto min-w-7 rounded-full px-1.5 py-0.5 text-center text-[10px] font-bold', badgeClass)}>{value}</span>
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="right" sideOffset={12} className="max-w-[240px] text-xs leading-relaxed">{tooltip}</TooltipContent>
+          </Tooltip>;
         })}
 
         <div className="my-2 border-t border-slate-100" />
-        <button
-          type="button"
-          onClick={() => setOnlyWithoutVisit((current) => !current)}
-          aria-pressed={onlyWithoutVisit}
-          className={cn('flex w-full items-center gap-2 rounded-lg border px-1 py-1.5 text-left transition-all', onlyWithoutVisit ? 'border-violet-200 bg-violet-50/90 shadow-sm' : 'border-transparent hover:bg-white/70')}
-        >
-          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-violet-100 text-violet-600"><History className="h-3.5 w-3.5" /></span>
-          <span className="text-[10px] font-medium text-slate-600">Sem visita</span>
-          <span className="ml-auto min-w-7 rounded-full bg-slate-100 px-1.5 py-0.5 text-center text-[10px] font-bold text-slate-700">{totalDaysWithoutVisit}</span>
-        </button>
-        <div className="flex items-center gap-2 rounded-lg border border-transparent px-1 py-1.5">
-          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-sky-100 text-sky-600"><UsersRound className="h-3.5 w-3.5" /></span>
-          <span className="text-[10px] font-medium text-slate-600">Regiões</span>
-          <span className="ml-auto min-w-7 rounded-full bg-slate-100 px-1.5 py-0.5 text-center text-[10px] font-bold text-slate-700">{nearbyGroups.length}</span>
-        </div>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              onClick={() => setOnlyWithoutVisit((current) => !current)}
+              aria-pressed={onlyWithoutVisit}
+              className={cn('flex w-full items-center gap-2 rounded-lg border px-1 py-1.5 text-left transition-all', onlyWithoutVisit ? 'border-violet-200 bg-violet-50/90 shadow-sm' : 'border-transparent hover:bg-white/70')}
+            >
+              <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-violet-100 text-violet-600"><History className="h-3.5 w-3.5" /></span>
+              <span className="text-[10px] font-medium text-slate-600">Sem visita</span>
+              <span className="ml-auto min-w-7 rounded-full bg-slate-100 px-1.5 py-0.5 text-center text-[10px] font-bold text-slate-700">{totalDaysWithoutVisit}</span>
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="right" sideOffset={12} className="max-w-[240px] text-xs leading-relaxed">Lojas sem visita há mais de 30 dias.</TooltipContent>
+        </Tooltip>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <div tabIndex={0} className="flex items-center gap-2 rounded-lg border border-transparent px-1 py-1.5">
+              <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-sky-100 text-sky-600"><UsersRound className="h-3.5 w-3.5" /></span>
+              <span className="text-[10px] font-medium text-slate-600">Regiões</span>
+              <span className="ml-auto min-w-7 rounded-full bg-slate-100 px-1.5 py-0.5 text-center text-[10px] font-bold text-slate-700">{nearbyGroups.length}</span>
+            </div>
+          </TooltipTrigger>
+          <TooltipContent side="right" sideOffset={12} className="max-w-[240px] text-xs leading-relaxed">Quantidade de regiões com lojas no recorte atual.</TooltipContent>
+        </Tooltip>
       </div>
     </aside>
   );
@@ -1055,10 +1092,17 @@ const RoutePlannerPanel: React.FC<Props> = ({
     : null;
 
   if (!journeyComplete) {
-    return <div style={shellStyle} className="max-w-[calc(100vw-32px)]"><RoutePlanningJourney agencies={agencies} originId={originId} destination={destination} initialScreen={journeyStartScreen} initialPriority={planningPriority} initialOriginLocation={originLocation} initialDestinationLocation={destinationLocation} onClose={onClose} onOriginAgencySelect={(agency) => {
+    return <div style={shellStyle} className="max-w-[calc(100vw-32px)]"><RoutePlanningJourney agencies={agencies} originId={originId} destination={destination} initialScreen={journeyStartScreen} initialPriority={planningPriority} initialOriginStore={originStore} initialOriginLocation={originLocation} initialDestinationLocation={destinationLocation} onClose={onClose} onOriginAgencySelect={(agency) => {
+      setOriginStore(null);
       setOriginLocation(null);
       onAgencyFocus?.(agency);
+    }} onOriginStoreSelect={(store) => {
+      setOriginStore(store);
+      setOriginLocation(null);
+      if (store) onOriginStoreFocus?.(store);
+      else onOriginClear?.();
     }} onOriginLocationSelect={(location) => {
+      setOriginStore(null);
       setOriginLocation(location);
       if (location) onOriginLocationFocus?.(location);
       else onOriginClear?.();
@@ -1259,7 +1303,7 @@ const RoutePlannerPanel: React.FC<Props> = ({
           ) : opportunityView === 'table' ? (
             <OpportunityTable stores={suggestions} priority={planningPriority} selectedIds={selectedIds} onToggle={toggle} onHover={onOpportunityHover} />
           ) : (
-            <OpportunityCardGrid stores={suggestions} priority={planningPriority} selectedIds={selectedIds} onToggle={toggle} onHover={onOpportunityHover} />
+            <OpportunityCardGrid stores={suggestions} selectedIds={selectedIds} onToggle={toggle} onHover={onOpportunityHover} />
           )}
         </section>
 
@@ -1413,7 +1457,7 @@ function OpportunityTable({ stores, priority, selectedIds, onToggle, onHover }: 
         <tbody>
           {sortedStores.map((store) => {
             const selected = selectedIds.includes(store.id);
-            const band = priorityBand(store, priority);
+            const band = priorityBand(store);
             const handleButtonClick = (event: React.MouseEvent<HTMLButtonElement>) => {
               event.stopPropagation();
               onToggle(store);
@@ -1483,12 +1527,12 @@ function OpportunityTable({ stores, priority, selectedIds, onToggle, onHover }: 
   );
 }
 
-function OpportunityCardGrid({ stores, priority, selectedIds, onToggle, onHover }: { stores: PlannerOpportunity[]; priority: PlanningPriority; selectedIds: string[]; onToggle: (store: PlannerOpportunity) => void; onHover?: (id: string | null) => void }) {
+function OpportunityCardGrid({ stores, selectedIds, onToggle, onHover }: { stores: PlannerOpportunity[]; selectedIds: string[]; onToggle: (store: PlannerOpportunity) => void; onHover?: (id: string | null) => void }) {
   return (
     <div className="grid min-h-0 flex-1 auto-rows-min grid-cols-[repeat(auto-fill,minmax(240px,1fr))] gap-2.5 overflow-auto p-3">
       {stores.map((store) => {
         const selected = selectedIds.includes(store.id);
-        const band = priorityBand(store, priority);
+        const band = priorityBand(store);
         const opportunityLabels = [
           store.oportunidadeCielo && 'Cielo',
           store.oportunidadeCredito && 'Crédito',

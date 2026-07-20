@@ -97,6 +97,12 @@ import {
   syncPlannerPriorityBadges,
 } from '@/lib/plannerPriorityBadges';
 import {
+  AGENCY_MARKER_BADGE_ICON_SIZE,
+  AGENCY_MARKER_BADGE_ICON_SIZE_HIGHLIGHT,
+  AGENCY_MARKER_BADGE_IMAGE_ID,
+  loadAgencyMarkerBadgeImage,
+} from '@/lib/agencyMarkerBadge';
+import {
   clearPlannerMapArtifacts,
   PLANNER_TRANSIENT_SOURCE_IDS,
 } from '@/lib/plannerMapArtifacts';
@@ -107,7 +113,7 @@ import {
   mergeCompareSupervisionList,
   writeCompareSupervisionsToMap,
 } from '@/lib/compareSupervisionsGeoJson';
-import type { VisitRoute } from '@/data/visitRoutesMock';
+import type { VisitRoute } from '@/data/visitRoutes';
 
 /** Malha nacional IBGE (serviço de malhas → arquivo em `public/geo`). */
 const BRAZIL_BOUNDARY_GEOJSON = '/geo/brasil-limite-ibge.geojson';
@@ -957,6 +963,7 @@ const AGENCY_LAYER_IDS = [
   'structure-agencies-clusters',
   'structure-agencies-cluster-count',
   'structure-agencies-point',
+  'structure-agencies-badge',
 ] as const;
 
 function setAgencyLayersVisibility(m: mapboxgl.Map, visible: boolean) {
@@ -1073,7 +1080,12 @@ function clearRegionOverlaySources(m: mapboxgl.Map) {
   }
 }
 
-const AGENCY_CLICK_LAYER_IDS = ['region-overlay-agencias-cir', 'structure-agencies-point'] as const;
+const AGENCY_CLICK_LAYER_IDS = [
+  'region-overlay-agencias-badge',
+  'region-overlay-agencias-cir',
+  'structure-agencies-badge',
+  'structure-agencies-point',
+] as const;
 const LOJA_CLICK_LAYER_IDS = [
   'planner-hovered-loja-cir',
   'planner-selected-lojas-cir',
@@ -1099,7 +1111,9 @@ const MARKER_LAYER_STACK_BOTTOM_TO_TOP = [
   'structure-agencies-clusters',
   'structure-agencies-cluster-count',
   'structure-agencies-point',
+  'structure-agencies-badge',
   'region-overlay-agencias-cir',
+  'region-overlay-agencias-badge',
   'region-overlay-supervisores-cir',
   'structure-people-circles',
   ...PLANNER_PRIORITY_BADGE_LAYER_IDS,
@@ -1134,7 +1148,7 @@ const MARKER_CIRCLE_SORT_KEY: mapboxgl.ExpressionSpecification = [
   0,
 ];
 
-function markerPreferenceRank(feature: GeoJSON.Feature | undefined): number {
+function markerPreferenceRank(feature: GeoJSON.Feature | mapboxgl.MapboxGeoJSONFeature | undefined): number {
   if (!feature?.properties) return -1;
   const props = feature.properties;
   const level = String(props.commercial_level ?? props.cargo ?? '')
@@ -1146,7 +1160,8 @@ function markerPreferenceRank(feature: GeoJSON.Feature | undefined): number {
   const kind = String(props.kind ?? '')
     .trim()
     .toLowerCase();
-  if (kind === 'agencia' || feature.layer?.id === 'structure-agencies-point') return 50;
+  const layerId = 'layer' in feature ? feature.layer?.id : undefined;
+  if (kind === 'agencia' || layerId === 'structure-agencies-point') return 50;
   if (kind === 'loja') return 10;
   if (kind === 'supervisor') return 100;
   return 0;
@@ -1799,6 +1814,9 @@ function hierarchyFilterSignature(filter: SqlHierarchyFilter | null | undefined)
 interface MapComponentProps {
   mapMarkers: MarcadorMapa[];
   hierarchyFilter?: SqlHierarchyFilter | null;
+  fitInitialAgencyScope?: boolean;
+  initialTerritoryRole?: 'admin' | 'gerente_area' | 'coordenador' | 'supervisor';
+  territoryFocusTick?: number;
   filtersPanelOpen?: boolean;
   onOpenFilters?: () => void;
   /** Roteiro de visitas ativo (linha + paradas numeradas no mapa). */
@@ -2017,6 +2035,9 @@ function resolveStoreSegment(point: SqlMapPoint): StoreSegmentKey {
 const MapComponent: React.FC<MapComponentProps> = ({
   mapMarkers,
   hierarchyFilter: hierarchyFilterProp = null,
+  fitInitialAgencyScope = false,
+  initialTerritoryRole,
+  territoryFocusTick = 0,
   filtersPanelOpen = false,
   onOpenFilters,
   visitRoute = null,
@@ -2190,6 +2211,8 @@ const MapComponent: React.FC<MapComponentProps> = ({
   const overlayAgencyCacheRef = useRef(new Map<string, SqlMapPoint>());
   const overlayStoreCacheRef = useRef(new Map<string, SqlMapPoint>());
   const loadedAgencyScopeRef = useRef<string | null>(null);
+  const initialAgencyScopeFittedRef = useRef(false);
+  const handledTerritoryFocusTickRef = useRef(0);
   const loadedStoreScopeRef = useRef<string | null>(null);
   const lastOverlayFcSignatureRef = useRef<Record<string, string>>({});
   const lastOverlaySourceRef = useRef<Record<string, mapboxgl.GeoJSONSource | undefined>>({});
@@ -2211,9 +2234,17 @@ const MapComponent: React.FC<MapComponentProps> = ({
   ) => {
     const mapInstance = map.current;
     if (!mapInstance) return;
-    if (mapInstance.getLayer(layerId)) {
+    const visibilityLayerIds = sourceId === 'region-overlay-agencias'
+      ? [layerId, 'region-overlay-agencias-badge']
+      : [layerId];
+    for (const visibilityLayerId of visibilityLayerIds) {
+      if (!mapInstance.getLayer(visibilityLayerId)) continue;
       try {
-        mapInstance.setLayoutProperty(layerId, 'visibility', visible ? 'visible' : 'none');
+        mapInstance.setLayoutProperty(
+          visibilityLayerId,
+          'visibility',
+          visible ? 'visible' : 'none'
+        );
       } catch {
         /* estilo recarregando */
       }
@@ -2814,9 +2845,12 @@ const MapComponent: React.FC<MapComponentProps> = ({
     []
   );
 
-  const fitMapToLngLatPoints = (points: Array<{ lngLat: [number, number] }>) => {
+  const fitMapToLngLatPoints = useCallback((
+    points: Array<{ lngLat: [number, number] }>,
+    options?: { padding?: number; maxZoom?: number; duration?: number }
+  ) => {
     const m = map.current;
-    if (!m || points.length === 0) return;
+    if (!m || points.length === 0) return false;
     const lngs = points.map((p) => p.lngLat[0]);
     const lats = points.map((p) => p.lngLat[1]);
     const bounds: mapboxgl.LngLatBoundsLike = [
@@ -2825,14 +2859,15 @@ const MapComponent: React.FC<MapComponentProps> = ({
     ];
     try {
       m.fitBounds(bounds, {
-        padding: 72,
-        maxZoom: points.length === 1 ? 14 : 12,
-        duration: 300,
+        padding: options?.padding ?? 72,
+        maxZoom: options?.maxZoom ?? (points.length === 1 ? 14 : 12),
+        duration: options?.duration ?? 300,
       });
+      return true;
     } catch {
-      /* ignore */
+      return false;
     }
-  };
+  }, []);
 
   /** Clique na legenda: aplica filtro hierárquico + zoom (troca o conteúdo da legenda). */
   const applySeatLegendHierarchy = (
@@ -3404,10 +3439,6 @@ const MapComponent: React.FC<MapComponentProps> = ({
 
     const clearArtifacts = () => {
       clearPlannerMapArtifacts(mapInstance);
-      if (!visitRoute) {
-        removeVisitRouteFromMap(mapInstance);
-        visitRouteFitIdRef.current = null;
-      }
       for (const sourceId of PLANNER_TRANSIENT_SOURCE_IDS) {
         delete lastOverlayFcSignatureRef.current[sourceId];
         delete lastOverlaySourceRef.current[sourceId];
@@ -3420,7 +3451,18 @@ const MapComponent: React.FC<MapComponentProps> = ({
       cancelReadyClear();
       mapInstance.off('idle', clearArtifacts);
     };
-  }, [mapReadyVersion, plannerMode, visitRoute]);
+  }, [mapReadyVersion, plannerMode]);
+
+  /** Remove a camada do roteiro só quando não há rota ativa (não compete com o sync ao abrir). */
+  useEffect(() => {
+    if (visitRoute) return;
+    const mapInstance = map.current;
+    if (!mapInstance) return;
+    visitRouteFitIdRef.current = null;
+    return runWhenMapStyleReady(mapInstance, () => {
+      removeVisitRouteFromMap(mapInstance);
+    });
+  }, [mapReadyVersion, visitRoute]);
 
   useEffect(() => {
     onPlannerStoresChange?.(plannerMode ? plannerStorePoints : []);
@@ -3992,6 +4034,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
         syncMapTerrain(m);
         enableMapPitchAndRotation(m);
         const sym = firstSymbolLayerId(m);
+        const agencyMarkerBadgeReady = await loadAgencyMarkerBadgeImage(m);
 
         const beginPointFocusCamera = (coords: [number, number]) => {
           if (!pointFocusCameraActiveRef.current) {
@@ -4615,7 +4658,12 @@ const MapComponent: React.FC<MapComponentProps> = ({
             const topStack = m.queryRenderedFeatures(e.point);
             if (topStack.length > 0) {
               const topId = topStack[0].layer.id;
-              if (topId === 'region-overlay-agencias-cir' || topId === 'structure-agencies-point') {
+              if (
+                topId === 'region-overlay-agencias-badge' ||
+                topId === 'region-overlay-agencias-cir' ||
+                topId === 'structure-agencies-badge' ||
+                topId === 'structure-agencies-point'
+              ) {
                 return;
               }
               if (topId === 'br-states-hit') return;
@@ -4797,6 +4845,26 @@ const MapComponent: React.FC<MapComponentProps> = ({
             'circle-opacity': 0.95,
           }),
         });
+
+        if (agencyMarkerBadgeReady) {
+          m.addLayer({
+            id: 'structure-agencies-badge',
+            type: 'symbol',
+            source: 'structure-agencies',
+            filter: ['!', ['has', 'point_count']],
+            layout: {
+              visibility: 'none',
+              'icon-image': AGENCY_MARKER_BADGE_IMAGE_ID,
+              'icon-size': AGENCY_MARKER_BADGE_ICON_SIZE,
+              'icon-anchor': 'center',
+              'icon-allow-overlap': true,
+              'icon-ignore-placement': true,
+            },
+            paint: {
+              'icon-opacity': 1,
+            },
+          });
+        }
 
         m.addLayer({
           id: 'structure-people-circles',
@@ -5006,6 +5074,23 @@ const MapComponent: React.FC<MapComponentProps> = ({
             'circle-opacity': 0.95,
           }),
         });
+        if (agencyMarkerBadgeReady) {
+          m.addLayer({
+            id: 'region-overlay-agencias-badge',
+            type: 'symbol',
+            source: 'region-overlay-agencias',
+            layout: {
+              'icon-image': AGENCY_MARKER_BADGE_IMAGE_ID,
+              'icon-size': AGENCY_MARKER_BADGE_ICON_SIZE,
+              'icon-anchor': 'center',
+              'icon-allow-overlap': true,
+              'icon-ignore-placement': true,
+            },
+            paint: {
+              'icon-opacity': 1,
+            },
+          });
+        }
         m.addLayer({
           id: 'region-overlay-supervisores-cir',
           type: 'circle',
@@ -5520,6 +5605,16 @@ const MapComponent: React.FC<MapComponentProps> = ({
   }, [compareSupervisionAreas, mapReadyVersion]);
 
   useEffect(() => {
+    if (
+      territoryFocusTick <= 0 ||
+      territoryFocusTick <= handledTerritoryFocusTickRef.current
+    ) {
+      return;
+    }
+    resetAgencyStoreFilterSync();
+  }, [resetAgencyStoreFilterSync, territoryFocusTick]);
+
+  useEffect(() => {
     clearOverlayPointCaches();
     setSqlAgencyPoints([]);
     setSqlStorePoints([]);
@@ -5543,7 +5638,60 @@ const MapComponent: React.FC<MapComponentProps> = ({
           console.warn('Pré-carga de agências não concluída:', error);
         }
       });
-  }, [hierarchyFilter, clearOverlayPointCaches, applyAgencyFetchResult]);
+  }, [
+    hierarchyFilter,
+    clearOverlayPointCaches,
+    applyAgencyFetchResult,
+    territoryFocusTick,
+  ]);
+
+  useEffect(() => {
+    const initialFocusPending =
+      fitInitialAgencyScope && !initialAgencyScopeFittedRef.current;
+    const manualFocusPending =
+      territoryFocusTick > handledTerritoryFocusTickRef.current;
+    if (!initialFocusPending && !manualFocusPending) return;
+    if (mapReadyVersion <= 0 || !map.current) return;
+
+    if (manualFocusPending && initialTerritoryRole === 'admin') {
+      fitMapToBrazilOverview(map.current, { duration: 650 });
+      handledTerritoryFocusTickRef.current = territoryFocusTick;
+      return;
+    }
+
+    const expectedScopeSignature = hierarchyFilterSignature(hierarchyFilter);
+    if (loadedAgencyScopeRef.current !== expectedScopeSignature) return;
+    if (sqlAgencyPoints.length === 0) return;
+
+    const maxZoomByRole = {
+      gerente_area: 7.5,
+      coordenador: 9,
+      supervisor: 11,
+    } as const;
+    const fitted = fitMapToLngLatPoints(sqlAgencyPoints, {
+      padding: initialTerritoryRole === 'supervisor' ? 88 : 104,
+      maxZoom:
+        initialTerritoryRole && initialTerritoryRole !== 'admin'
+          ? maxZoomByRole[initialTerritoryRole]
+          : 8,
+      duration: 750,
+    });
+    if (!fitted) return;
+
+    setOverlayAgencias(true);
+    if (initialFocusPending) initialAgencyScopeFittedRef.current = true;
+    if (manualFocusPending) {
+      handledTerritoryFocusTickRef.current = territoryFocusTick;
+    }
+  }, [
+    fitInitialAgencyScope,
+    fitMapToLngLatPoints,
+    hierarchyFilter,
+    initialTerritoryRole,
+    mapReadyVersion,
+    sqlAgencyPoints,
+    territoryFocusTick,
+  ]);
 
   useEffect(() => {
     const mapInstance = map.current;
@@ -5686,6 +5834,13 @@ const MapComponent: React.FC<MapComponentProps> = ({
           );
           mapInst.setPaintProperty('region-overlay-agencias-cir', 'circle-stroke-width', 3);
           mapInst.setPaintProperty('region-overlay-agencias-cir', 'circle-stroke-opacity', 1);
+          if (mapInst.getLayer('region-overlay-agencias-badge')) {
+            mapInst.setLayoutProperty(
+              'region-overlay-agencias-badge',
+              'icon-size',
+              AGENCY_MARKER_BADGE_ICON_SIZE_HIGHLIGHT
+            );
+          }
         } else {
           mapInst.setPaintProperty('region-overlay-agencias-cir', 'circle-opacity', 0.95);
           mapInst.setPaintProperty(
@@ -5695,6 +5850,13 @@ const MapComponent: React.FC<MapComponentProps> = ({
           );
           mapInst.setPaintProperty('region-overlay-agencias-cir', 'circle-stroke-width', 2);
           mapInst.setPaintProperty('region-overlay-agencias-cir', 'circle-stroke-opacity', 1);
+          if (mapInst.getLayer('region-overlay-agencias-badge')) {
+            mapInst.setLayoutProperty(
+              'region-overlay-agencias-badge',
+              'icon-size',
+              AGENCY_MARKER_BADGE_ICON_SIZE
+            );
+          }
         }
 
         if (mapInst.getLayer('region-overlay-lojas-cir')) {
@@ -6026,27 +6188,46 @@ const MapComponent: React.FC<MapComponentProps> = ({
   useEffect(() => {
     const m = map.current;
     if (!m) return;
-    const cancelSync = runWhenMapStyleReady(m, () => {
+
+    const doSync = () => {
       syncVisitRouteOnMap(m, visitRoute, selectedVisitStopId, (stopId) => {
         onVisitStopSelectRef.current?.(stopId);
       });
-    });
+    };
+
+    const cancelSync = runWhenMapStyleReady(m, doSync);
+
     if (!visitRoute) {
       visitRouteFitIdRef.current = null;
       return cancelSync;
     }
-    if (visitRouteFitIdRef.current !== visitRoute.id) {
-      visitRouteFitIdRef.current = visitRoute.id;
+
+    const routeId = visitRoute.id;
+    const isNewRoute = visitRouteFitIdRef.current !== routeId;
+    if (isNewRoute) {
+      visitRouteFitIdRef.current = routeId;
       fitVisitRouteInAvailableViewport(
         m,
         visitRoute,
-        visitRoute.id.startsWith('planner-preview-') ? 240 : 700
+        routeId.startsWith('planner-preview-') ? 240 : 700
       );
+      // fitBounds anima a câmera; o primeiro sync pode ocorrer no meio disso.
+      // O idle NÃO é cancelado no cleanup — um re-render (ex. painel abrindo)
+      // removia o listener e a rota só reaparecia ao clicar numa loja do card.
+      const routeSnapshot = visitRoute;
+      const stopSnapshot = selectedVisitStopId;
+      m.once('idle', () => {
+        if (visitRouteFitIdRef.current !== routeId) return;
+        syncVisitRouteOnMap(m, routeSnapshot, stopSnapshot, (stopId) => {
+          onVisitStopSelectRef.current?.(stopId);
+        });
+      });
     }
+
     return cancelSync;
   }, [fitVisitRouteInAvailableViewport, visitRoute, selectedVisitStopId, mapReadyVersion]);
 
-  /** Foco de câmera pedido pelos painéis ("Abrir no mapa" / "Ver roteiro completo"). */
+  /** Foco de câmera pedido pelos painéis ("Abrir no mapa"). */
   useEffect(() => {
     const m = map.current;
     if (!m || !visitFocus || !visitRoute) return;

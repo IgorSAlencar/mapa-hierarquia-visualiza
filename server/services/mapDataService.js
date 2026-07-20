@@ -3,6 +3,7 @@ import {
   fetchCommercialSeatCoordinates,
   fetchStoreCoordinates,
   fetchStoreProductionHistory,
+  hasStoreAccess,
 } from '../repositories/mapDataRepository.js';
 
 function validCoordinate(row) {
@@ -55,8 +56,8 @@ function formatAgencyAddress(row) {
   return [line1, line2].filter(Boolean).join(', ');
 }
 
-export async function getAgencyMapPoints({ bbox = null, limit = null, hierarchy = null } = {}) {
-  const rows = await fetchAgencyCoordinates({ bbox, limit, hierarchy });
+export async function getAgencyMapPoints({ bbox = null, limit = null, hierarchy = null, user = null } = {}) {
+  const rows = await fetchAgencyCoordinates({ bbox, limit, hierarchy, user });
 
   return rows
     .map((row, index) => {
@@ -76,7 +77,7 @@ export async function getAgencyMapPoints({ bbox = null, limit = null, hierarchy 
     .filter(Boolean);
 }
 
-export async function getStoreMapPoints({ bbox = null, limit = null, codAg = null, hierarchy = null, sortByCenter = false } = {}) {
+export async function getStoreMapPoints({ bbox = null, limit = null, codAg = null, hierarchy = null, sortByCenter = false, search = null, user = null } = {}) {
   const targetCodAg = normalizeCodAg(codAg);
   const rows = await fetchStoreCoordinates({
     bbox: targetCodAg ? null : bbox,
@@ -84,6 +85,8 @@ export async function getStoreMapPoints({ bbox = null, limit = null, codAg = nul
     codAg: targetCodAg,
     hierarchy,
     sortByCenter,
+    search,
+    user,
   });
 
   const scopedRows = targetCodAg
@@ -120,6 +123,7 @@ export async function getStoreMapPoints({ bbox = null, limit = null, codAg = nul
 
 const STORE_PRODUCTION_NUMBER_FIELDS = [
   'qtdTrxContabil',
+  'qtdTrxNegocio',
   'qtdContas',
   'qtdConsig',
   'qtdLime',
@@ -137,7 +141,9 @@ const STORE_PRODUCTION_NUMBER_FIELDS = [
   'segTotal',
 ];
 
-export async function getStoreProductionHistory(chaveLoja) {
+export async function getStoreProductionHistory(chaveLoja, user) {
+  const allowed = await hasStoreAccess(chaveLoja, user);
+  if (!allowed) return null;
   const rows = await fetchStoreProductionHistory(chaveLoja);
 
   return rows.map((row) => {
@@ -150,8 +156,8 @@ export async function getStoreProductionHistory(chaveLoja) {
   });
 }
 
-export async function getCommercialSeatMapPoints({ hierarchy = null } = {}) {
-  const rows = await fetchCommercialSeatCoordinates({ hierarchy });
+export async function getCommercialSeatMapPoints({ hierarchy = null, user = null } = {}) {
+  const rows = await fetchCommercialSeatCoordinates({ hierarchy, user });
 
   return rows
     .map((row, index) => {

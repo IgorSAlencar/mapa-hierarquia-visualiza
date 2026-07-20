@@ -1,4 +1,4 @@
-import type { VisitRoute } from '@/data/visitRoutesMock';
+import type { VisitRoute } from '@/data/visitRoutes';
 
 interface RouteCoordinate {
   lat: number;

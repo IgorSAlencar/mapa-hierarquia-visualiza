@@ -3,6 +3,7 @@ import type {
   MunicipalityProductivityRow,
   ProdutoExpressoId,
 } from '@/lib/expressoRegionMock';
+import { apiFetch } from '@/lib/apiClient';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? '';
 
@@ -20,7 +21,7 @@ async function fetchJson<T>(path: string): Promise<T> {
   const url = `${API_BASE_URL}${path}`;
   let response: Response;
   try {
-    response = await fetch(url);
+    response = await apiFetch(url);
   } catch (error) {
     const detail = error instanceof Error ? ` Detalhe: ${error.message}` : '';
     throw new Error(`Não foi possível conectar à API Expresso (${url}).${detail}`);
