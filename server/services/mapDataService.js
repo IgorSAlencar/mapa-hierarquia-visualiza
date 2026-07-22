@@ -35,6 +35,11 @@ function normalizeBinaryFlag(v) {
   return n === 1;
 }
 
+function normalizeNumber(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
 function normalizeDate(v) {
   if (v == null || String(v).trim() === '') return null;
   if (v instanceof Date) return Number.isNaN(v.getTime()) ? null : v.toISOString();
@@ -105,6 +110,7 @@ export async function getStoreMapPoints({ bbox = null, limit = null, codAg = nul
         kind: 'loja',
         lngLat,
         codAg: rowCodAg,
+        nomeAg: normalizeText(row.NOME_AG),
         chaveLoja,
         municipio: normalizeText(row.MUNICIPIO),
         uf: normalizeText(row.UF)?.toUpperCase() ?? null,
@@ -115,7 +121,8 @@ export async function getStoreMapPoints({ bbox = null, limit = null, codAg = nul
         segmento: normalizeText(row.DESC_SEGTO),
         dataUltimaTransacao: normalizeDate(row.DT_ULT_TRX),
         cieloM0: normalizeBinaryFlag(row.CIELO_M0),
-        checklist: normalizeBinaryFlag(row.CHECKLIST),
+        cieloFaturamentoM0: normalizeNumber(row.VLR_FAT_CIELO_M0),
+        checklist: normalizeText(row.STATUS_CHECKLIST)?.toUpperCase() ?? null,
       };
     })
     .filter(Boolean);
@@ -126,9 +133,13 @@ const STORE_PRODUCTION_NUMBER_FIELDS = [
   'qtdTrxNegocio',
   'qtdContas',
   'qtdConsig',
+  'vlrConsig',
   'qtdLime',
+  'vlrLime',
   'qtdCreditoParcelado',
+  'vlrCreditoParcelado',
   'qtdCartao',
+  'vlrFatCielo',
   'qtdFgts',
   'qtdVida',
   'qtdMicro',

@@ -23,6 +23,7 @@ import {
   X,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import CieloIcon from '@/components/CieloIcon';
 import type { VisitRoute } from '@/data/visitRoutes';
 import type { CSSProperties } from 'react';
 import type { PanelHeaderDragProps } from '@/hooks/usePanelDrag';
@@ -155,7 +156,12 @@ function toPlannerOpportunity(point: SqlMapPoint): PlannerOpportunity {
     uf: location.uf,
     lngLat: point.lngLat,
     routeRole: point.routeRole,
-    potential: Math.min(100, stableMetric(seed, 'potential', 35, 92) + (point.cieloM0 ? 4 : 0) + (point.checklist ? 4 : 0)),
+    potential: Math.min(
+      100,
+      stableMetric(seed, 'potential', 35, 92) +
+        (point.cieloM0 ? 4 : 0) +
+        (point.checklist === 'OK' ? 4 : 0)
+    ),
     daysWithoutVisit: stableMetric(seed, 'days-without-visit', 4, 95),
     alerts: stableMetric(seed, 'alerts', 0, 3),
     deviationMinutes: stableMetric(seed, 'deviation', baseDeviation, point.routeRole === 'corridor' ? 28 : 14),
@@ -1447,7 +1453,7 @@ function OpportunityTable({ stores, priority, selectedIds, onToggle, onHover }: 
             <th rowSpan={2} className="min-w-[96px] px-3 py-2.5 text-center align-middle">Ação</th>
           </tr>
           <tr className="border-t border-violet-100 bg-violet-50 text-violet-800">
-            <OpportunityFlagHeader label="Cielo" />
+            <OpportunityFlagHeader label="Cielo" icon={<CieloIcon className="h-4 w-4" />} />
             <OpportunityFlagHeader label="Crédito" />
             <OpportunityFlagHeader label="Negócio" />
             <OpportunityFlagHeader label="Ativo PADE" />
@@ -1582,7 +1588,8 @@ function OpportunityCardGrid({ stores, selectedIds, onToggle, onHover }: { store
               <p className="mb-1.5 text-[9px] font-semibold uppercase tracking-wide text-slate-500">Oportunidades</p>
               <div className="flex flex-wrap gap-1">
                 {opportunityLabels.length > 0 ? opportunityLabels.map((label) => (
-                  <span key={label} className="rounded-full border border-emerald-200/90 bg-emerald-50/90 px-2 py-0.5 text-[9px] font-bold text-emerald-700">
+                  <span key={label} className="inline-flex items-center gap-1 rounded-full border border-emerald-200/90 bg-emerald-50/90 px-2 py-0.5 text-[9px] font-bold text-emerald-700">
+                    {label === 'Cielo' ? <CieloIcon className="h-3 w-3" /> : null}
                     {label}
                   </span>
                 )) : (
@@ -1625,8 +1632,15 @@ function PriorityTableCell({ band }: { band: PriorityBand }) {
   );
 }
 
-function OpportunityFlagHeader({ label }: { label: string }) {
-  return <th className="min-w-[104px] border-t border-violet-100 px-2.5 py-2.5 text-center text-[10px] leading-snug">{label}</th>;
+function OpportunityFlagHeader({ label, icon }: { label: string; icon?: React.ReactNode }) {
+  return (
+    <th className="min-w-[104px] border-t border-violet-100 px-2.5 py-2.5 text-center text-[10px] leading-snug">
+      <span className="inline-flex items-center justify-center gap-1.5">
+        {icon}
+        {label}
+      </span>
+    </th>
+  );
 }
 
 function OpportunityFlagCell({ active, label }: { active: boolean; label: string }) {

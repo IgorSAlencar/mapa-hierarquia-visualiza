@@ -193,6 +193,7 @@ export async function fetchStoreCoordinates({ bbox = null, limit = null, codAg =
     SELECT ${topSql}
       l.CHAVE_LOJA,
       be.COD_AG_LOJA AS COD_AG,
+      be.NOME_AG,
       CAST(l.LONGITUDE AS float) AS lon,
       CAST(l.LATITUDE AS float) AS lat,
       be.NOME_LOJA,
@@ -211,13 +212,32 @@ export async function fetchStoreCoordinates({ bbox = null, limit = null, codAg =
       be.DESC_SEGTO,
       be.DATA_ULT_TRANSACAO AS DT_ULT_TRX,
       CASE WHEN ind.QTD_CIELO > 0 THEN 1 ELSE 0 END AS CIELO_M0,
-      CAST(NULL AS INT) AS CHECKLIST
+      ISNULL(ind.VLR_FAT_CIELO, 0) AS VLR_FAT_CIELO_M0,
+      CASE
+        WHEN LTRIM(RTRIM(be.TIPO_POSTO)) IN (
+          N'Gerenciada',
+          N'Casas Bahia',
+          N'Mesa de Negócios',
+          N'Exclusivo'
+        ) THEN N'NÃO APTO'
+        WHEN checklist.DT_VENCIMENTO_CHECKLIST > GETDATE() THEN N'OK'
+        ELSE N'VENCIDO'
+      END AS STATUS_CHECKLIST
     FROM TESTE..TB_COORD_BE_IGOR AS l
     INNER JOIN DATALAKE..DL_BRADESCO_EXPRESSO AS be
       ON be.CHAVE_LOJA = l.CHAVE_LOJA
     LEFT JOIN DATAWAREHOUSE..TB_INDICADORES_BE AS ind
       ON ind.CHAVE_LOJA = l.CHAVE_LOJA
-      AND ind.PERIODO = 202607
+      AND ind.PERIODO = YEAR(GETDATE()) * 100 + MONTH(GETDATE())
+    LEFT JOIN (
+      SELECT
+        DATEADD(YEAR, 1, MAX(DT_CADASTRO)) AS DT_VENCIMENTO_CHECKLIST,
+        CHAVE_LOJA
+      FROM PAA.DBO.TB_ANALISE_CHECKLIST_AG WITH (NOLOCK)
+      WHERE ID_STATUS_CHECKLIST_AG = 1
+      GROUP BY CHAVE_LOJA
+    ) AS checklist
+      ON checklist.CHAVE_LOJA = l.CHAVE_LOJA
     WHERE l.LONGITUDE IS NOT NULL
       AND l.LATITUDE IS NOT NULL
       ${codAgSql}
@@ -268,9 +288,13 @@ export async function fetchStoreProductionHistory(chaveLoja) {
       historico.qtdTrxNegocio,
       historico.qtdContas,
       historico.qtdConsig,
+      historico.vlrConsig,
       historico.qtdLime,
+      historico.vlrLime,
       historico.qtdCreditoParcelado,
+      historico.vlrCreditoParcelado,
       historico.qtdCartao,
+      historico.vlrFatCielo,
       historico.qtdFgts,
       historico.qtdVida,
       historico.qtdMicro,
@@ -330,6 +354,7 @@ export async function fetchStoreProductionHistory(chaveLoja) {
               + ISNULL(A.QTD_SUPERPROTEGIDO_PLATAFORMA, 0)
               + ISNULL(A.QTD_SEG_CARTAO_DEB_CTA, 0)
               + ISNULL(A.QTD_SEG_CARTAO_DEB_DESBL, 0)
+              + CASE WHEN ISNULL(E.REALIZADO, 0) > 0 THEN 1 ELSE 0 END
               + FLOOR(ISNULL(A.VLR_EXP_SORTE, 0) / 50.0)
         END AS qtdTrxNegocio,
 
@@ -339,14 +364,24 @@ export async function fetchStoreProductionHistory(chaveLoja) {
         ISNULL(A.QTD_CONSIG_AVERBADO, 0)
           + ISNULL(A.QTD_CONSIG_AVERBADO_PLATAF, 0) AS qtdConsig,
 
+        ISNULL(A.VLR_CONSIG_CONTRATO_AVERBADO, 0)
+          + ISNULL(A.VLR_CONSIG_CONTRATO_AVERBADO_PLATAF, 0) AS vlrConsig,
+
         ISNULL(A.QTD_LIME_DTLHES, 0)
           + ISNULL(A.QTD_LIME_DTLHES_PLATAFORMA, 0) AS qtdLime,
 
+        ISNULL(A.VLR_LIME_DTLHES_EMPRESTIMO, 0)
+          + ISNULL(A.VLR_LIME_DTLHES_EMPRESTIMO_PLATAFORMA, 0) AS vlrLime,
+
         ISNULL(A.QTD_CREDITO_PARCEL_DTLHES, 0) AS qtdCreditoParcelado,
+
+        ISNULL(A.VLR_CREDITO_PARCEL_DTLHES_EMPRESTIMO, 0) AS vlrCreditoParcelado,
 
         ISNULL(A.QTD_CARTAO_CONTRATADO, 0)
           + ISNULL(A.QTD_CARTAO_CONTRATADO_PLATAFORMA, 0)
           + ISNULL(A.QTD_CARTAO_AVULSO_PLATAFORMA, 0) AS qtdCartao,
+
+        ISNULL(A.VLR_FAT_CIELO, 0) AS vlrFatCielo,
 
         ISNULL(A.QTD_FGTS, 0) AS qtdFgts,
         ISNULL(A.QTD_MICRO_VIVAVIDA, 0) AS qtdVida,
@@ -389,6 +424,17 @@ export async function fetchStoreProductionHistory(chaveLoja) {
           + ISNULL(A.QTD_SEG_CARTAO_DEB_CTA, 0)
           + ISNULL(A.QTD_SEG_CARTAO_DEB_DESBL, 0) AS segTotal
       FROM DATAWAREHOUSE..TB_INDICADORES_BE AS A
+      LEFT JOIN (
+        SELECT
+          ANO_MES,
+          CHAVE_LOJA,
+          SUM(REALIZADO) AS REALIZADO
+        FROM PADE..REALIZADO_CREDITO_CONCEDIDO
+        WHERE INDICADOR = 'CONSORCIO'
+        GROUP BY ANO_MES, CHAVE_LOJA
+      ) AS E
+        ON TRY_CONVERT(int, E.ANO_MES) = TRY_CONVERT(int, A.PERIODO)
+        AND E.CHAVE_LOJA = A.CHAVE_LOJA
       WHERE A.CHAVE_LOJA = @chaveLoja
         AND TRY_CONVERT(int, A.PERIODO) IS NOT NULL
         AND TRY_CONVERT(int, A.PERIODO) <= YEAR(GETDATE()) * 100 + MONTH(GETDATE())

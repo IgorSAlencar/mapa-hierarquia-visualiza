@@ -5,6 +5,7 @@
 
 export type RegionMapPointKind = 'agencia' | 'supervisor' | 'loja';
 export type CommercialTeamLevel = 'supervisor' | 'coordenador' | 'gerente_area';
+export type ChecklistStatus = 'NÃO APTO' | 'OK' | 'VENCIDO';
 
 export const COMMERCIAL_TEAM_LEVEL_LABEL: Record<CommercialTeamLevel, string> = {
   supervisor: 'Gerente Comercial',
@@ -29,6 +30,7 @@ export interface RegionMapPoint {
   kind: RegionMapPointKind;
   commercialLevel?: CommercialTeamLevel;
   codAg?: string;
+  nomeAg?: string | null;
   enderecoFormatado?: string;
   chaveGerenciaArea?: number | null;
   chaveCoordenacao?: number | null;
@@ -43,8 +45,9 @@ export interface RegionMapPoint {
   segmento?: string | null;
   dataUltimaTransacao?: string | null;
   cieloM0?: boolean | null;
+  cieloFaturamentoM0?: number | null;
   propostaValor?: boolean | null;
-  checklist?: boolean | null;
+  checklist?: ChecklistStatus | null;
 }
 
 type GeoJSONPosition = [number, number];
@@ -120,6 +123,7 @@ export function regionPointsToFeatureCollection(
         nome: p.nome,
         kind: p.kind,
         cod_ag: p.codAg != null && String(p.codAg).trim() !== '' ? String(p.codAg).trim() : '',
+        nome_ag: p.nomeAg ?? '',
         cod_ag_key: codAgKeyFromValue(p.codAg),
         endereco_formatado: p.enderecoFormatado ?? '',
         subtitulo:
@@ -144,8 +148,9 @@ export function regionPointsToFeatureCollection(
         desc_segto: p.segmento ?? '',
         dt_ult_trx: p.dataUltimaTransacao ?? '',
         cielo_m0: p.cieloM0 == null ? '' : p.cieloM0 ? '1' : '0',
+        vlr_fat_cielo_m0: p.cieloFaturamentoM0 ?? '',
         proposta_valor: p.propostaValor == null ? '' : p.propostaValor ? '1' : '0',
-        checklist: p.checklist == null ? '' : p.checklist ? '1' : '0',
+        checklist: p.checklist ?? '',
       },
       geometry: {
         type: 'Point' as const,

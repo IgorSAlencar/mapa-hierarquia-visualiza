@@ -65,7 +65,8 @@ const MapOverlayMarkerInfoPanel: React.FC<MapOverlayMarkerInfoPanelProps> = ({
               {storeSelection.codAg ? (
                 <span className="inline-flex items-center gap-1">
                   <Building2 className="h-3 w-3 text-slate-400" aria-hidden />
-                  Agência {storeSelection.codAg}
+                  {storeSelection.codAg}
+                  {storeSelection.nomeAg ? ` - ${storeSelection.nomeAg}` : ''}
                 </span>
               ) : null}
             </div>

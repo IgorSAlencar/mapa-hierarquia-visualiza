@@ -18,6 +18,7 @@ import {
   X,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import CieloIcon from '@/components/CieloIcon';
 import { OPPORTUNITY_DEFINITIONS, type OpportunityKey, type OpportunitySnapshot } from '@/data/opportunities';
 
 export type RouteOpportunityPriorityBand = 'alta' | 'media' | 'baixa';
@@ -286,6 +287,7 @@ const RouteOpportunitiesSidePanel: React.FC<Props> = ({
                         <span className={cn('flex h-3.5 w-3.5 items-center justify-center rounded-full border', active ? 'border-white/50 bg-white/15' : 'border-slate-300')}>
                           {active && <Check className="h-2.5 w-2.5" />}
                         </span>
+                        {key === 'cielo' ? <CieloIcon className="h-3.5 w-3.5" /> : null}
                         {label}
                       </button>
                     );
@@ -468,7 +470,10 @@ function OpportunityCard({ store, priority, selected, onToggle, onHover }: { sto
                 active ? 'border-emerald-200 bg-emerald-50/80' : 'border-slate-200 bg-slate-50/90'
               )}
             >
-              <span className="block min-h-6 text-[10px] font-bold leading-tight text-slate-700">{item.label}</span>
+              <span className="flex min-h-6 items-start gap-1 text-[10px] font-bold leading-tight text-slate-700">
+                {item.key === 'cielo' ? <CieloIcon className="h-3.5 w-3.5 shrink-0" /> : null}
+                {item.label}
+              </span>
               <span className={cn('mt-1 inline-flex items-center gap-1 text-[11px] font-bold', active ? 'text-emerald-700' : 'text-slate-600')}>
                 {active ? <Check className="h-3 w-3" /> : <X className="h-3 w-3" />}
                 {active ? 'Sim' : 'Não'}

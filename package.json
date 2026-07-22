@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "dev:api": "node server/index.js",
+    "dev:api": "node --watch server/index.js",
     "build": "vite build",
     "build:dev": "vite build --mode development",
     "test": "node --experimental-strip-types --test src/data/opportunities.test.ts",

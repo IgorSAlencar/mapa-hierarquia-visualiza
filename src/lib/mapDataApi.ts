@@ -2,6 +2,7 @@ import type { SqlHierarchyFilter } from '@/data/commercialStructureMock';
 import { apiFetch } from '@/lib/apiClient';
 
 export type SqlMapPointKind = 'agencia' | 'loja' | 'supervisor';
+export type ChecklistStatus = 'NÃO APTO' | 'OK' | 'VENCIDO';
 
 export interface SqlMapPoint {
   id: string;
@@ -9,6 +10,7 @@ export interface SqlMapPoint {
   kind: SqlMapPointKind;
   lngLat: [number, number];
   codAg?: string | null;
+  nomeAg?: string | null;
   enderecoFormatado?: string | null;
   commercialLevel?: 'supervisor' | 'coordenador' | 'gerente_area' | null;
   chaveGerenciaArea?: number | null;
@@ -26,8 +28,9 @@ export interface SqlMapPoint {
   segmento?: string | null;
   dataUltimaTransacao?: string | null;
   cieloM0?: boolean | null;
+  cieloFaturamentoM0?: number | null;
   propostaValor?: boolean | null;
-  checklist?: boolean | null;
+  checklist?: ChecklistStatus | null;
 }
 
 export interface StoreProductionPoint {
@@ -36,9 +39,13 @@ export interface StoreProductionPoint {
   qtdTrxNegocio: number;
   qtdContas: number;
   qtdConsig: number;
+  vlrConsig: number;
   qtdLime: number;
+  vlrLime: number;
   qtdCreditoParcelado: number;
+  vlrCreditoParcelado: number;
   qtdCartao: number;
+  vlrFatCielo: number;
   qtdFgts: number;
   qtdVida: number;
   qtdMicro: number;
@@ -163,7 +170,15 @@ async function fetchPoints(path: string, options: FetchPointsOptions = {}): Prom
   const url = `${API_BASE_URL}${path}${buildQueryParams(options)}`;
   const ttlMs = pointsCacheTtlMs(path, options);
   const cached = pointsResponseCache.get(url);
-  if (cached && cached.expiresAt > Date.now()) {
+  const cachedShapeIsCurrent =
+    path !== '/api/map/lojas' ||
+    cached?.points.every(
+      (point) =>
+        point.kind !== 'loja' ||
+        (Object.prototype.hasOwnProperty.call(point, 'cieloFaturamentoM0') &&
+          Object.prototype.hasOwnProperty.call(point, 'nomeAg'))
+    );
+  if (cached && cached.expiresAt > Date.now() && cachedShapeIsCurrent) {
     pointsResponseCache.delete(url);
     pointsResponseCache.set(url, cached);
     return cached.points;

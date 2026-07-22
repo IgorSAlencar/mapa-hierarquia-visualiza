@@ -8,14 +8,14 @@ import {
   Check,
   ChevronRight,
   ClipboardCheck,
-  CreditCard,
+  History,
   Minus,
   RefreshCw,
   ShieldCheck,
   TrendingDown,
   TrendingUp,
-  type LucideIcon,
 } from 'lucide-react';
+import CieloIcon from '@/components/CieloIcon';
 import {
   CartesianGrid,
   Line,
@@ -206,15 +206,20 @@ function BusinessProductionHeatmap() {
 type QuickFactProduct = {
   label: string;
   value: number;
+  unit?: 'quantity' | 'currency';
+  amount?: number | null;
 };
 
 type QuickFact = {
   label: string;
   value: string;
   active: boolean | null;
-  icon: LucideIcon;
+  icon: React.ComponentType<{ className?: string }>;
   products?: QuickFactProduct[];
+  tooltipTitle?: string;
   tooltipAlign?: 'left' | 'right';
+  historyNote?: string;
+  showQuantityValueColumns?: boolean;
 };
 
 function QuickFactCard({
@@ -246,14 +251,23 @@ function QuickFactCard({
           {fact.value}
         </strong>
       </span>
+      {fact.historyNote ? (
+        <span
+          className="absolute right-1.5 top-1.5 flex h-4 w-4 items-center justify-center rounded-full border border-blue-500 bg-blue-500 text-white shadow-[0_1px_2px_rgba(15,23,42,0.10)]"
+          title="Teve Cielo em meses anteriores"
+          aria-label="Teve Cielo em meses anteriores"
+        >
+          <History className="h-2.5 w-2.5" aria-hidden />
+        </span>
+      ) : null}
     </>
   );
 
   if (!fact.products) {
     return (
       <div
-        className={`flex min-w-0 flex-col items-center justify-center gap-1 rounded-lg border px-1 py-2 text-center ${tone}`}
-        aria-label={`${fact.label}: ${fact.value}`}
+        className={`relative flex min-w-0 flex-col items-center justify-center gap-1 rounded-lg border px-1 py-2 text-center ${tone}`}
+        aria-label={`${fact.label}: ${fact.value}${fact.historyNote ? `. ${fact.historyNote}` : ''}`}
       >
         {contents}
       </div>
@@ -264,23 +278,31 @@ function QuickFactCard({
     <button
       type="button"
       className={`group relative flex min-w-0 flex-col items-center justify-center gap-1 rounded-lg border px-1 py-2 text-center outline-none transition focus-visible:ring-2 focus-visible:ring-emerald-300 ${tone}`}
-      aria-label={`${fact.label}: ${fact.value}. Passe o mouse ou pressione Tab para ver os produtos.`}
+      aria-label={`${fact.label}: ${fact.value}${fact.historyNote ? `. ${fact.historyNote}` : ''}. Passe o mouse ou pressione Tab para ver os produtos.`}
       aria-describedby={tooltipId}
     >
       {contents}
       <span
         id={tooltipId}
         role="tooltip"
-        className={`pointer-events-none invisible absolute top-full z-50 mt-2 w-[205px] translate-y-1 rounded-xl border border-slate-200 bg-white p-2.5 text-left text-slate-700 opacity-0 shadow-xl shadow-slate-900/15 transition duration-150 group-hover:visible group-hover:translate-y-0 group-hover:opacity-100 group-focus-visible:visible group-focus-visible:translate-y-0 group-focus-visible:opacity-100 ${
+        className={`pointer-events-none invisible absolute top-full z-50 mt-2 translate-y-1 rounded-xl border border-slate-200 bg-white p-2.5 text-left text-slate-700 opacity-0 shadow-xl shadow-slate-900/15 transition duration-150 group-hover:visible group-hover:translate-y-0 group-hover:opacity-100 group-focus-visible:visible group-focus-visible:translate-y-0 group-focus-visible:opacity-100 ${
+          fact.showQuantityValueColumns ? 'w-[260px]' : 'w-[205px]'
+        } ${
           fact.tooltipAlign === 'right' ? 'right-0' : 'left-0'
         }`}
       >
         <span className="flex items-baseline justify-between gap-2 border-b border-slate-100 pb-2">
           <strong className="text-[10px] font-semibold text-slate-900">
-            Produtos de {fact.label.toLowerCase()}
+            {fact.tooltipTitle ?? `Produtos de ${fact.label.toLowerCase()}`}
           </strong>
           <span className="text-[9px] font-normal text-slate-400">{periodLabel}</span>
         </span>
+        {fact.showQuantityValueColumns ? (
+          <span className="mt-1.5 flex items-center justify-between gap-2 px-1.5 text-[8px] font-semibold uppercase tracking-wide text-slate-400">
+            <span>Produto</span>
+            <span className="tabular-nums">QTD | VLR</span>
+          </span>
+        ) : null}
         <span className="mt-1.5 flex flex-col gap-1">
           {fact.products.map((product) => {
             const produced = Number(product.value) > 0;
@@ -300,7 +322,31 @@ function QuickFactCard({
                   <span className="truncate text-[10px] font-medium">{product.label}</span>
                 </span>
                 <strong className="shrink-0 text-[10px] tabular-nums">
-                  {produced ? Math.round(product.value).toLocaleString('pt-BR') : '—'}
+                  {product.amount !== undefined ? (
+                    <span className="flex items-center gap-1">
+                      <span>{Math.round(product.value).toLocaleString('pt-BR')}</span>
+                      <span className="font-normal text-slate-300">|</span>
+                      <span>
+                        {product.amount == null
+                          ? '—'
+                          : Number(product.amount).toLocaleString('pt-BR', {
+                              style: 'currency',
+                              currency: 'BRL',
+                              minimumFractionDigits: 2,
+                              maximumFractionDigits: 2,
+                            })}
+                      </span>
+                    </span>
+                  ) : product.unit === 'currency'
+                    ? Number(product.value).toLocaleString('pt-BR', {
+                        style: 'currency',
+                        currency: 'BRL',
+                        minimumFractionDigits: 2,
+                        maximumFractionDigits: 2,
+                      })
+                    : produced
+                      ? Math.round(product.value).toLocaleString('pt-BR')
+                      : '—'}
                 </strong>
               </span>
             );
@@ -387,10 +433,14 @@ const StoreProductionChart: React.FC<StoreProductionChartProps> = ({
   const latestHistory = history.at(-1) ?? null;
   const creditProducts: QuickFactProduct[] = latestHistory
     ? [
-        { label: 'Consignado', value: latestHistory.qtdConsig },
-        { label: 'LIME', value: latestHistory.qtdLime },
-        { label: 'Crédito parcelado', value: latestHistory.qtdCreditoParcelado },
-        { label: 'FGTS', value: latestHistory.qtdFgts },
+        { label: 'Consignado', value: latestHistory.qtdConsig, amount: latestHistory.vlrConsig },
+        { label: 'LIME', value: latestHistory.qtdLime, amount: latestHistory.vlrLime },
+        {
+          label: 'Crédito parcelado',
+          value: latestHistory.qtdCreditoParcelado,
+          amount: latestHistory.vlrCreditoParcelado,
+        },
+        { label: 'FGTS', value: latestHistory.qtdFgts, amount: null },
       ]
     : [];
   const insuranceProducts: QuickFactProduct[] = latestHistory
@@ -411,6 +461,16 @@ const StoreProductionChart: React.FC<StoreProductionChartProps> = ({
     : false;
   const accountingTransactions = latestHistory ? Number(latestHistory.qtdTrxContabil) || 0 : 0;
   const businessTransactions = latestHistory ? Number(latestHistory.qtdTrxNegocio) || 0 : 0;
+  const cieloHistory: QuickFactProduct[] = history.slice(-12).reverse().map((row) => ({
+    label: formatPeriod(row.periodo),
+    value: Number(row.vlrFatCielo) || 0,
+    unit: 'currency',
+  }));
+  const today = new Date();
+  const currentPeriod = today.getFullYear() * 100 + today.getMonth() + 1;
+  const cieloHadPreviousProduction = history.some(
+    (row) => row.periodo < currentPeriod && Number(row.vlrFatCielo) > 0
+  );
   const accountingBreakEven = accountingTransactions >= ACCOUNTING_BREAK_EVEN_TARGET;
   const businessBreakEven = businessTransactions >= BUSINESS_BREAK_EVEN_TARGET;
   const breakEvenReached = accountingBreakEven || businessBreakEven;
@@ -472,12 +532,16 @@ const StoreProductionChart: React.FC<StoreProductionChartProps> = ({
       icon: Banknote,
       products: creditProducts,
       tooltipAlign: 'left',
+      showQuantityValueColumns: true,
     },
     {
       label: 'Cielo',
       value: cieloM0 == null ? 'Sem dado' : cieloM0 ? 'Tem' : 'Não tem',
       active: cieloM0,
-      icon: CreditCard,
+      icon: CieloIcon,
+      products: cieloHistory,
+      tooltipTitle: 'Faturamento Cielo',
+      historyNote: cieloM0 === false && cieloHadPreviousProduction ? 'Teve antes' : undefined,
     },
     {
       label: 'Seguros',

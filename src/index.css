@@ -291,8 +291,8 @@
 .store-popup-title {
   overflow: hidden;
   color: #111827;
-  font-size: 16px;
-  font-weight: 750;
+  font-size: 15px;
+  font-weight: 700;
   line-height: 1.25;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -302,7 +302,7 @@
   margin-top: 4px;
   color: #64748b;
   font-size: 11px;
-  font-weight: 650;
+  font-weight: 500;
   font-variant-numeric: tabular-nums;
 }
 
@@ -314,7 +314,7 @@
   margin-top: 5px;
   color: #334155;
   font-size: 10px;
-  font-weight: 650;
+  font-weight: 500;
   line-height: 1.2;
 }
 
@@ -327,8 +327,8 @@
 .store-popup-context b {
   color: #94a3b8;
   font-size: 8px;
-  font-weight: 700;
-  letter-spacing: 0.025em;
+  font-weight: 600;
+  letter-spacing: 0.02em;
   text-transform: uppercase;
 }
 
@@ -398,10 +398,10 @@
 }
 
 .store-popup-status-value {
-  margin-top: 4px;
+  margin-top: 3px;
   font-size: 11.5px;
-  font-weight: 750;
-  line-height: 1.15;
+  font-weight: 600;
+  line-height: 1.2;
   white-space: normal;
 }
 
@@ -409,8 +409,8 @@
 .store-popup-status-detail {
   color: #64748b;
   font-size: 9.5px;
-  font-weight: 650;
-  line-height: 1.15;
+  font-weight: 500;
+  line-height: 1.2;
 }
 
 .store-popup-status-detail {
@@ -488,11 +488,10 @@
 
 .store-popup-detail-label {
   color: #64748b;
-  font-size: 8.5px;
-  font-weight: 700;
-  letter-spacing: 0.025em;
-  line-height: 1.1;
-  text-transform: uppercase;
+  font-size: 9px;
+  font-weight: 500;
+  letter-spacing: 0;
+  line-height: 1.2;
 }
 
 .store-popup-detail-value {
@@ -500,9 +499,20 @@
   margin-top: 4px;
   color: #0f172a;
   font-size: 11.5px;
-  font-weight: 700;
-  line-height: 1.15;
+  font-weight: 600;
+  line-height: 1.2;
   white-space: normal;
+}
+
+.store-popup-detail-note {
+  overflow: hidden;
+  margin-top: 3px;
+  color: #475569;
+  font-size: 8.5px;
+  font-weight: 500;
+  line-height: 1.2;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .store-popup-detail:nth-child(2) .store-popup-detail-icon {
@@ -528,11 +538,10 @@
 }
 
 .store-popup-cielo-logo {
-  color: #0875c1;
-  font-size: 11px;
-  font-weight: 800;
-  letter-spacing: -0.06em;
-  line-height: 1;
+  display: block;
+  width: 24px;
+  height: 24px;
+  object-fit: contain;
 }
 
 .store-popup-detail--checklist-positive .store-popup-detail-icon,

@@ -1779,6 +1779,7 @@ function overlayPointsSignature(points: SqlMapPoint[]): string {
       [
         p.id,
         p.nome,
+        p.nomeAg,
         p.seatColor,
         p.statusTablet,
         p.dataBloqueio,
@@ -1787,6 +1788,7 @@ function overlayPointsSignature(points: SqlMapPoint[]): string {
         p.segmento,
         p.dataUltimaTransacao,
         p.cieloM0,
+        p.cieloFaturamentoM0,
         p.checklist,
       ].join('#')
     )
