@@ -1,5 +1,6 @@
 import { pool, poolConnect, sql } from '../db/sqlServer.js';
 import { applyAccessScope } from '../auth/scopeSql.js';
+import { canAssignRouteOutsideOwnerPortfolio } from '../auth/routeAssignmentPolicy.js';
 
 function routeScopeSql(request, user, routeAlias = 'r', entityAlias = 'route_ent') {
   const accessSql = applyAccessScope(request, user, entityAlias, 'routeAuthCodFunc');
@@ -46,7 +47,9 @@ export async function fetchAuthorizedRouteOwners(user, { storeKeys = [] } = {}) 
     scopeSql = ` AND sup.CHAVE_SUPERVISAO IN (${params.join(', ')})`;
   }
 
-  const uniqueStoreKeys = [...new Set(storeKeys.map((key) => String(key ?? '').trim()).filter(Boolean))];
+  const uniqueStoreKeys = canAssignRouteOutsideOwnerPortfolio(user)
+    ? []
+    : [...new Set(storeKeys.map((key) => String(key ?? '').trim()).filter(Boolean))];
   let storeCoverageSql = '';
   if (uniqueStoreKeys.length > 0) {
     const storeParams = uniqueStoreKeys.map((key, index) => {
@@ -100,6 +103,28 @@ export async function fetchAuthorizedStoreKeys(chaveSupervisao, storeKeys) {
       ON TRY_CAST(ent.COD_AG AS BIGINT) = TRY_CAST(be.COD_AG_LOJA AS BIGINT)
     WHERE ent.CHAVE_SUPERVISAO = @targetSupervision
       AND LTRIM(RTRIM(CONVERT(NVARCHAR(100), be.CHAVE_LOJA))) IN (${params.join(', ')})
+  `);
+  return result.recordset.map((row) => String(row.CHAVE_LOJA));
+}
+
+export async function fetchUserAuthorizedStoreKeys(user, storeKeys) {
+  if (storeKeys.length === 0) return [];
+  const request = pool.request();
+  const accessSql = applyAccessScope(request, user, 'ent', 'routeStoreAuthCodFunc');
+  const hierarchyJoinSql = user?.isAdmin
+    ? ''
+    : `INNER JOIN MESU..CONS_DISTRIBUICAO_ENTIDADES AS ent
+        ON TRY_CAST(ent.COD_AG AS BIGINT) = TRY_CAST(be.COD_AG_LOJA AS BIGINT)`;
+  const params = storeKeys.map((key, index) => {
+    request.input(`userRouteStore${index}`, sql.NVarChar(100), String(key));
+    return `@userRouteStore${index}`;
+  });
+  const result = await request.query(`
+    SELECT DISTINCT LTRIM(RTRIM(CONVERT(NVARCHAR(100), be.CHAVE_LOJA))) AS CHAVE_LOJA
+    FROM DATALAKE..DL_BRADESCO_EXPRESSO AS be
+    ${hierarchyJoinSql}
+    WHERE LTRIM(RTRIM(CONVERT(NVARCHAR(100), be.CHAVE_LOJA))) IN (${params.join(', ')})
+      ${accessSql}
   `);
   return result.recordset.map((row) => String(row.CHAVE_LOJA));
 }

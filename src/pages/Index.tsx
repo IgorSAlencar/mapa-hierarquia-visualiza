@@ -9,9 +9,11 @@ import VisitasRoteirosPanel from '@/components/navigator/VisitasRoteirosPanel';
 import VisitStopDetailCard from '@/components/navigator/VisitStopDetailCard';
 import RouteDetailsPanel from '@/components/navigator/RouteDetailsPanel';
 import RoutePlannerPanel from '@/components/navigator/RoutePlannerPanel';
+import DistanceAnalysisPanel from '@/components/navigator/DistanceAnalysisPanel';
 import type { VisitRoute, VisitStop } from '@/data/visitRoutes';
 import type { RegionMapPoint } from '@/data/regionMapPointsMock';
 import type { DeviceLocation } from '@/lib/deviceGeolocation';
+import type { DistanceAnalysisMapPoint, DistanceAnalysisMapSelection } from '@/lib/distanceAnalysis';
 import type { SqlMapPoint } from '@/lib/mapDataApi';
 import { usePanelDrag } from '@/hooks/usePanelDrag';
 import {
@@ -28,6 +30,7 @@ import { useAuth } from '@/context/AuthContext';
 import type { AuthUser } from '@/lib/authApi';
 
 const NAVIGATOR_PANEL_DOCK = { x: 16, y: 150 } as const;
+const DISTANCE_PANEL_TOP = 150;
 const PLANNER_ROUTE_START_MINUTES = 8 * 60;
 
 const ROLE_LABEL: Record<AuthUser['role'], string> = {
@@ -121,6 +124,9 @@ const Index = () => {
   const [plannerHoveredStoreId, setPlannerHoveredStoreId] = useState<string | null>(null);
   const [plannerStoreClassifications, setPlannerStoreClassifications] = useState<Record<string, 'alta' | 'media' | 'baixa'>>({});
   const [plannerResultsPanelExpanded, setPlannerResultsPanelExpanded] = useState(false);
+  const [plannerRouteReviewOpen, setPlannerRouteReviewOpen] = useState(false);
+  const [distanceAnalysisRoute, setDistanceAnalysisRoute] = useState<VisitRoute | null>(null);
+  const [distanceMapSelection, setDistanceMapSelection] = useState<DistanceAnalysisMapSelection | null>(null);
   const [compareSupervisionAreas, setCompareSupervisionAreas] = useState(false);
   const [compareApplyTick, setCompareApplyTick] = useState(0);
   /** "Todos" em GG e GC III: compara as áreas de toda a estrutura. */
@@ -130,6 +136,7 @@ const Index = () => {
   const visitasDrag = usePanelDrag({ x: 332, y: 150 });
   const plannerDrag = usePanelDrag(NAVIGATOR_PANEL_DOCK);
   const compararDrag = usePanelDrag({ x: 332, y: 150 });
+  const distanceDrag = usePanelDrag({ x: 316, y: DISTANCE_PANEL_TOP });
   // Abre encostado à direita, antes da coluna de controles do mapa, com o topo
   // alinhado ao dock de controles (top-4 = 16px). Offset = 16 (margem à direita)
   // + 56 (largura do dock) + 12 (mesmo respiro da legenda até os botões).
@@ -358,16 +365,26 @@ const Index = () => {
     setActiveSection(section);
     if (section === 'planejar') {
       const viewportHeight = window.innerHeight;
-      const compactPlannerHeight = viewportHeight <= 580 ? 400 : 460;
-      const availableMapHeight = Math.max(0, viewportHeight - 80);
-      const responsivePlannerTop = viewportHeight <= 720
-        ? Math.max(12, Math.round((availableMapHeight - compactPlannerHeight) / 2))
-        : Math.round(Math.min(150, Math.max(88, viewportHeight * 0.15)));
+      const compactNotebook = window.innerWidth <= 1600 && viewportHeight <= 900;
+      const plannerHeightLimit = compactNotebook ? 468 : 520;
+      const plannerHeight = Math.min(
+        plannerHeightLimit,
+        Math.max(320, viewportHeight - 96)
+      );
+      const responsivePlannerTop = Math.max(
+        16,
+        Math.min(150, Math.round((viewportHeight - plannerHeight) / 2))
+      );
       navigatorDrag.setPosition(NAVIGATOR_PANEL_DOCK);
       plannerDrag.setPosition({
         x: NAVIGATOR_PANEL_DOCK.x,
         y: responsivePlannerTop,
       });
+      setNavigatorMinimized(true);
+    }
+    if (section === 'distancia') {
+      navigatorDrag.setPosition(NAVIGATOR_PANEL_DOCK);
+      distanceDrag.setPosition({ x: 16, y: DISTANCE_PANEL_TOP });
       setNavigatorMinimized(true);
     }
     if (section !== 'planejar') {
@@ -383,6 +400,11 @@ const Index = () => {
       setPlannerHoveredStoreId(null);
       setPlannerStoreClassifications({});
       setPlannerResultsPanelExpanded(false);
+      setPlannerRouteReviewOpen(false);
+    }
+    if (section !== 'distancia') {
+      setDistanceAnalysisRoute(null);
+      setDistanceMapSelection(null);
     }
     if (leavingPlanner || (section !== 'visitas' && section !== 'planejar')) clearVisitState();
     if (leavingComparar) clearCompareState();
@@ -509,7 +531,13 @@ const Index = () => {
 
   const handleNavigatorMinimize = () => {
     navigatorDrag.setPosition(NAVIGATOR_PANEL_DOCK);
+    if (activeSection === 'distancia') distanceDrag.setPosition({ x: 16, y: DISTANCE_PANEL_TOP });
     setNavigatorMinimized(true);
+  };
+
+  const handleNavigatorRestore = () => {
+    if (activeSection === 'distancia') distanceDrag.setPosition({ x: 316, y: DISTANCE_PANEL_TOP });
+    setNavigatorMinimized(false);
   };
 
   const navigatorOverlays = (
@@ -518,7 +546,7 @@ const Index = () => {
         <NavigatorPanel
           minimized
           onMinimize={handleNavigatorMinimize}
-          onRestore={() => setNavigatorMinimized(false)}
+          onRestore={handleNavigatorRestore}
           activeSection={activeSection}
           onSelectSection={handleSelectSection}
         />
@@ -527,7 +555,7 @@ const Index = () => {
           <NavigatorPanel
             minimized={false}
             onMinimize={handleNavigatorMinimize}
-            onRestore={() => setNavigatorMinimized(false)}
+            onRestore={handleNavigatorRestore}
             activeSection={activeSection}
             onSelectSection={handleSelectSection}
             shellStyle={navigatorDrag.shellStyle}
@@ -579,10 +607,27 @@ const Index = () => {
           onOpportunityHover={setPlannerHoveredStoreId}
           onOpportunityClassificationsChange={setPlannerStoreClassifications}
           onResultsPanelExpandedChange={setPlannerResultsPanelExpanded}
+          routeReviewOpen={plannerRouteReviewOpen}
+          onRouteReviewOpenChange={setPlannerRouteReviewOpen}
           plannerStores={plannerSqlStores}
           territory={plannerTerritory}
           shellStyle={plannerDrag.shellStyle}
           headerDragProps={plannerDrag.headerDragProps}
+        />
+      )}
+
+      {activeSection === 'distancia' && (
+        <DistanceAnalysisPanel
+          onBack={() => {
+            handleSelectSection(null);
+            navigatorDrag.setPosition(NAVIGATOR_PANEL_DOCK);
+            setNavigatorMinimized(false);
+          }}
+          onClose={() => handleSelectSection(null)}
+          onRouteChange={setDistanceAnalysisRoute}
+          mapSelection={distanceMapSelection}
+          shellStyle={distanceDrag.shellStyle}
+          headerDragProps={distanceDrag.headerDragProps}
         />
       )}
 
@@ -595,11 +640,23 @@ const Index = () => {
             ? handlePlannerStopsReorder
             : undefined}
           onRouteSaved={(savedRoute) => {
+            if (activeSection === 'planejar') {
+              handleSelectSection(null);
+              return;
+            }
             activeRouteIdRef.current = savedRoute.id;
             setActiveRoute(savedRoute);
             setSelectedStopId(null);
           }}
-          onClose={() => setRouteDetailsOpen(false)}
+          onBack={activeSection === 'planejar'
+            ? () => {
+                setPlannerRouteReviewOpen(false);
+                handleRouteChange(null, { resultsPanelExpanded: true });
+              }
+            : undefined}
+          onClose={activeSection === 'planejar'
+            ? () => handleSelectSection(null)
+            : () => handleRouteChange(null)}
           shellStyle={routeDetailsDrag.shellStyle}
           headerDragProps={routeDetailsDrag.headerDragProps}
         />
@@ -670,7 +727,7 @@ const Index = () => {
           territoryFocusTick={territoryFocusTick}
           filtersPanelOpen={filtersPanelOpen}
           onOpenFilters={() => setFiltersPanelOpen(true)}
-          visitRoute={activeRoute ?? plannerPreviewRoute}
+          visitRoute={activeRoute ?? distanceAnalysisRoute ?? plannerPreviewRoute}
           selectedVisitStopId={selectedStopId}
           onVisitStopSelect={setSelectedStopId}
           visitFocus={visitFocus}
@@ -686,6 +743,10 @@ const Index = () => {
           plannerStoreClassifications={plannerStoreClassifications}
           plannerResultsPanelExpanded={plannerResultsPanelExpanded}
           onPlannerStoresChange={setPlannerSqlStores}
+          distanceAnalysisMode={activeSection === 'distancia'}
+          onDistanceAnalysisPointSelect={(point: DistanceAnalysisMapPoint) => {
+            setDistanceMapSelection({ tick: Date.now(), point });
+          }}
           compareSupervisionAreas={compareSupervisionAreas}
           onCompareSupervisionAreasChange={handleCompareActiveChange}
           compareApplyTick={compareApplyTick}

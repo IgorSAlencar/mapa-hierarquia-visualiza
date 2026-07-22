@@ -9,13 +9,14 @@ import {
   Layers,
   Minus,
   Route,
+  Ruler,
   Shield,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { PanelHeaderDragProps } from '@/hooks/usePanelDrag';
 import { mergeHeaderDrag } from '@/components/navigator/mergeHeaderDrag';
 
-export type NavigatorSection = 'visitas' | 'planejar' | 'comparar';
+export type NavigatorSection = 'visitas' | 'planejar' | 'comparar' | 'distancia';
 
 interface ProductItem {
   id: string;
@@ -44,6 +45,7 @@ const SUBJECTS: SubjectItem[] = [
   { id: 'comparar', label: 'Território de Atuação', icon: Layers, accent: 'text-emerald-600', section: 'comparar' },
   { id: 'visitas', label: 'Visitas e Roteiros', icon: Route, accent: 'text-violet-600', section: 'visitas' },
   { id: 'planejar', label: 'Montar meu roteiro', icon: ClipboardList, accent: 'text-blue-600', section: 'planejar' },
+  { id: 'distancia', label: 'Análise de Distância', icon: Ruler, accent: 'text-sky-600', section: 'distancia' },
 ];
 
 interface NavigatorPanelProps {
@@ -150,7 +152,11 @@ const NavigatorPanel: React.FC<NavigatorPanelProps> = ({
                   isActive
                     ? subject.section === 'planejar'
                       ? 'border-blue-300 bg-blue-50 text-slate-900'
-                      : 'border-violet-200 bg-violet-50 text-slate-900'
+                      : subject.section === 'distancia'
+                        ? 'border-sky-300 bg-sky-50 text-slate-900'
+                        : subject.section === 'comparar'
+                          ? 'border-emerald-200 bg-emerald-50 text-slate-900'
+                          : 'border-violet-200 bg-violet-50 text-slate-900'
                     : 'border-slate-200 bg-white text-slate-700',
                   isClickable ? 'hover:border-slate-300 hover:bg-slate-50' : 'cursor-default opacity-80'
                 )}

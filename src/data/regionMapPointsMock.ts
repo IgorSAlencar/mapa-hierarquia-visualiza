@@ -31,6 +31,12 @@ export interface RegionMapPoint {
   commercialLevel?: CommercialTeamLevel;
   codAg?: string;
   nomeAg?: string | null;
+  descSupervisao?: string | null;
+  gerenteComercial?: string | null;
+  orgaoPagador?: boolean | null;
+  personName?: string | null;
+  warName?: string | null;
+  email?: string | null;
   enderecoFormatado?: string;
   chaveGerenciaArea?: number | null;
   chaveCoordenacao?: number | null;
@@ -124,6 +130,12 @@ export function regionPointsToFeatureCollection(
         kind: p.kind,
         cod_ag: p.codAg != null && String(p.codAg).trim() !== '' ? String(p.codAg).trim() : '',
         nome_ag: p.nomeAg ?? '',
+        desc_supervisao: p.descSupervisao ?? '',
+        gerente_comercial: p.gerenteComercial ?? '',
+        orgao_pagador: p.orgaoPagador == null ? '' : p.orgaoPagador ? '1' : '0',
+        pessoa_nome: p.personName ?? '',
+        nome_guerra: p.warName ?? '',
+        email_func: p.email ?? '',
         cod_ag_key: codAgKeyFromValue(p.codAg),
         endereco_formatado: p.enderecoFormatado ?? '',
         subtitulo:

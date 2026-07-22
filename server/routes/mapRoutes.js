@@ -1,6 +1,8 @@
 import { Router } from 'express';
 import {
+  getAgencyDetail,
   getAgencyMapPoints,
+  getCommercialSeatDetail,
   getCommercialSeatMapPoints,
   getStoreMapPoints,
   getStoreProductionHistory,
@@ -143,6 +145,26 @@ router.get('/agencias', async (req, res) => {
   }
 });
 
+router.get('/agencias/:codAg/detalhes', async (req, res) => {
+  try {
+    const codAg = String(req.params.codAg ?? '').trim();
+    if (!/^\d{1,18}$/.test(codAg)) {
+      res.status(400).json({ message: 'Parâmetro inválido: codAg.' });
+      return;
+    }
+
+    const detail = await getAgencyDetail(codAg, req.user);
+    if (!detail) {
+      res.status(404).json({ message: 'Agência não encontrada.' });
+      return;
+    }
+    res.json({ detail });
+  } catch (error) {
+    console.error('Erro ao buscar detalhes da agência:', error);
+    res.status(500).json({ message: 'Erro ao buscar detalhes da agência no SQL Server.' });
+  }
+});
+
 function readCodAgFromQuery(query) {
   const codAg = String(query.codAg ?? '').trim();
   return codAg.length > 0 ? codAg : null;
@@ -201,12 +223,12 @@ router.get('/lojas/:chaveLoja/producao', async (req, res) => {
       res.status(400).json({ message: 'Parâmetro inválido: chaveLoja.' });
       return;
     }
-    const history = await getStoreProductionHistory(chaveLoja, req.user);
-    if (history == null) {
+    const production = await getStoreProductionHistory(chaveLoja, req.user);
+    if (production == null) {
       res.status(404).json({ message: 'Loja não encontrada.' });
       return;
     }
-    res.json({ history });
+    res.json(production);
   } catch (error) {
     console.error('Erro ao buscar produção da loja:', error);
     res.status(500).json({ message: 'Erro ao buscar produção da loja no SQL Server.' });
@@ -221,6 +243,28 @@ router.get('/sedes', async (req, res) => {
   } catch (error) {
     console.error('Erro ao buscar sedes da estrutura:', error);
     res.status(500).json({ message: 'Erro ao buscar sedes da estrutura comercial no SQL Server.' });
+  }
+});
+
+router.get('/estrutura/:commercialLevel/:chaveEntidade/detalhes', async (req, res) => {
+  try {
+    const commercialLevel = String(req.params.commercialLevel ?? '').trim();
+    const supportedLevels = new Set(['supervisor', 'coordenador', 'gerente_area']);
+    const chaveEntidade = Number(req.params.chaveEntidade);
+    if (!supportedLevels.has(commercialLevel) || !Number.isInteger(chaveEntidade) || chaveEntidade <= 0) {
+      res.status(400).json({ message: 'Parâmetros inválidos para a estrutura comercial.' });
+      return;
+    }
+
+    const detail = await getCommercialSeatDetail(commercialLevel, chaveEntidade, req.user);
+    if (!detail) {
+      res.status(404).json({ message: 'Responsável comercial não encontrado.' });
+      return;
+    }
+    res.json({ detail });
+  } catch (error) {
+    console.error('Erro ao buscar detalhes da estrutura comercial:', error);
+    res.status(500).json({ message: 'Erro ao buscar detalhes da estrutura comercial no SQL Server.' });
   }
 });
 

@@ -1,9 +1,16 @@
+import type { CommercialSeatLevel } from '@/lib/mapDataApi';
+
 export interface AgencyPopupInfo {
   nome: string;
   sub: string;
   kind: string;
   codAg: string;
   enderecoFormatado: string;
+  commercialLevel: CommercialSeatLevel | null;
+  chaveEntidade: number | null;
+  personName: string;
+  warName: string;
+  email: string;
 }
 
 /** Classe no container do Mapbox Popup (click + hover de agência). */
@@ -30,6 +37,19 @@ function normalizeCodAgFromProps(value: unknown): string {
   return raw;
 }
 
+function readCommercialLevel(value: unknown): CommercialSeatLevel | null {
+  const normalized = String(value ?? '').trim();
+  if (normalized === 'supervisor' || normalized === 'coordenador' || normalized === 'gerente_area') {
+    return normalized;
+  }
+  return null;
+}
+
+function readPositiveInteger(value: unknown): number | null {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
 export function readAgencyPopupInfoFromProperties(
   properties: GeoJSON.GeoJsonProperties | Record<string, unknown> | null | undefined
 ): AgencyPopupInfo {
@@ -47,6 +67,11 @@ export function readAgencyPopupInfoFromProperties(
     kind: String(record.kind ?? ''),
     codAg,
     enderecoFormatado: String(record.endereco_formatado ?? '').trim(),
+    commercialLevel: readCommercialLevel(record.commercial_level),
+    chaveEntidade: readPositiveInteger(record.chave_entidade),
+    personName: String(record.pessoa_nome ?? '').trim(),
+    warName: String(record.nome_guerra ?? '').trim(),
+    email: String(record.email_func ?? '').trim(),
   };
 }
 
@@ -54,14 +79,17 @@ export function buildAgencyPopupHtml(
   info: AgencyPopupInfo,
   options?: { compact?: boolean }
 ): string {
-  const { nome, sub, kind, codAg, enderecoFormatado } = info;
+  const { nome, sub, kind, codAg, enderecoFormatado, personName, warName } = info;
   const isAgency = kind === 'agencia';
+  const isCommercialSeat = kind === 'supervisor';
   const title = nome.trim() || 'Agência';
   const subtitle = sub.trim() || 'Agência';
 
-  const cardClass = options?.compact
-    ? 'agency-popup-card agency-popup-card--compact'
-    : 'agency-popup-card';
+  const cardClass = [
+    'agency-popup-card',
+    options?.compact ? 'agency-popup-card--compact' : '',
+    isCommercialSeat ? 'agency-popup-card--seat' : '',
+  ].filter(Boolean).join(' ');
 
   const codeBadge =
     isAgency && codAg
@@ -80,9 +108,28 @@ export function buildAgencyPopupHtml(
       </div>`
     : '';
 
+  const displayWarName = warName || personName;
+  const displayFullName = personName && personName !== displayWarName ? personName : '';
+  const initials = displayWarName
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part.charAt(0).toUpperCase())
+    .join('');
+  const personBlock = isCommercialSeat && displayWarName
+    ? `<div class="agency-popup-person">
+        <span class="agency-popup-person-avatar" aria-hidden="true">${escapeHtml(initials || 'GC')}</span>
+        <span class="agency-popup-person-copy">
+          <strong>${escapeHtml(displayWarName)}</strong>
+          ${displayFullName ? `<span>${escapeHtml(displayFullName)}</span>` : ''}
+        </span>
+      </div>`
+    : '';
+
   return `<div class="${cardClass}">
     ${metaRow}
     <h3 class="agency-popup-title">${escapeHtml(title)}</h3>
+    ${personBlock}
     ${addressBlock}
   </div>`;
 }

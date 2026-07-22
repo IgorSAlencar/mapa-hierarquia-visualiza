@@ -5,6 +5,7 @@ import {
   deleteVisitRoute,
   getAuthorizedRouteOwners,
   getVisitRoute,
+  getVisitRouteExportData,
   getVisitRouteSummary,
   listVisitRoutes,
   saveVisitRoute,
@@ -84,6 +85,12 @@ router.post('/', async (req, res) => {
   } catch (error) { handleError(res, error, 'Erro ao salvar roteiro:'); }
 });
 
+router.get('/:id/exportacao-dados', async (req, res) => {
+  try {
+    res.json(await getVisitRouteExportData(req.params.id, req.user));
+  } catch (error) { handleError(res, error, 'Erro ao preparar exportacao do roteiro:'); }
+});
+
 router.get('/:id', async (req, res) => {
   try {
     res.json({ route: await getVisitRoute(req.params.id, req.user) });
@@ -97,4 +104,3 @@ router.delete('/:id', async (req, res) => {
 });
 
 export default router;
-

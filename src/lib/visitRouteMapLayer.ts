@@ -77,6 +77,7 @@ function buildFeatureCollection(
   route: VisitRoute,
   lineCoordinates?: [number, number][]
 ): GeoJSON.FeatureCollection {
+  const isDistanceAnalysis = route.id.startsWith('analise-distancia-');
   const stopCoordinates = route.stops.map((stop) => [stop.lng, stop.lat] as [number, number]);
   const coordinates = lineCoordinates ?? [
     ...(route.origin ? [[route.origin.lng, route.origin.lat] as [number, number]] : []),
@@ -102,14 +103,24 @@ function buildFeatureCollection(
     points.unshift({
       type: 'Feature',
       geometry: { type: 'Point', coordinates: [route.origin.lng, route.origin.lat] },
-      properties: { kind: 'route-origin', ordem: 'I', status: 'origem', nome: route.origin.nome },
+      properties: {
+        kind: 'route-origin',
+        ordem: isDistanceAnalysis ? 'A' : 'I',
+        status: 'origem',
+        nome: route.origin.nome,
+      },
     });
   }
   if (route.destination) {
     points.push({
       type: 'Feature',
       geometry: { type: 'Point', coordinates: [route.destination.lng, route.destination.lat] },
-      properties: { kind: 'route-destination', ordem: 'F', status: 'destino', nome: route.destination.nome },
+      properties: {
+        kind: 'route-destination',
+        ordem: isDistanceAnalysis ? 'B' : 'F',
+        status: 'destino',
+        nome: route.destination.nome,
+      },
     });
   }
   return {

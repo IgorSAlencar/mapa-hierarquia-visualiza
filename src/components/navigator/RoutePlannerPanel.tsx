@@ -37,6 +37,7 @@ import { fetchDrivingRoute } from '@/lib/mapboxDirections';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import {
   OPPORTUNITY_DEFINITIONS,
+  opportunitySnapshotFromStoreFlags,
   opportunityFocus,
   type OpportunityKey,
   type OpportunitySnapshot,
@@ -60,6 +61,8 @@ interface Props {
   onOpportunityHover?: (id: string | null) => void;
   onOpportunityClassificationsChange?: (classifications: Record<string, PriorityBand>) => void;
   onResultsPanelExpandedChange?: (expanded: boolean) => void;
+  routeReviewOpen: boolean;
+  onRouteReviewOpenChange: (open: boolean) => void;
   plannerStores: SqlMapPoint[];
   territory: string | null;
   shellStyle?: CSSProperties;
@@ -101,6 +104,7 @@ interface PlannerOpportunity extends OpportunitySnapshot {
   daysWithoutVisit: number;
   alerts: number;
   deviationMinutes: number;
+  cieloHadPreviousProduction: boolean;
 }
 
 function storeHasMissingOpportunity(store: PlannerOpportunity, filter: OpportunityFilterKey): boolean {
@@ -138,14 +142,7 @@ function toPlannerOpportunity(point: SqlMapPoint): PlannerOpportunity {
   const location = sqlStoreLocation(point);
   const seed = `${point.id}|${point.chaveLoja ?? ''}|${point.lngLat.join(',')}`;
   const baseDeviation = point.routeRole === 'corridor' ? 5 : 2;
-  const opportunities: OpportunitySnapshot = {
-    // Flags provisórias e estáveis até esses campos serem fornecidos pela API.
-    oportunidadeCredito: stableMetric(seed, 'oportunidade-credito', 0, 1) === 1,
-    oportunidadeCielo: stableMetric(seed, 'oportunidade-cielo', 0, 1) === 1,
-    oportunidadeNegocio: stableMetric(seed, 'oportunidade-negocio', 0, 1) === 1,
-    oportunidadeAtivoPade: stableMetric(seed, 'oportunidade-ativo-pade', 0, 1) === 1,
-    oportunidadePropostaValor: stableMetric(seed, 'oportunidade-proposta-valor', 0, 1) === 1,
-  };
+  const opportunities = opportunitySnapshotFromStoreFlags(point);
   return {
     id: point.id || seed,
     chaveLoja: String(point.chaveLoja ?? '').trim(),
@@ -165,6 +162,7 @@ function toPlannerOpportunity(point: SqlMapPoint): PlannerOpportunity {
     daysWithoutVisit: stableMetric(seed, 'days-without-visit', 4, 95),
     alerts: stableMetric(seed, 'alerts', 0, 3),
     deviationMinutes: stableMetric(seed, 'deviation', baseDeviation, point.routeRole === 'corridor' ? 28 : 14),
+    cieloHadPreviousProduction: point.cieloM0 === false && point.cieloHistorico === true,
     ...opportunities,
   };
 }
@@ -379,6 +377,8 @@ const RoutePlannerPanel: React.FC<Props> = ({
   onOpportunityHover,
   onOpportunityClassificationsChange,
   onResultsPanelExpandedChange,
+  routeReviewOpen,
+  onRouteReviewOpenChange,
   plannerStores,
   territory,
   shellStyle,
@@ -433,6 +433,8 @@ const RoutePlannerPanel: React.FC<Props> = ({
     maxHeight: number;
   } | null>(null);
   const opportunityFiltersRef = useRef<HTMLDivElement | null>(null);
+  const routeReviewOpenRef = useRef(routeReviewOpen);
+  routeReviewOpenRef.current = routeReviewOpen;
 
   const startResultsResize = (corner: ResizeCorner, event: React.PointerEvent<HTMLSpanElement>) => {
     const panel = event.currentTarget.closest<HTMLElement>('[data-route-planner-results]');
@@ -497,9 +499,19 @@ const RoutePlannerPanel: React.FC<Props> = ({
   }, []);
 
   useEffect(() => {
-    onResultsPanelExpandedChange?.(journeyComplete && !resultsMinimized);
+    onResultsPanelExpandedChange?.(journeyComplete && !resultsMinimized && !routeReviewOpen);
     return () => onResultsPanelExpandedChange?.(false);
-  }, [journeyComplete, onResultsPanelExpandedChange, resultsMinimized]);
+  }, [journeyComplete, onResultsPanelExpandedChange, resultsMinimized, routeReviewOpen]);
+
+  useEffect(() => () => {
+    optimizationRequestRef.current += 1;
+  }, []);
+
+  useEffect(() => {
+    if (routeReviewOpen) return;
+    optimizationRequestRef.current += 1;
+    setOptimizing(false);
+  }, [routeReviewOpen]);
 
   useEffect(() => {
     if (!opportunityFiltersOpen) return;
@@ -746,6 +758,8 @@ const RoutePlannerPanel: React.FC<Props> = ({
       : [...current, band]);
   };
   const editJourney = (screen: RoutePlanningScreen) => {
+    routeReviewOpenRef.current = false;
+    onRouteReviewOpenChange(false);
     onRouteChange(null);
     setJourneyStartScreen(screen);
     setJourneyComplete(false);
@@ -774,7 +788,8 @@ const RoutePlannerPanel: React.FC<Props> = ({
             source: routeMetricsApproximate ? 'approximate' as const : 'calculated' as const,
           },
         };
-    setResultsMinimized(true);
+    routeReviewOpenRef.current = true;
+    onRouteReviewOpenChange(true);
     onResultsPanelExpandedChange?.(false);
     setOptimizing(true);
     onRouteChange(initialRoute, { resultsPanelExpanded: false, resetManualOrder: true });
@@ -782,7 +797,11 @@ const RoutePlannerPanel: React.FC<Props> = ({
     const requestId = ++optimizationRequestRef.current;
     void fetchDrivingRoute(initialRoute.id, routePoints)
       .then((drivingRoute) => {
-        if (!drivingRoute || optimizationRequestRef.current !== requestId) return;
+        if (
+          !drivingRoute ||
+          optimizationRequestRef.current !== requestId ||
+          !routeReviewOpenRef.current
+        ) return;
         onRouteChange(enrichRouteWithDrivingData(
           initialRoute,
           drivingRoute.distanceMeters,
@@ -1145,7 +1164,7 @@ const RoutePlannerPanel: React.FC<Props> = ({
   const showLegacyResults = false;
   return (
     <>
-    <RouteOpportunitiesSidePanel
+    {!routeReviewOpen && <RouteOpportunitiesSidePanel
       minimized={resultsMinimized}
       stores={suggestions}
       selectedIds={selectedIds}
@@ -1193,7 +1212,7 @@ const RoutePlannerPanel: React.FC<Props> = ({
       onMinimize={() => setResultsMinimized(true)}
       onRestore={() => setResultsMinimized(false)}
       onClose={onClose}
-    />
+    />}
     {showLegacyResults && <section
       data-route-planner-results
       style={{
@@ -1316,9 +1335,9 @@ const RoutePlannerPanel: React.FC<Props> = ({
       </main>
       {resultsResizeHandles}
     </section>}
-    {opportunitySummaryDock}
-    {routeSummaryDock}
-    {headerSummaryPortal}
+    {!routeReviewOpen && opportunitySummaryDock}
+    {!routeReviewOpen && routeSummaryDock}
+    {!routeReviewOpen && headerSummaryPortal}
     </>
   );
 };

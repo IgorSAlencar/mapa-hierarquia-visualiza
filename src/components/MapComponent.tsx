@@ -114,6 +114,7 @@ import {
   writeCompareSupervisionsToMap,
 } from '@/lib/compareSupervisionsGeoJson';
 import type { VisitRoute } from '@/data/visitRoutes';
+import type { DistanceAnalysisMapPoint } from '@/lib/distanceAnalysis';
 
 /** Malha nacional IBGE (serviço de malhas → arquivo em `public/geo`). */
 const BRAZIL_BOUNDARY_GEOJSON = '/geo/brasil-limite-ibge.geojson';
@@ -1522,7 +1523,7 @@ const MAP_LAYOUT_OPTIONS: {
   },
 ];
 
-type SearchOption = {
+type RegionSearchOption = {
   id: string;
   label: string;
   kind: 'estado' | 'municipio';
@@ -1530,7 +1531,17 @@ type SearchOption = {
   uf?: string | null;
 };
 
-function buildStateSearchOptions(statesFc: GeoJSON.FeatureCollection): SearchOption[] {
+type PointSearchOption = {
+  id: string;
+  label: string;
+  detail: string;
+  kind: 'agencia' | 'loja';
+  point: SqlMapPoint;
+};
+
+type SearchOption = RegionSearchOption | PointSearchOption;
+
+function buildStateSearchOptions(statesFc: GeoJSON.FeatureCollection): RegionSearchOption[] {
   const options = statesFc.features
     .map((feature) => {
       const label = resolveStateName(feature.properties);
@@ -1545,14 +1556,14 @@ function buildStateSearchOptions(statesFc: GeoJSON.FeatureCollection): SearchOpt
         uf,
       };
     })
-    .filter(Boolean) as SearchOption[];
+    .filter(Boolean) as RegionSearchOption[];
   return options.sort((a, b) => a.label.localeCompare(b.label, 'pt-BR'));
 }
 
 function buildMunicipalitySearchOptions(
   municipalitiesFc: GeoJSON.FeatureCollection,
   stateUf: string | null
-): SearchOption[] {
+): RegionSearchOption[] {
   const options = municipalitiesFc.features
     .map((feature, index) => {
       const name = municipalityNameFromProperties(feature.properties);
@@ -1565,7 +1576,7 @@ function buildMunicipalitySearchOptions(
         uf: stateUf,
       };
     })
-    .filter(Boolean) as SearchOption[];
+    .filter(Boolean) as RegionSearchOption[];
   return options.sort((a, b) => a.label.localeCompare(b.label, 'pt-BR'));
 }
 
@@ -1573,7 +1584,7 @@ function filterMunicipalitySearchOptions(
   municipalitiesFc: GeoJSON.FeatureCollection,
   query: string,
   limit: number
-): SearchOption[] {
+): RegionSearchOption[] {
   const q = normalizeText(query);
   if (q.length < 2) return [];
   const options = municipalitiesFc.features
@@ -1588,14 +1599,72 @@ function filterMunicipalitySearchOptions(
         uf: null,
       };
     })
-    .filter(Boolean) as SearchOption[];
+    .filter(Boolean) as RegionSearchOption[];
   return options.sort((a, b) => a.label.localeCompare(b.label, 'pt-BR')).slice(0, limit);
+}
+
+function filterAgencySearchOptions(
+  points: SqlMapPoint[],
+  query: string,
+  limit: number
+): PointSearchOption[] {
+  const q = normalizeText(query);
+  if (q.length < 2) return [];
+
+  return points
+    .map((point) => {
+      const codAg = String(point.codAg ?? '').trim();
+      const normalizedCode = normalizeText(codAg);
+      const normalizedName = normalizeText(point.nome);
+      if (!normalizedCode.includes(q) && !normalizedName.includes(q)) return null;
+
+      const rank =
+        normalizedCode === q
+          ? 0
+          : normalizedCode.startsWith(q)
+            ? 1
+            : normalizedName.startsWith(q)
+              ? 2
+              : 3;
+      return {
+        option: {
+          id: `search-agency-${point.id}`,
+          label: point.nome,
+          detail: codAg ? `COD_AG ${codAg}` : 'COD_AG não informado',
+          kind: 'agencia' as const,
+          point,
+        },
+        rank,
+      };
+    })
+    .filter((entry): entry is { option: PointSearchOption; rank: number } => entry != null)
+    .sort(
+      (a, b) =>
+        a.rank - b.rank || a.option.label.localeCompare(b.option.label, 'pt-BR')
+    )
+    .slice(0, limit)
+    .map((entry) => entry.option);
+}
+
+function buildStoreSearchOptions(points: SqlMapPoint[]): PointSearchOption[] {
+  return points.map((point) => {
+    const chaveLoja = String(point.chaveLoja ?? '').trim();
+    const location = [point.municipio, point.uf].filter(Boolean).join('/');
+    const code = chaveLoja ? `CHAVE_LOJA ${chaveLoja}` : 'CHAVE_LOJA não informada';
+    return {
+      id: `search-store-${point.id}`,
+      label: point.nome,
+      detail: location ? `${code} · ${location}` : code,
+      kind: 'loja',
+      point,
+    };
+  });
 }
 
 function fitMapToRegionFeature(
   m: mapboxgl.Map,
   feature: GeoJSON.Feature,
-  kind: SearchOption['kind']
+  kind: RegionSearchOption['kind']
 ) {
   const bounds = featureBounds(feature);
   if (!bounds) return;
@@ -1780,6 +1849,12 @@ function overlayPointsSignature(points: SqlMapPoint[]): string {
         p.id,
         p.nome,
         p.nomeAg,
+        p.descSupervisao,
+        p.gerenteComercial,
+        p.orgaoPagador,
+        p.personName,
+        p.warName,
+        p.email,
         p.seatColor,
         p.statusTablet,
         p.dataBloqueio,
@@ -1789,6 +1864,11 @@ function overlayPointsSignature(points: SqlMapPoint[]): string {
         p.dataUltimaTransacao,
         p.cieloM0,
         p.cieloFaturamentoM0,
+        p.cieloHistorico,
+        p.creditoM0,
+        p.negocioM0,
+        p.ativoPadeM0,
+        p.propostaValor,
         p.checklist,
       ].join('#')
     )
@@ -1875,6 +1955,8 @@ interface MapComponentProps {
   plannerStoreClassifications?: Record<string, 'alta' | 'media' | 'baixa'>;
   plannerResultsPanelExpanded?: boolean;
   onPlannerStoresChange?: (points: SqlMapPoint[]) => void;
+  distanceAnalysisMode?: boolean;
+  onDistanceAnalysisPointSelect?: (point: DistanceAnalysisMapPoint) => void;
   /** Painéis flutuantes do Navegar (abaixo da UI do mapa: busca, AG, lojas, equipe). */
   navigatorOverlays?: React.ReactNode;
 }
@@ -2062,6 +2144,8 @@ const MapComponent: React.FC<MapComponentProps> = ({
   plannerStoreClassifications = {},
   plannerResultsPanelExpanded = false,
   onPlannerStoresChange,
+  distanceAnalysisMode = false,
+  onDistanceAnalysisPointSelect,
   navigatorOverlays,
 }) => {
   // O pai pode recriar o objeto em qualquer render (por exemplo, ao arrastar um
@@ -2091,6 +2175,11 @@ const MapComponent: React.FC<MapComponentProps> = ({
   onVisitStopSelectRef.current = onVisitStopSelect;
   const onPlannerTerritorySelectRef = useRef(onPlannerTerritorySelect);
   onPlannerTerritorySelectRef.current = onPlannerTerritorySelect;
+  const distanceAnalysisModeRef = useRef(distanceAnalysisMode);
+  distanceAnalysisModeRef.current = distanceAnalysisMode;
+  const onDistanceAnalysisPointSelectRef = useRef(onDistanceAnalysisPointSelect);
+  onDistanceAnalysisPointSelectRef.current = onDistanceAnalysisPointSelect;
+  const lastDistanceMapSelectionRef = useRef<{ key: string; at: number } | null>(null);
   const visitRouteFitIdRef = useRef<string | null>(null);
   const { toast } = useToast();
   const clickHandlerRef = useRef<((e: mapboxgl.MapLayerMouseEvent) => void) | null>(null);
@@ -2200,6 +2289,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
   const [storeFilterCodAg, setStoreFilterCodAg] = useState<string | null>(null);
   const [storeFilterAgencyName, setStoreFilterAgencyName] = useState<string | null>(null);
   const [pinnedAgencyPoint, setPinnedAgencyPoint] = useState<SqlMapPoint | null>(null);
+  const [searchFocusedPoint, setSearchFocusedPoint] = useState<SqlMapPoint | null>(null);
   /** Detalhe do marcador clicado (barra inferior); hover continua no popup do mapa. */
   const [overlayMarkerSelection, setOverlayMarkerSelection] = useState<
     AgencyPopupInfo | StorePopupInfo | null
@@ -2290,8 +2380,10 @@ const MapComponent: React.FC<MapComponentProps> = ({
   const [isMapTransitionLoading, setIsMapTransitionLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchOpen, setSearchOpen] = useState(false);
-  const [stateSearchOptions, setStateSearchOptions] = useState<SearchOption[]>([]);
-  const [municipalitySearchOptions, setMunicipalitySearchOptions] = useState<SearchOption[]>([]);
+  const [stateSearchOptions, setStateSearchOptions] = useState<RegionSearchOption[]>([]);
+  const [municipalitySearchOptions, setMunicipalitySearchOptions] = useState<RegionSearchOption[]>([]);
+  const [storeSearchOptions, setStoreSearchOptions] = useState<PointSearchOption[]>([]);
+  const [storeSearchLoading, setStoreSearchLoading] = useState(false);
   const [allMunicipalityNames, setAllMunicipalityNames] = useState<string[]>([]);
   const [mapStyleMode, setMapStyleMode] = useState<MapStyleMode>('standardWarm');
   /** Abre o seletor de layout ao clicar (útil sem hover, ex.: touch). Combinado com hover no botão Layers. */
@@ -2399,20 +2491,32 @@ const MapComponent: React.FC<MapComponentProps> = ({
   const expressoMetrics = sqlExpressoMetrics ?? fallbackExpressoMetrics;
 
   const filteredRegionAgencias = useMemo(() => {
+    let points: SqlMapPoint[];
     if (storeFilterCodAg) {
-      if (pinnedAgencyPoint) return [pinnedAgencyPoint];
-      const key = normalizeCodAgKey(storeFilterCodAg);
-      return sqlAgencyPoints.filter((p) => normalizeCodAgKey(p.codAg) === key);
+      if (pinnedAgencyPoint) points = [pinnedAgencyPoint];
+      else {
+        const key = normalizeCodAgKey(storeFilterCodAg);
+        points = sqlAgencyPoints.filter((p) => normalizeCodAgKey(p.codAg) === key);
+      }
+    } else {
+      points = filterRegionMapPoints(
+        sqlAgencyPoints,
+        selectedMunicipalityFeature,
+        selectedStateFeature
+      );
     }
-    return filterRegionMapPoints(
-      sqlAgencyPoints,
-      selectedMunicipalityFeature,
-      selectedStateFeature
-    );
+    if (
+      searchFocusedPoint?.kind === 'agencia' &&
+      !points.some((point) => point.id === searchFocusedPoint.id)
+    ) {
+      return [...points, searchFocusedPoint];
+    }
+    return points;
   }, [
     sqlAgencyPoints,
     storeFilterCodAg,
     pinnedAgencyPoint,
+    searchFocusedPoint,
     selectedMunicipalityFeature,
     selectedStateFeature,
   ]);
@@ -2805,10 +2909,18 @@ const MapComponent: React.FC<MapComponentProps> = ({
       selectedMunicipalityFeature,
       selectedStateFeature
     );
-    return applySegmentFilter(visibleByArea);
+    const points = applySegmentFilter(visibleByArea);
+    if (
+      searchFocusedPoint?.kind === 'loja' &&
+      !points.some((point) => point.id === searchFocusedPoint.id)
+    ) {
+      return [...points, searchFocusedPoint];
+    }
+    return points;
   }, [
     sqlStorePoints,
     storeFilterCodAg,
+    searchFocusedPoint,
     selectedMunicipalityFeature,
     selectedStateFeature,
     selectedStoreSegments,
@@ -3016,6 +3128,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
     setPinnedAgencyPoint(null);
     setSqlStorePoints([]);
     setOverlayMarkerSelection(null);
+    setSearchFocusedPoint(null);
   }, []);
 
   const resetAgencyStoreFilterSyncRef = useRef(resetAgencyStoreFilterSync);
@@ -3504,13 +3617,64 @@ const MapComponent: React.FC<MapComponentProps> = ({
       municipalitySearchOptions.length > 0
         ? municipalitySearchOptions.filter((item) => normalizeText(item.label).includes(q))
         : filterMunicipalitySearchOptions(allMunicipalitiesFcRef.current, searchQuery, 8);
-    return [...states.slice(0, 6), ...municipalities.slice(0, 8)];
-  }, [searchQuery, stateSearchOptions, municipalitySearchOptions, municipalitiesGeoVersion]);
+    const agencies = filterAgencySearchOptions(sqlAgencyPoints, searchQuery, 6);
+    return [
+      ...states.slice(0, 6),
+      ...municipalities.slice(0, 8),
+      ...agencies,
+      ...storeSearchOptions.slice(0, 8),
+    ];
+  }, [
+    searchQuery,
+    stateSearchOptions,
+    municipalitySearchOptions,
+    municipalitiesGeoVersion,
+    sqlAgencyPoints,
+    storeSearchOptions,
+  ]);
+
+  const storeSearchHierarchyKey =
+    overlaySeatFilterKey ?? hierarchyFilterSignature(hierarchyFilter);
+
+  useEffect(() => {
+    const query = searchQuery.trim();
+    if (!searchOpen || normalizeText(query).length < 2) {
+      setStoreSearchOptions([]);
+      setStoreSearchLoading(false);
+      return;
+    }
+
+    let active = true;
+    setStoreSearchOptions([]);
+    setStoreSearchLoading(true);
+    const timer = window.setTimeout(() => {
+      const activeHierarchy = overlaySeatHierarchyRef.current ?? hierarchyFilterRef.current ?? null;
+      void fetchStorePoints({ search: query, limit: 8, hierarchy: activeHierarchy })
+        .then((points) => {
+          if (!active) return;
+          setStoreSearchOptions(buildStoreSearchOptions(points));
+        })
+        .catch((error) => {
+          if (!active) return;
+          setStoreSearchOptions([]);
+          console.warn('Falha ao buscar lojas para o autocomplete:', error);
+        })
+        .finally(() => {
+          if (active) setStoreSearchLoading(false);
+        });
+    }, 250);
+
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
+  }, [searchOpen, searchQuery, storeSearchHierarchyKey]);
 
   // O catálogo nacional possui milhares de polígonos. Carrega somente quando
   // uma busca municipal realmente precisa dele, em vez de bloquear a abertura.
   useEffect(() => {
     if (!searchOpen || normalizeText(searchQuery).length < 2) return;
+    if (!/[a-z]/.test(normalizeText(searchQuery))) return;
     if (municipalitySearchOptions.length > 0) return;
     if (allMunicipalitiesFcRef.current.features.length > 0) return;
     void loadAllMunicipalitiesRef.current().catch((error) => {
@@ -3569,6 +3733,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
       return;
     }
     setOverlayMarkerSelection(null);
+    setSearchFocusedPoint(null);
   };
   const hasMapSelection = Boolean(
     selectedStateFeature || selectedMunicipalityFeature || selectedCityLabel
@@ -3694,6 +3859,33 @@ const MapComponent: React.FC<MapComponentProps> = ({
   );
 
   const handleSearchSelect = (option: SearchOption) => {
+    if (option.kind === 'agencia' || option.kind === 'loja') {
+      const point = option.point;
+      const feature = regionPointsToFeatureCollection([point]).features[0];
+      setSearchFocusedPoint(point);
+      if (option.kind === 'agencia') {
+        applyAgencyFetchResult([point], 'merge');
+        setOverlayAgencias(true);
+        setOverlayMarkerSelection(readAgencyPopupInfoFromProperties(feature.properties));
+      } else {
+        applyStoreFetchResult([point], 'merge');
+        setOverlayLojas(true);
+        setOverlayMarkerSelection(readStorePopupInfoFromProperties(feature.properties));
+      }
+
+      const m = map.current;
+      if (m) {
+        if (!pointFocusCameraActiveRef.current) {
+          preFocusCameraRef.current = captureMapCamera(m);
+        }
+        animateToPointFocus(m, point.lngLat);
+        pointFocusCameraActiveRef.current = true;
+      }
+      setSearchQuery(option.label);
+      setSearchOpen(false);
+      return;
+    }
+
     if (!meshSelectionEnabled()) {
       const m = map.current;
       if (m) {
@@ -4088,8 +4280,60 @@ const MapComponent: React.FC<MapComponentProps> = ({
           );
         };
 
-        const handleLojaFeatureClick = (feature: GeoJSON.Feature, lngLat: mapboxgl.LngLatLike) => {
+        const tryDistanceAnalysisPointSelection = (
+          feature: GeoJSON.Feature,
+          lngLat: mapboxgl.LngLatLike,
+          kind: 'loja' | 'agencia',
+          shiftKey: boolean
+        ): boolean => {
+          if (!shiftKey || !distanceAnalysisModeRef.current) return false;
+          const onSelect = onDistanceAnalysisPointSelectRef.current;
+          const coords = getPointCoordinates(feature) ?? getPointCoordinates(lngLat);
+          if (!onSelect || !coords) return false;
+
+          const properties = feature.properties ?? {};
+          const selectionKey = `${kind}:${coords[0].toFixed(6)}:${coords[1].toFixed(6)}`;
+          const now = Date.now();
+          const lastSelection = lastDistanceMapSelectionRef.current;
+          if (lastSelection?.key === selectionKey && now - lastSelection.at < 300) return true;
+          lastDistanceMapSelectionRef.current = { key: selectionKey, at: now };
+
+          if (kind === 'agencia') {
+            const info = readAgencyPopupInfoFromProperties(properties);
+            const label = [info.codAg, info.nome].filter(Boolean).join(' - ') || 'AgÃªncia';
+            onSelect({
+              id: String(properties.id ?? `map-agencia-${info.codAg || coords.join('-')}`),
+              kind,
+              label,
+              description: info.enderecoFormatado || 'AgÃªncia selecionada no mapa',
+              lngLat: coords,
+            });
+          } else {
+            const info = readStorePopupInfoFromProperties(properties);
+            const label = [info.chaveLoja, info.nome].filter(Boolean).join(' - ') || 'Loja';
+            const agencyDescription = [info.codAg, info.nomeAg].filter(Boolean).join(' - ');
+            onSelect({
+              id: String(properties.id ?? `map-loja-${info.chaveLoja || coords.join('-')}`),
+              kind,
+              label,
+              description: agencyDescription
+                ? `AgÃªncia vinculada: ${agencyDescription}`
+                : 'Loja selecionada no mapa',
+              lngLat: coords,
+            });
+          }
+
+          markOverlayPointerClick();
+          return true;
+        };
+
+        const handleLojaFeatureClick = (
+          feature: GeoJSON.Feature,
+          lngLat: mapboxgl.LngLatLike,
+          shiftKey = false
+        ) => {
           if (!map.current) return;
+          if (tryDistanceAnalysisPointSelection(feature, lngLat, 'loja', shiftKey)) return;
           const coords =
             getPointCoordinates(feature) ?? getPointCoordinates(lngLat);
           if (coords) {
@@ -4098,8 +4342,13 @@ const MapComponent: React.FC<MapComponentProps> = ({
           pinOverlayMarkerSelection(feature);
         };
 
-        const handleAgencyFeatureClick = (feature: GeoJSON.Feature, lngLat: mapboxgl.LngLatLike) => {
+        const handleAgencyFeatureClick = (
+          feature: GeoJSON.Feature,
+          lngLat: mapboxgl.LngLatLike,
+          shiftKey = false
+        ) => {
           if (!map.current) return;
+          if (tryDistanceAnalysisPointSelection(feature, lngLat, 'agencia', shiftKey)) return;
           markOverlayPointerClick();
           const coords =
             getPointCoordinates(feature) ?? getPointCoordinates(lngLat);
@@ -4230,7 +4479,24 @@ const MapComponent: React.FC<MapComponentProps> = ({
           }
         };
 
-        const tryOverlayMarkerClickFirst = (point: mapboxgl.Point, lngLat: mapboxgl.LngLatLike): boolean => {
+        const tryOverlayMarkerClickFirst = (
+          point: mapboxgl.Point,
+          lngLat: mapboxgl.LngLatLike,
+          shiftKey = false
+        ): boolean => {
+          if (shiftKey && distanceAnalysisModeRef.current) {
+            const agencyFeature = pickAgencyFeatureAtPoint(m, point);
+            if (agencyFeature) {
+              handleAgencyFeatureClick(agencyFeature, lngLat, true);
+              return true;
+            }
+            const lojaFeature = pickLojaFeatureAtPoint(m, point);
+            if (lojaFeature) {
+              handleLojaFeatureClick(lojaFeature, lngLat, true);
+              return true;
+            }
+          }
+
           // Prioriza gerentes (camada visual acima) quando há sobreposição com agência/loja.
           const seatLayers = MANAGER_CIRCLE_LAYER_IDS.filter((id) => m.getLayer(id));
           if (seatLayers.length > 0) {
@@ -4262,13 +4528,13 @@ const MapComponent: React.FC<MapComponentProps> = ({
 
           const agencyFeature = pickAgencyFeatureAtPoint(m, point);
           if (agencyFeature) {
-            handleAgencyFeatureClick(agencyFeature, lngLat);
+            handleAgencyFeatureClick(agencyFeature, lngLat, shiftKey);
             return true;
           }
 
           const lojaFeature = pickLojaFeatureAtPoint(m, point);
           if (lojaFeature) {
-            handleLojaFeatureClick(lojaFeature, lngLat);
+            handleLojaFeatureClick(lojaFeature, lngLat, shiftKey);
             return true;
           }
 
@@ -4533,7 +4799,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
 
           const onStateClick = (e: mapboxgl.MapLayerMouseEvent) => {
             if (!isMeshSelectionClick(e)) return;
-            if (tryOverlayMarkerClickFirst(e.point, e.lngLat)) return;
+            if (tryOverlayMarkerClickFirst(e.point, e.lngLat, e.originalEvent.shiftKey)) return;
             if (pointFocusCameraActiveRef.current) {
               dismissPointFocusCamera();
               return;
@@ -4649,6 +4915,13 @@ const MapComponent: React.FC<MapComponentProps> = ({
           selectMunicipalityFeatureRef.current = selectMunicipalityFeature;
 
           const onMapClick = async (e: mapboxgl.MapMouseEvent) => {
+            if (
+              e.originalEvent.shiftKey &&
+              distanceAnalysisModeRef.current &&
+              tryOverlayMarkerClickFirst(e.point, e.lngLat, true)
+            ) {
+              return;
+            }
             if (!isMeshSelectionClick(e)) return;
             if (tryOverlayMarkerClickFirst(e.point, e.lngLat)) return;
 
@@ -4769,7 +5042,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
 
           const onMunicipalityPolygonClick = (e: mapboxgl.MapLayerMouseEvent) => {
             if (!isMeshSelectionClick(e)) return;
-            if (tryOverlayMarkerClickFirst(e.point, e.lngLat)) return;
+            if (tryOverlayMarkerClickFirst(e.point, e.lngLat, e.originalEvent.shiftKey)) return;
             if (pointFocusCameraActiveRef.current) {
               dismissPointFocusCamera();
               return;
@@ -4902,7 +5175,8 @@ const MapComponent: React.FC<MapComponentProps> = ({
           const f = e.features?.[0];
           if (!f || !f.properties || !map.current) return;
           if (String(f.properties.kind ?? '') === 'agencia') {
-            handleAgencyFeatureClick(f as GeoJSON.Feature, e.lngLat);
+            if (e.originalEvent.shiftKey) e.originalEvent.stopPropagation();
+            handleAgencyFeatureClick(f as GeoJSON.Feature, e.lngLat, e.originalEvent.shiftKey);
             return;
           }
           const cargo = String(f.properties.cargo ?? '').trim().toLowerCase();
@@ -5185,7 +5459,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
           if (!f?.properties || !map.current) return;
           const info = readAgencyPopupInfoFromProperties(f.properties);
           if (info.kind === 'loja') {
-            handleLojaFeatureClick(f, e.lngLat);
+            handleLojaFeatureClick(f, e.lngLat, e.originalEvent.shiftKey);
             return;
           }
           if (info.kind !== 'agencia') {
@@ -5196,9 +5470,10 @@ const MapComponent: React.FC<MapComponentProps> = ({
         };
 
         const onRegionAgencyOverlayClick = (e: mapboxgl.MapLayerMouseEvent) => {
+          if (e.originalEvent.shiftKey) e.originalEvent.stopPropagation();
           const f = (e.features?.[0] as GeoJSON.Feature | undefined) ?? pickAgencyFeatureAtPoint(m, e.point);
           if (!f) return;
-          handleAgencyFeatureClick(f, e.lngLat);
+          handleAgencyFeatureClick(f, e.lngLat, e.originalEvent.shiftKey);
         };
 
         regionOverlayClickHandlerRef.current = onRegionOverlayMarkerClick;
@@ -5680,7 +5955,9 @@ const MapComponent: React.FC<MapComponentProps> = ({
     });
     if (!fitted) return;
 
-    setOverlayAgencias(true);
+    // As agências servem somente para calcular os limites do território no login.
+    // A camada continua desligada até o usuário clicar explicitamente no botão AG.
+    setOverlayAgencias(false);
     if (initialFocusPending) initialAgencyScopeFittedRef.current = true;
     if (manualFocusPending) {
       handledTerritoryFocusTickRef.current = territoryFocusTick;
@@ -6336,7 +6613,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
               onBlur={() => {
                 window.setTimeout(() => setSearchOpen(false), 120);
               }}
-              placeholder="Buscar estado ou município..."
+              placeholder="Estado, município, agência ou loja..."
               className="h-full rounded-full border-0 bg-transparent pl-9 pr-3 text-sm shadow-none focus-visible:ring-0"
             />
           </div>
@@ -6348,7 +6625,9 @@ const MapComponent: React.FC<MapComponentProps> = ({
             >
               {visibleSearchOptions.length === 0 ? (
                 <p className="px-3 py-2.5 text-xs text-slate-500">
-                  Nenhum resultado. Tente outro nome.
+                  {storeSearchLoading
+                    ? 'Buscando agências e lojas...'
+                    : 'Nenhum resultado. Tente outro nome ou código.'}
                 </p>
               ) : (
                 visibleSearchOptions.map((option) => (
@@ -6360,8 +6639,13 @@ const MapComponent: React.FC<MapComponentProps> = ({
                     onClick={() => handleSearchSelect(option)}
                     className="flex w-full items-center justify-between gap-2 rounded-lg px-3 py-2.5 text-left transition-colors hover:bg-slate-100 active:bg-slate-200/80"
                   >
-                    <span className="min-w-0 truncate text-sm font-medium text-slate-800">
-                      {option.label}
+                    <span className="min-w-0 flex-1 text-sm font-medium text-slate-800">
+                      <span className="block truncate">{option.label}</span>
+                      {'detail' in option && (
+                        <span className="mt-0.5 block truncate text-[11px] font-normal text-slate-500">
+                          {option.detail}
+                        </span>
+                      )}
                     </span>
                     <span className="shrink-0 rounded-md border border-slate-200 bg-slate-50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-600">
                       {option.kind}

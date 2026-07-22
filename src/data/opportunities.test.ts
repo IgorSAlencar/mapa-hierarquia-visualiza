@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { missingOpportunityLabels, opportunityFocus, type OpportunitySnapshot } from './opportunities.ts';
+import {
+  missingOpportunityLabels,
+  opportunityFocus,
+  opportunitySnapshotFromStoreFlags,
+  type OpportunitySnapshot,
+} from './opportunities.ts';
 
 const allActive: OpportunitySnapshot = {
   oportunidadeCielo: true,
@@ -36,3 +41,32 @@ test('desc_segto não participa do cálculo do produto foco', () => {
   assert.equal(opportunityFocus(storeSnapshot).text, 'Crédito');
 });
 
+test('indicadores reais da loja são convertidos para os pilares do roteiro', () => {
+  assert.deepEqual(
+    opportunitySnapshotFromStoreFlags({
+      cieloM0: true,
+      creditoM0: false,
+      negocioM0: true,
+      ativoPadeM0: false,
+      propostaValor: true,
+    }),
+    {
+      oportunidadeCielo: true,
+      oportunidadeCredito: false,
+      oportunidadeNegocio: true,
+      oportunidadeAtivoPade: false,
+      oportunidadePropostaValor: true,
+    }
+  );
+});
+
+test('indicadores ausentes são tratados como oportunidade a desenvolver', () => {
+  const snapshot = opportunitySnapshotFromStoreFlags({});
+  assert.deepEqual(missingOpportunityLabels(snapshot), [
+    'Cielo',
+    'Crédito',
+    'Negócio',
+    'Ativo PADE',
+    'Proposta de Valor',
+  ]);
+});

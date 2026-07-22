@@ -184,7 +184,11 @@ const RouteStopsList: React.FC<RouteStopsListProps> = ({
         </p>
       )}
 
-      <ol className="space-y-2">
+      <ol className={cn(
+        'space-y-2',
+        isSuggestedRoute && route.stops.length > 4 &&
+          'max-h-60 overflow-y-auto overscroll-contain pr-1 [scrollbar-gutter:stable]'
+      )}>
         {route.stops.map((stop) => {
           const style = STOP_STATUS_STYLE[stop.status];
           const isSelected = selectedStopId === stop.id;

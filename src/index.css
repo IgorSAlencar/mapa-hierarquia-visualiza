@@ -174,6 +174,11 @@
   padding: 11px 12px;
 }
 
+.agency-popup-card--seat {
+  min-width: 250px;
+  max-width: 300px;
+}
+
 .agency-popup-meta {
   display: flex;
   flex-wrap: wrap;
@@ -210,6 +215,60 @@
   line-height: 1.35;
   letter-spacing: -0.01em;
   color: hsl(var(--foreground));
+}
+
+.agency-popup-person {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 9px;
+  margin-top: 9px;
+  padding-top: 9px;
+  border-top: 1px solid #e2e8f0;
+}
+
+.agency-popup-person-avatar {
+  display: inline-flex;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 30px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: #cc092f;
+  color: #fff;
+  box-shadow: 0 6px 14px -8px rgb(204 9 47 / 0.8);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.agency-popup-person-copy {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+}
+
+.agency-popup-person-copy strong,
+.agency-popup-person-copy span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agency-popup-person-copy strong {
+  color: #1e293b;
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1.2;
+}
+
+.agency-popup-person-copy span {
+  margin-top: 2px;
+  color: #64748b;
+  font-size: 9px;
+  line-height: 1.2;
 }
 
 .agency-popup-address-wrap {
@@ -285,10 +344,20 @@
 .store-popup-heading {
   display: flex;
   min-width: 0;
+  flex: 1;
   flex-direction: column;
 }
 
+.store-popup-title-row {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 7px;
+}
+
 .store-popup-title {
+  min-width: 0;
+  flex: 1;
   overflow: hidden;
   color: #111827;
   font-size: 15px;
@@ -298,38 +367,97 @@
   white-space: nowrap;
 }
 
-.store-popup-key {
+.store-popup-payer-badge {
+  display: inline-flex;
+  min-height: 18px;
+  flex: 0 0 auto;
+  align-items: center;
+  border: 1px solid;
+  border-radius: 999px;
+  padding: 2px 6px;
+  font-size: 7.5px;
+  font-weight: 600;
+  letter-spacing: 0.015em;
+  line-height: 1;
+  white-space: nowrap;
+  border-color: #bfdbfe;
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+.store-popup-identity {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 5px;
   margin-top: 4px;
   color: #64748b;
-  font-size: 11px;
+  font-size: 10.5px;
+  line-height: 1.15;
+  white-space: nowrap;
+}
+
+.store-popup-key {
+  flex: 0 0 auto;
+  color: #64748b;
   font-weight: 500;
   font-variant-numeric: tabular-nums;
 }
 
-.store-popup-context {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 4px 12px;
-  margin-top: 5px;
-  color: #334155;
-  font-size: 10px;
-  font-weight: 500;
-  line-height: 1.2;
+.store-popup-identity > i {
+  flex: 0 0 auto;
+  color: #cbd5e1;
+  font-style: normal;
 }
 
-.store-popup-context > span {
-  display: inline-flex;
-  align-items: baseline;
+.store-popup-agency {
+  min-width: 0;
+  overflow: hidden;
+  color: #475569;
+  font-weight: 500;
+  text-overflow: ellipsis;
+}
+
+.store-popup-context {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 12px;
+  margin-top: 5px;
+  color: #334155;
+  font-size: 9.5px;
+  font-weight: 500;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.store-popup-context-group {
+  display: flex;
+  min-width: 0;
+  align-items: center;
   gap: 4px;
 }
 
-.store-popup-context b {
-  color: #94a3b8;
-  font-size: 8px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  text-transform: uppercase;
+.store-popup-context-group--business {
+  flex: 1 1 44%;
+}
+
+.store-popup-context-group--management {
+  flex: 1 1 56%;
+  justify-content: flex-end;
+  color: #475569;
+}
+
+.store-popup-context-group > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.store-popup-context-group > i {
+  flex: 0 0 auto;
+  color: #cbd5e1;
+  font-style: normal;
 }
 
 .store-popup-close {
@@ -537,6 +665,16 @@
   flex-basis: 32px;
 }
 
+.store-popup-detail--proposal-positive .store-popup-detail-icon,
+.store-popup-detail--proposal-positive .store-popup-detail-value {
+  color: #059669;
+}
+
+.store-popup-detail--proposal-neutral .store-popup-detail-icon,
+.store-popup-detail--proposal-neutral .store-popup-detail-value {
+  color: #64748b;
+}
+
 .store-popup-cielo-logo {
   display: block;
   width: 24px;
@@ -601,11 +739,15 @@
   white-space: nowrap;
 }
 
-/* Jornada de montagem do roteiro: altura estável, com respiro antes das ações. */
+/*
+ * Jornada de montagem do roteiro: uma única proporção visual em monitores
+ * diferentes. A viewport apenas limita o card; o conteúdo rola internamente.
+ */
 .route-planning-journey {
-  width: min(430px, calc(100vw - 32px));
-  height: min(560px, calc(100dvh - clamp(88px, 15dvh, 150px) - 16px));
-  max-height: calc(100dvh - clamp(88px, 15dvh, 150px) - 16px);
+  width: min(400px, calc(100dvw - 32px));
+  height: min(520px, calc(100dvh - 96px));
+  max-width: calc(100dvw - 32px);
+  max-height: calc(100dvh - 96px);
 }
 
 .route-planning-step-body,
@@ -616,15 +758,91 @@
 }
 
 .route-planning-stage {
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: auto;
 }
 
-@media (max-height: 720px) {
+/* Notebooks compactos (aprox. 13–14"): reduz o conjunto sem deformar o card. */
+@media (max-width: 1600px) and (max-height: 900px) {
   .route-planning-journey {
-    width: min(560px, calc(100vw - 24px));
-    height: min(460px, calc(100dvh - clamp(88px, 15dvh, 150px) - 16px));
+    width: min(360px, calc(100dvw - 32px));
+    height: min(468px, calc(100dvh - 96px));
   }
 
+  .route-planning-step-body,
+  .route-planning-welcome-body {
+    padding: 10px 18px 12px;
+  }
+
+  .route-planning-progress {
+    margin-top: 6px;
+  }
+
+  .route-planning-title h2 {
+    font-size: 13px;
+    line-height: 1.2;
+  }
+
+  .route-planning-title p {
+    margin-top: 2px;
+    font-size: 10px;
+    line-height: 1.25;
+  }
+
+  .route-planning-choice-list {
+    margin-top: 10px !important;
+  }
+
+  .route-planning-choice-card {
+    min-height: 62px !important;
+    padding: 7px !important;
+  }
+
+  .route-planning-choice-row {
+    padding: 6px 10px;
+  }
+
+  .route-planning-choice-icon {
+    width: 28px !important;
+    height: 28px !important;
+  }
+
+  .route-planning-choice-title {
+    font-size: 12px !important;
+    line-height: 1.15;
+  }
+
+  .route-planning-choice-description {
+    margin-top: 2px;
+    font-size: 9px !important;
+    line-height: 1.2;
+  }
+
+  .route-planning-intention-grid .route-planning-choice-description {
+    display: -webkit-box;
+    overflow: hidden;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  }
+
+  .route-planning-footer {
+    padding-top: 8px;
+  }
+
+  .route-planning-footer button {
+    padding-top: 8px !important;
+    padding-bottom: 8px !important;
+    font-size: 12px !important;
+  }
+
+  .route-planning-welcome-image {
+    max-height: 140px !important;
+  }
+}
+
+@media (max-height: 640px) {
   .route-planning-step-body,
   .route-planning-welcome-body {
     padding: 8px 16px 10px;
@@ -742,10 +960,6 @@
 }
 
 @media (max-height: 580px) {
-  .route-planning-journey {
-    height: min(400px, calc(100dvh - 104px));
-  }
-
   .route-planning-step-body,
   .route-planning-welcome-body {
     padding: 6px 12px 8px;

@@ -1,4 +1,5 @@
 import type { VisitRoute, VisitRouteOwner } from '@/data/visitRoutes';
+import type { StoreProductionPoint } from '@/lib/mapDataApi';
 import { apiFetch } from '@/lib/apiClient';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? '';
@@ -21,6 +22,11 @@ export interface VisitRouteSupervisionSummary {
   routes: number;
   managersWithRoute: number;
   visits: number;
+}
+
+export interface VisitRouteExportStoreData {
+  chaveLoja: string;
+  production: StoreProductionPoint | null;
 }
 
 async function responseError(response: Response): Promise<Error> {
@@ -104,6 +110,15 @@ export async function fetchSavedRoute(id: string): Promise<VisitRoute> {
   return data.route;
 }
 
+export async function fetchSavedRouteExportData(id: string): Promise<VisitRouteExportStoreData[]> {
+  const response = await apiFetch(
+    `${API_BASE_URL}/api/roteiros/${encodeURIComponent(id)}/exportacao-dados`
+  );
+  if (!response.ok) throw await responseError(response);
+  const data = await response.json() as { stores?: VisitRouteExportStoreData[] };
+  return Array.isArray(data.stores) ? data.stores : [];
+}
+
 export async function deleteSavedRoute(id: string): Promise<void> {
   const response = await apiFetch(`${API_BASE_URL}/api/roteiros/${encodeURIComponent(id)}`, {
     method: 'DELETE',
@@ -117,4 +132,3 @@ export function defaultRouteHistoryRange(): { from: string; to: string } {
   from.setDate(from.getDate() - 89);
   return { from: from.toISOString().slice(0, 10), to: to.toISOString().slice(0, 10) };
 }
-

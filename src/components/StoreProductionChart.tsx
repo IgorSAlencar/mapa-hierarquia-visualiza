@@ -28,6 +28,7 @@ import {
 } from 'recharts';
 import {
   fetchStoreProductionHistory,
+  type StoreBusinessDailyPoint,
   type StoreProductionPoint,
 } from '@/lib/mapDataApi';
 
@@ -117,22 +118,34 @@ function formatValue(value: number, unit: MetricMeta['unit']): string {
   return Math.round(value).toLocaleString('pt-BR');
 }
 
-const BUSINESS_DAYS = Array.from({ length: 23 }, (_, index) => index + 1);
-const BUSINESS_PRODUCTION_HEATMAP_MOCK = [
-  { month: 'jul/26', values: [7, 9, 12, 8, 11, 6, 13, 10, 15, 12, 8, 16, 11, 14, 9, 13, 12, 17, 10, 15, 8, 14, 11] },
-  { month: 'jun/26', values: [6, 8, 7, 10, 9, 5, 11, 8, 12, 10, 7, 13, 9, 11, 8, 12, 10, 14, 9, 12, 7, 13, 10] },
-  { month: 'mai/26', values: [4, 6, 5, 8, 7, 3, 9, 6, 10, 8, 5, 11, 7, 9, 6, 10, 8, 12, 7, 9, 5, 11, 8] },
-];
-
-function businessHeatmapTone(value: number): string {
-  if (value <= 0) return 'border-slate-200 bg-slate-100';
-  if (value <= 3) return 'border-emerald-100 bg-emerald-100';
-  if (value <= 7) return 'border-emerald-200 bg-emerald-300';
-  if (value <= 11) return 'border-emerald-400 bg-emerald-500';
-  return 'border-emerald-600 bg-emerald-700';
+function businessHeatmapTone(value: number, maxValue: number): string {
+  if (value <= 0) return 'border-slate-200 bg-slate-200';
+  const intensity = maxValue > 0 ? value / maxValue : 0;
+  if (intensity <= 1 / 3) return 'border-emerald-200 bg-emerald-200';
+  if (intensity <= 2 / 3) return 'border-emerald-500 bg-emerald-500';
+  return 'border-emerald-900 bg-emerald-900';
 }
 
-function BusinessProductionHeatmap() {
+function BusinessProductionHeatmap({ data }: { data: StoreBusinessDailyPoint[] }) {
+  const periodValues = new Map<number, Map<number, number>>();
+  let maxBusinessDay = 0;
+  let maxValue = 0;
+
+  for (const row of data) {
+    const periodo = Number(row.periodo);
+    const diaUtil = Math.trunc(Number(row.diaUtil));
+    const qtdNeg = Number(row.qtdNeg);
+    if (!Number.isFinite(periodo) || diaUtil <= 0 || !Number.isFinite(qtdNeg)) continue;
+    const values = periodValues.get(periodo) ?? new Map<number, number>();
+    values.set(diaUtil, qtdNeg);
+    periodValues.set(periodo, values);
+    maxBusinessDay = Math.max(maxBusinessDay, diaUtil);
+    maxValue = Math.max(maxValue, qtdNeg);
+  }
+
+  const periods = Array.from(periodValues.entries()).sort(([left], [right]) => left - right);
+  const businessDays = Array.from({ length: maxBusinessDay }, (_, index) => index + 1);
+
   return (
     <section
       className="border-t border-slate-100 px-3 py-3"
@@ -143,62 +156,87 @@ function BusinessProductionHeatmap() {
           <p id="business-production-heatmap-title" className="text-xs font-semibold text-slate-900">
             Produção de negócios por dia útil
           </p>
-          <p className="mt-0.5 text-[10px] text-slate-500">Meses nas linhas · 1º ao 23º dia útil nas colunas</p>
+          <p className="mt-0.5 text-[10px] text-slate-500">
+            Meses nas linhas · intensidade calculada para esta loja
+          </p>
         </div>
-        <span className="shrink-0 rounded-full bg-amber-50 px-2 py-1 text-[8px] font-semibold uppercase tracking-wide text-amber-700">
-          Dados simulados
+        <span className="shrink-0 rounded-full bg-emerald-50 px-2 py-1 text-[8px] font-semibold uppercase tracking-wide text-emerald-700">
+          Base diária
         </span>
       </div>
 
-      <div className="mt-3" role="img" aria-label="Mapa de calor da produção de negócios por mês e dia útil">
-        <div className="flex items-end gap-1.5">
-          <span className="w-9 shrink-0 pb-0.5 text-[8px] font-medium text-slate-400">Mês</span>
-          <div
-            className="grid min-w-0 flex-1 gap-[2px]"
-            style={{ gridTemplateColumns: 'repeat(23, minmax(0, 1fr))' }}
-            aria-hidden
-          >
-            {BUSINESS_DAYS.map((day) => (
-              <span key={day} className="text-center text-[7px] leading-none text-slate-400">
-                {day % 2 === 1 ? day : ''}
-              </span>
-            ))}
-          </div>
-        </div>
-
-        <div className="mt-1.5 space-y-[3px]">
-          {BUSINESS_PRODUCTION_HEATMAP_MOCK.map((row) => (
-            <div key={row.month} className="flex items-center gap-1.5">
-              <span className="w-9 shrink-0 text-[8px] font-medium text-slate-500">{row.month}</span>
+      {periods.length > 0 ? (
+        <>
+          <div className="mt-3" role="img" aria-label="Mapa de calor da produção de negócios por mês e dia útil">
+            <div className="flex items-end gap-1.5">
+              <span className="w-9 shrink-0 pb-0.5 text-[8px] font-medium text-slate-400">Mês</span>
               <div
                 className="grid min-w-0 flex-1 gap-[2px]"
-                style={{ gridTemplateColumns: 'repeat(23, minmax(0, 1fr))' }}
+                style={{ gridTemplateColumns: `repeat(${maxBusinessDay}, minmax(0, 1fr))` }}
+                aria-hidden
               >
-                {row.values.map((value, index) => (
-                  <span
-                    key={`${row.month}-${index + 1}`}
-                    className={`aspect-square min-h-[8px] rounded-[3px] border ${businessHeatmapTone(value)}`}
-                    role="img"
-                    aria-label={`${row.month}, ${index + 1}º dia útil: ${value} transações de negócio`}
-                  />
+                {businessDays.map((day) => (
+                  <span key={day} className="text-center text-[7px] leading-none text-slate-400">
+                    {day % 2 === 1 ? day : ''}
+                  </span>
                 ))}
               </div>
             </div>
-          ))}
-        </div>
-      </div>
 
-      <div className="mt-2.5 flex items-center justify-end gap-1.5 text-[8px] text-slate-400">
-        <span>Menor</span>
-        {[0, 2, 5, 9, 13].map((value) => (
-          <span
-            key={value}
-            className={`h-2.5 w-2.5 rounded-[3px] border ${businessHeatmapTone(value)}`}
-            aria-hidden
-          />
-        ))}
-        <span>Maior produção</span>
-      </div>
+            <div className="mt-1.5 space-y-[3px]">
+              {periods.map(([periodo, values]) => {
+                const month = formatPeriod(periodo);
+                return (
+                  <div key={periodo} className="flex items-center gap-1.5">
+                    <span className="w-9 shrink-0 text-[8px] font-medium text-slate-500">{month}</span>
+                    <div
+                      className="grid min-w-0 flex-1 gap-[2px]"
+                      style={{ gridTemplateColumns: `repeat(${maxBusinessDay}, minmax(0, 1fr))` }}
+                    >
+                      {businessDays.map((day) => {
+                        const value = values.get(day) ?? 0;
+                        const formattedValue = value.toLocaleString('pt-BR', {
+                          maximumFractionDigits: 2,
+                        });
+                        return (
+                          <span
+                            key={`${periodo}-${day}`}
+                            className={`aspect-square min-h-[8px] rounded-[3px] border ${businessHeatmapTone(value, maxValue)}`}
+                            role="img"
+                            aria-label={`${month}, ${day}º dia útil: ${formattedValue} transações de negócio`}
+                            title={`${day}º DU: ${formattedValue}`}
+                          />
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="mt-2.5 flex items-center justify-end gap-1.5 text-[8px] text-slate-400">
+            <span>Sem produção</span>
+            {[0, 1 / 3, 2 / 3, 1].map((intensity) => (
+              <span
+                key={intensity}
+                className={`h-2.5 w-2.5 rounded-[3px] border ${businessHeatmapTone(
+                  intensity,
+                  1
+                )}`}
+                aria-hidden
+              />
+            ))}
+            <span>Maior intensidade</span>
+          </div>
+        </>
+      ) : (
+        <div className="mt-3 rounded-lg border border-dashed border-slate-200 bg-slate-50/60 px-3 py-3 text-center">
+          <p className="text-[10px] text-slate-500">
+            Nenhuma produção diária encontrada para esta loja.
+          </p>
+        </div>
+      )}
     </section>
   );
 }
@@ -369,6 +407,7 @@ const StoreProductionChart: React.FC<StoreProductionChartProps> = ({
   propostaValor,
 }) => {
   const [history, setHistory] = useState<StoreProductionPoint[]>([]);
+  const [businessDaily, setBusinessDaily] = useState<StoreBusinessDailyPoint[]>([]);
   const [metricKey, setMetricKey] = useState<SelectedStoreProductionMetricKey>(DEFAULT_METRIC);
   const [showMonthlyHistory, setShowMonthlyHistory] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -380,9 +419,13 @@ const StoreProductionChart: React.FC<StoreProductionChartProps> = ({
     setLoading(true);
     setError(null);
     setHistory([]);
+    setBusinessDaily([]);
 
     fetchStoreProductionHistory(chaveLoja, controller.signal)
-      .then((rows) => setHistory(rows))
+      .then((production) => {
+        setHistory(production.history);
+        setBusinessDaily(production.businessDaily);
+      })
       .catch((requestError) => {
         if (requestError instanceof DOMException && requestError.name === 'AbortError') return;
         setError(
@@ -811,7 +854,7 @@ const StoreProductionChart: React.FC<StoreProductionChartProps> = ({
         </div>
       </div>
 
-      <BusinessProductionHeatmap />
+      <BusinessProductionHeatmap data={businessDaily} />
 
       <div className="border-t border-slate-100 px-3 py-2.5">
         <button

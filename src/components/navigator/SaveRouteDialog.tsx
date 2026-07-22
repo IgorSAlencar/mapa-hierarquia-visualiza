@@ -46,6 +46,13 @@ const SaveRouteDialog: React.FC<Props> = ({ route, onSaved }) => {
   const [error, setError] = useState<string | null>(null);
   const [requestId, setRequestId] = useState(() => requestUuid());
   const storeKeys = useMemo(() => routeStoreKeys(route), [route.id, route.stops]);
+  const canAssignOutsidePortfolio = Boolean(
+    user?.isAdmin || user?.role === 'coordenador' || user?.role === 'gerente_area'
+  );
+  const ownerLookupStoreKeys = useMemo(
+    () => canAssignOutsidePortfolio ? [] : storeKeys,
+    [canAssignOutsidePortfolio, storeKeys]
+  );
 
   const canPersist = Boolean(
     route.plannedDate &&
@@ -72,7 +79,7 @@ const SaveRouteDialog: React.FC<Props> = ({ route, onSaved }) => {
     setError(null);
     setOwners([]);
     setOwnerKey('');
-    void fetchRouteOwners(storeKeys)
+    void fetchRouteOwners(ownerLookupStoreKeys)
       .then((items) => {
         if (!active) return;
         setOwners(items);
@@ -80,7 +87,9 @@ const SaveRouteDialog: React.FC<Props> = ({ route, onSaved }) => {
         const initial = self ?? (items.length === 1 ? items[0] : null);
         if (initial) setOwnerKey(`${initial.funcional}:${initial.chaveSupervisao}`);
         if (items.length === 0) {
-          setError('Nenhum Gerente Comercial do seu escopo cobre todas as lojas deste roteiro.');
+          setError(canAssignOutsidePortfolio
+            ? 'Nenhum Gerente Comercial disponível no seu escopo.'
+            : 'As lojas selecionadas não pertencem integralmente à sua carteira.');
         }
       })
       .catch((reason) => {
@@ -90,7 +99,7 @@ const SaveRouteDialog: React.FC<Props> = ({ route, onSaved }) => {
         if (active) setLoadingOwners(false);
       });
     return () => { active = false; };
-  }, [open, route.id, storeKeys, user?.funcional]);
+  }, [canAssignOutsidePortfolio, open, ownerLookupStoreKeys, route.id, user?.funcional]);
 
   const persistForOwner = async (owner: VisitRouteOwner) => {
     const savedRoute = await saveRouteVersion(route, owner, requestId);
@@ -202,7 +211,9 @@ const SaveRouteDialog: React.FC<Props> = ({ route, onSaved }) => {
             </select>
           </label>
           <p className="text-[10px] text-slate-500">
-            Lista limitada aos Gerentes Comerciais do seu escopo cuja supervisão cobre as lojas deste roteiro.
+            {canAssignOutsidePortfolio
+              ? 'Você pode direcionar o roteiro a qualquer Gerente Comercial do seu escopo, mesmo que as lojas não pertençam à carteira dele.'
+              : 'O roteiro será atribuído à sua própria carteira de Gerente Comercial.'}
           </p>
           {loadingOwners && <p className="flex items-center gap-2 text-xs text-slate-500"><Loader2 className="h-3.5 w-3.5 animate-spin" /> Carregando responsáveis...</p>}
           {error && <p className="rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700">{error}</p>}

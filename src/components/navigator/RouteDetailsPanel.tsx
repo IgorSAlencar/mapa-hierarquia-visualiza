@@ -1,12 +1,13 @@
 import React from 'react';
 import type { CSSProperties } from 'react';
-import { CalendarDays, Route as RouteIcon, X } from 'lucide-react';
+import { ArrowLeft, CalendarDays, Route as RouteIcon, X } from 'lucide-react';
 import RouteStopsList from './RouteStopsList';
 import type { VisitRoute, VisitStop } from '@/data/visitRoutes';
 import type { PanelHeaderDragProps } from '@/hooks/usePanelDrag';
 import { mergeHeaderDrag } from '@/components/navigator/mergeHeaderDrag';
 import RouteQrCodeDialog from './RouteQrCodeDialog';
 import SaveRouteDialog from './SaveRouteDialog';
+import RoutePdfExportButton from './RoutePdfExportButton';
 
 interface RouteDetailsPanelProps {
   route: VisitRoute;
@@ -14,7 +15,9 @@ interface RouteDetailsPanelProps {
   onStopSelect: (stopId: number) => void;
   onStopsReorder?: (stops: VisitStop[]) => void;
   onRouteSaved?: (route: VisitRoute) => void;
-  /** Fecha apenas o painel; a rota permanece plotada no mapa. */
+  /** Volta para a seleção das lojas quando o painel exibe um roteiro em planejamento. */
+  onBack?: () => void;
+  /** Fecha o painel conforme a regra definida pelo fluxo que o abriu. */
   onClose: () => void;
   shellStyle?: CSSProperties;
   headerDragProps?: PanelHeaderDragProps;
@@ -30,13 +33,45 @@ const RouteDetailsPanel: React.FC<RouteDetailsPanelProps> = ({
   onStopSelect,
   onStopsReorder,
   onRouteSaved,
+  onBack,
   onClose,
   shellStyle,
   headerDragProps,
 }) => {
   const header = mergeHeaderDrag(
-    'flex shrink-0 items-start gap-2 border-b border-slate-200 px-3 py-3',
+    onBack
+      ? 'shrink-0 border-b border-slate-200 px-3 py-2.5'
+      : 'flex shrink-0 items-start gap-2 border-b border-slate-200 px-3 py-3',
     headerDragProps
+  );
+  const routeIdentity = (
+    <>
+      <span className="mt-0.5 rounded-lg bg-violet-50 p-1.5 text-violet-600">
+        <RouteIcon className="h-4 w-4" aria-hidden />
+      </span>
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-sm font-semibold leading-tight text-slate-900">
+          {route.gerenteComercial}
+        </p>
+        <p className="truncate text-[11px] text-slate-500">{route.nome}</p>
+        <p className="mt-0.5 flex items-center gap-1 text-[10px] text-slate-500">
+          <CalendarDays className="h-3 w-3" aria-hidden />
+          {route.data}
+        </p>
+      </div>
+    </>
+  );
+  const closeButton = (
+    <button
+      type="button"
+      data-panel-drag-ignore
+      onClick={onClose}
+      className="shrink-0 rounded-lg p-1.5 text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-700"
+      aria-label={onBack ? 'Encerrar meu roteiro' : 'Fechar detalhes do roteiro (mantém a rota no mapa)'}
+      title={onBack ? 'Encerrar meu roteiro' : 'Fechar (mantém a rota no mapa)'}
+    >
+      <X className="h-4 w-4" />
+    </button>
   );
 
   return (
@@ -50,32 +85,34 @@ const RouteDetailsPanel: React.FC<RouteDetailsPanelProps> = ({
         {...header.dragHandlers}
         title="Arraste para mover o painel"
       >
-        <span className="mt-0.5 rounded-lg bg-violet-50 p-1.5 text-violet-600">
-          <RouteIcon className="h-4 w-4" aria-hidden />
-        </span>
-        <div className="min-w-0 flex-1">
-          <p className="truncate text-sm font-semibold leading-tight text-slate-900">
-            {route.gerenteComercial}
-          </p>
-          <p className="truncate text-[11px] text-slate-500">{route.nome}</p>
-          <p className="mt-0.5 flex items-center gap-1 text-[10px] text-slate-500">
-            <CalendarDays className="h-3 w-3" aria-hidden />
-            {route.data}
-          </p>
-        </div>
-        <button
-          type="button"
-          data-panel-drag-ignore
-          onClick={onClose}
-          className="shrink-0 rounded-lg p-1.5 text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-700"
-          aria-label="Fechar detalhes do roteiro (mantém a rota no mapa)"
-          title="Fechar (mantém a rota no mapa)"
-        >
-          <X className="h-4 w-4" />
-        </button>
+        {onBack ? (
+          <>
+            <div className="mb-1.5 flex items-center justify-between">
+              <button
+                type="button"
+                data-panel-drag-ignore
+                onClick={onBack}
+                className="shrink-0 rounded-lg p-1.5 text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-700"
+                aria-label="Voltar para a seleção de lojas"
+                title="Voltar para a seleção de lojas"
+              >
+                <ArrowLeft className="h-4 w-4" />
+              </button>
+              {closeButton}
+            </div>
+            <div className="flex items-start gap-2">{routeIdentity}</div>
+          </>
+        ) : (
+          <>
+            {routeIdentity}
+            {closeButton}
+          </>
+        )}
       </header>
 
-      <div className="min-h-0 flex-1 overflow-y-auto p-3">
+      <div className={onBack
+        ? 'min-h-0 flex-1 overflow-hidden p-3'
+        : 'min-h-0 flex-1 overflow-y-auto p-3'}>
         <RouteStopsList
           route={route}
           selectedStopId={selectedStopId}
@@ -84,6 +121,7 @@ const RouteDetailsPanel: React.FC<RouteDetailsPanelProps> = ({
           footerAction={(
             <div className="flex gap-2">
               {onRouteSaved && <SaveRouteDialog route={route} onSaved={onRouteSaved} />}
+              <RoutePdfExportButton route={route} />
               <RouteQrCodeDialog route={route} />
             </div>
           )}

@@ -3,6 +3,7 @@ import { apiFetch } from '@/lib/apiClient';
 
 export type SqlMapPointKind = 'agencia' | 'loja' | 'supervisor';
 export type ChecklistStatus = 'NÃO APTO' | 'OK' | 'VENCIDO';
+export type CommercialSeatLevel = 'supervisor' | 'coordenador' | 'gerente_area';
 
 export interface SqlMapPoint {
   id: string;
@@ -11,8 +12,14 @@ export interface SqlMapPoint {
   lngLat: [number, number];
   codAg?: string | null;
   nomeAg?: string | null;
+  descSupervisao?: string | null;
+  gerenteComercial?: string | null;
+  orgaoPagador?: boolean | null;
+  personName?: string | null;
+  warName?: string | null;
+  email?: string | null;
   enderecoFormatado?: string | null;
-  commercialLevel?: 'supervisor' | 'coordenador' | 'gerente_area' | null;
+  commercialLevel?: CommercialSeatLevel | null;
   chaveGerenciaArea?: number | null;
   chaveCoordenacao?: number | null;
   chaveEntidade?: number | null;
@@ -29,6 +36,10 @@ export interface SqlMapPoint {
   dataUltimaTransacao?: string | null;
   cieloM0?: boolean | null;
   cieloFaturamentoM0?: number | null;
+  cieloHistorico?: boolean | null;
+  creditoM0?: boolean | null;
+  negocioM0?: boolean | null;
+  ativoPadeM0?: boolean | null;
   propostaValor?: boolean | null;
   checklist?: ChecklistStatus | null;
 }
@@ -53,9 +64,57 @@ export interface StoreProductionPoint {
   qtdDental: number;
   qtdSuper: number;
   qtdSegDebito: number;
+  qtdConsorcio: number;
+  qtdExpSorte: number;
   qtdCred: number;
   vlrCred: number;
   segTotal: number;
+}
+
+export interface StoreBusinessDailyPoint {
+  periodo: number;
+  diaUtil: number;
+  qtdNeg: number;
+}
+
+export interface StoreProductionOverview {
+  history: StoreProductionPoint[];
+  businessDaily: StoreBusinessDailyPoint[];
+}
+
+export interface CommercialSeatDetail {
+  commercialLevel: CommercialSeatLevel;
+  chaveEntidade: number;
+  entidadeNome: string | null;
+  personName: string | null;
+  warName: string | null;
+  email: string | null;
+  superiorLevel: string | null;
+  superiorKey: number | null;
+  superiorDescription: string | null;
+  superiorPersonName: string | null;
+  superiorWarName: string | null;
+  upperSuperiorLevel: string | null;
+  upperSuperiorKey: number | null;
+  upperSuperiorDescription: string | null;
+  upperSuperiorPersonName: string | null;
+  upperSuperiorWarName: string | null;
+  agencyCount: number;
+  storeCount: number;
+}
+
+export interface AgencyHierarchyItem {
+  level: 'Gerente Comercial' | 'Gerente Comercial III' | 'Gerente de Gestão';
+  key: number | null;
+  description: string | null;
+  personName: string | null;
+  warName: string | null;
+}
+
+export interface AgencyDetail {
+  codAg: string | null;
+  agencyName: string | null;
+  hierarchy: AgencyHierarchyItem[];
 }
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? '';
@@ -176,7 +235,15 @@ async function fetchPoints(path: string, options: FetchPointsOptions = {}): Prom
       (point) =>
         point.kind !== 'loja' ||
         (Object.prototype.hasOwnProperty.call(point, 'cieloFaturamentoM0') &&
-          Object.prototype.hasOwnProperty.call(point, 'nomeAg'))
+          Object.prototype.hasOwnProperty.call(point, 'cieloHistorico') &&
+          Object.prototype.hasOwnProperty.call(point, 'creditoM0') &&
+          Object.prototype.hasOwnProperty.call(point, 'negocioM0') &&
+          Object.prototype.hasOwnProperty.call(point, 'ativoPadeM0') &&
+          Object.prototype.hasOwnProperty.call(point, 'propostaValor') &&
+          Object.prototype.hasOwnProperty.call(point, 'nomeAg') &&
+          Object.prototype.hasOwnProperty.call(point, 'descSupervisao') &&
+          Object.prototype.hasOwnProperty.call(point, 'gerenteComercial') &&
+          Object.prototype.hasOwnProperty.call(point, 'orgaoPagador'))
     );
   if (cached && cached.expiresAt > Date.now() && cachedShapeIsCurrent) {
     pointsResponseCache.delete(url);
@@ -206,12 +273,43 @@ export function fetchAgencyPoints(options?: FetchPointsOptions) {
   return fetchPoints('/api/map/agencias', options);
 }
 
+export async function fetchAgencyDetail(
+  codAg: string,
+  signal?: AbortSignal
+): Promise<AgencyDetail> {
+  const url = `${API_BASE_URL}/api/map/agencias/${encodeURIComponent(codAg)}/detalhes`;
+  const response = await apiFetch(url, { signal });
+  if (!response.ok) {
+    throw new Error(`Falha ao buscar os detalhes da agência (${response.status}).`);
+  }
+  const data = (await response.json()) as { detail?: AgencyDetail };
+  if (!data.detail) throw new Error('Detalhes da agência não encontrados.');
+  return data.detail;
+}
+
 export function fetchStorePoints(options?: FetchPointsOptions) {
   return fetchPoints('/api/map/lojas', options);
 }
 
 export function fetchCommercialSeatPoints(options?: FetchPointsOptions) {
   return fetchPoints('/api/map/sedes', options);
+}
+
+export async function fetchCommercialSeatDetail(
+  commercialLevel: CommercialSeatLevel,
+  chaveEntidade: number,
+  signal?: AbortSignal
+): Promise<CommercialSeatDetail> {
+  const url = `${API_BASE_URL}/api/map/estrutura/${encodeURIComponent(
+    commercialLevel
+  )}/${encodeURIComponent(String(chaveEntidade))}/detalhes`;
+  const response = await apiFetch(url, { signal });
+  if (!response.ok) {
+    throw new Error(`Falha ao buscar os detalhes do responsável comercial (${response.status}).`);
+  }
+  const data = (await response.json()) as { detail?: CommercialSeatDetail };
+  if (!data.detail) throw new Error('Detalhes do responsável comercial não encontrados.');
+  return data.detail;
 }
 
 export function clearMapDataCache() {
@@ -223,9 +321,9 @@ export function clearMapDataCache() {
 export async function fetchStoreProductionHistory(
   chaveLoja: string,
   signal?: AbortSignal
-): Promise<StoreProductionPoint[]> {
+): Promise<StoreProductionOverview> {
   const key = String(chaveLoja ?? '').trim();
-  if (!key) return [];
+  if (!key) return { history: [], businessDaily: [] };
 
   const url = `${API_BASE_URL}/api/map/lojas/${encodeURIComponent(key)}/producao`;
   let response: Response;
@@ -243,6 +341,9 @@ export async function fetchStoreProductionHistory(
     throw new Error(`Falha ao buscar a produção da loja (${response.status}).`);
   }
 
-  const data = (await response.json()) as { history?: StoreProductionPoint[] };
-  return Array.isArray(data.history) ? data.history : [];
+  const data = (await response.json()) as Partial<StoreProductionOverview>;
+  return {
+    history: Array.isArray(data.history) ? data.history : [],
+    businessDaily: Array.isArray(data.businessDaily) ? data.businessDaily : [],
+  };
 }

@@ -90,7 +90,7 @@ const PRIORITIES: Array<{ id: PlanningPriority; title: string; description: stri
 ];
 
 const ROUTE_PLANNER_HERO_IMG_CLASS =
-  'route-planning-welcome-image mx-auto block w-full max-h-[clamp(88px,24dvh,220px)] object-contain object-bottom';
+  'route-planning-welcome-image mx-auto block w-full max-h-[160px] object-contain object-bottom';
 
 /** Esmaece cantos superior, inferior, esquerdo e direito (interseção dos gradientes).
  *  Intensidade do fade: percentuais do meio (ex. 18% / 82%) — quanto mais perto de 50%, mais forte. */
@@ -267,8 +267,25 @@ const RoutePlanningJourney: React.FC<Props> = ({ agencies, originId, destination
               <h2 className="text-base font-semibold text-slate-900 sm:text-lg">Para onde vamos hoje?</h2>
               <p className="mx-auto mt-2 max-w-[320px] text-xs leading-relaxed text-slate-500 sm:mt-3">Vamos montar o melhor roteiro de visitas com base na sua intenção.</p>
             </div>
-            <div className="route-planning-welcome-features mx-auto mt-4 grid w-full max-w-[360px] grid-cols-2 gap-x-3 gap-y-2 text-xs text-slate-600 sm:mt-5 sm:gap-y-3">
-              {[['Oportunidades certas', Target], ['Melhor ordem de visitas', MapPin], ['Menos deslocamento', Navigation], ['Mais resultados', Zap]].map(([label, Icon]) => <div key={String(label)} className="flex items-center gap-3"><span className="flex h-7 w-7 items-center justify-center rounded-lg bg-blue-50 text-blue-700"><Icon className="h-4 w-4" /></span><span>{String(label)}</span></div>)}
+            <div className="route-planning-welcome-features mx-auto mt-4 grid w-full max-w-[340px] grid-cols-2 gap-2 text-slate-600 sm:mt-5">
+              {[
+                ['Oportunidades certas', Target],
+                ['Melhor ordem de visitas', MapPin],
+                ['Menos deslocamento', Navigation],
+                ['Mais resultados', Zap],
+              ].map(([label, Icon]) => (
+                <div
+                  key={String(label)}
+                  className="grid min-h-10 grid-cols-[28px_minmax(0,1fr)] items-center gap-2"
+                >
+                  <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-blue-50 text-blue-700">
+                    <Icon className="h-4 w-4" />
+                  </span>
+                  <span className="flex min-h-7 items-center text-[10px] leading-tight">
+                    {String(label)}
+                  </span>
+                </div>
+              ))}
             </div>
           </div>
           <div className="route-planning-footer shrink-0 border-t border-slate-100 bg-white pt-3">

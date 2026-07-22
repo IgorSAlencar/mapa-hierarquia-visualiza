@@ -7,15 +7,19 @@ import { MAPBOX_CONFIG } from '@/lib/mapbox-config';
 
 type LngLat = [number, number];
 
-export interface DrivingRouteResult {
+export type TravelMode = 'driving' | 'walking';
+
+export interface TravelRouteResult {
   geometry: LngLat[];
   distanceMeters: number;
   durationSeconds: number;
   legDurationsSeconds: number[];
 }
 
-const routeCache = new Map<string, DrivingRouteResult>();
-const pendingRequests = new Map<string, Promise<DrivingRouteResult | null>>();
+export type DrivingRouteResult = TravelRouteResult;
+
+const routeCache = new Map<string, TravelRouteResult>();
+const pendingRequests = new Map<string, Promise<TravelRouteResult | null>>();
 
 /** Roteiros sem rota de carro possível — não tenta a mesma chave novamente. */
 const failedKeys = new Set<string>();
@@ -23,10 +27,13 @@ const failedKeys = new Set<string>();
 // A Directions API aceita no máximo 25 coordenadas por requisição.
 const MAX_WAYPOINTS = 25;
 
-async function requestDirectionsSegment(coordinates: LngLat[]): Promise<DrivingRouteResult | null> {
+async function requestDirectionsSegment(
+  coordinates: LngLat[],
+  mode: TravelMode
+): Promise<TravelRouteResult | null> {
   const coordsParam = coordinates.map(([lng, lat]) => `${lng},${lat}`).join(';');
   const url =
-    `https://api.mapbox.com/directions/v5/mapbox/driving/${coordsParam}` +
+    `https://api.mapbox.com/directions/v5/mapbox/${mode}/${coordsParam}` +
     `?geometries=geojson&overview=full&access_token=${MAPBOX_CONFIG.accessToken}`;
 
   const response = await fetch(url);
@@ -64,13 +71,16 @@ function splitIntoDirectionsSegments(coordinates: LngLat[]): LngLat[][] {
   return segments;
 }
 
-async function requestDirections(coordinates: LngLat[]): Promise<DrivingRouteResult | null> {
+async function requestDirections(
+  coordinates: LngLat[],
+  mode: TravelMode
+): Promise<TravelRouteResult | null> {
   const results = await Promise.all(
-    splitIntoDirectionsSegments(coordinates).map(requestDirectionsSegment)
+    splitIntoDirectionsSegments(coordinates).map((segment) => requestDirectionsSegment(segment, mode))
   );
   if (results.some((result) => result == null)) return null;
 
-  return (results as DrivingRouteResult[]).reduce<DrivingRouteResult>((combined, result, index) => ({
+  return (results as TravelRouteResult[]).reduce<TravelRouteResult>((combined, result, index) => ({
     geometry: [...combined.geometry, ...(index === 0 ? result.geometry : result.geometry.slice(1))],
     distanceMeters: combined.distanceMeters + result.distanceMeters,
     durationSeconds: combined.durationSeconds + result.durationSeconds,
@@ -91,31 +101,40 @@ export function getCachedDrivingGeometry(cacheKey: string): LngLat[] | null {
 export async function fetchDrivingRoute(
   cacheKey: string,
   coordinates: LngLat[]
-): Promise<DrivingRouteResult | null> {
-  if (coordinates.length < 2) return null;
-  if (failedKeys.has(cacheKey)) return null;
+): Promise<TravelRouteResult | null> {
+  return fetchTravelRoute(cacheKey, coordinates, 'driving');
+}
 
-  const cached = routeCache.get(cacheKey);
+export async function fetchTravelRoute(
+  cacheKey: string,
+  coordinates: LngLat[],
+  mode: TravelMode
+): Promise<TravelRouteResult | null> {
+  if (coordinates.length < 2) return null;
+  const effectiveCacheKey = mode === 'driving' ? cacheKey : `${mode}:${cacheKey}`;
+  if (failedKeys.has(effectiveCacheKey)) return null;
+
+  const cached = routeCache.get(effectiveCacheKey);
   if (cached) return cached;
 
-  const pending = pendingRequests.get(cacheKey);
+  const pending = pendingRequests.get(effectiveCacheKey);
   if (pending) return pending;
 
-  const request = requestDirections(coordinates)
+  const request = requestDirections(coordinates, mode)
     .then((route) => {
-      if (route) routeCache.set(cacheKey, route);
-      else failedKeys.add(cacheKey);
+      if (route) routeCache.set(effectiveCacheKey, route);
+      else failedKeys.add(effectiveCacheKey);
       return route;
     })
     .catch(() => {
-      failedKeys.add(cacheKey);
+      failedKeys.add(effectiveCacheKey);
       return null;
     })
     .finally(() => {
-      pendingRequests.delete(cacheKey);
+      pendingRequests.delete(effectiveCacheKey);
     });
 
-  pendingRequests.set(cacheKey, request);
+  pendingRequests.set(effectiveCacheKey, request);
   return request;
 }
 

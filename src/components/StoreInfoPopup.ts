@@ -6,6 +6,9 @@ export interface StorePopupInfo {
   chaveLoja: string;
   codAg: string;
   nomeAg: string;
+  descSupervisao: string;
+  gerenteComercial: string;
+  orgaoPagador: boolean | null;
   statusTablet: string;
   dataBloqueio: string;
   motivoBloqueio: string;
@@ -54,6 +57,9 @@ export function readStorePopupInfoFromProperties(
     chaveLoja: text(p.chave_loja),
     codAg: text(p.cod_ag),
     nomeAg: text(p.nome_ag),
+    descSupervisao: text(p.desc_supervisao),
+    gerenteComercial: text(p.gerente_comercial),
+    orgaoPagador: readFlag(p.orgao_pagador),
     statusTablet: text(p.status_tablet),
     dataBloqueio: text(p.dt_bloqueio),
     motivoBloqueio: text(p.motivo_bloqueio),
@@ -97,6 +103,7 @@ const icons = {
   briefcase: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="7" width="18" height="13" rx="2"/><path d="M8 7V4h8v3M3 12h18"/></svg>',
   segment: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="6" r="2"/><circle cx="18" cy="6" r="2"/><circle cx="12" cy="18" r="2"/><path d="m8 7 3 9m5-9-3 9"/></svg>',
   cielo: '<img class="store-popup-cielo-logo" src="/cielo-icon.svg" alt="" aria-hidden="true" />',
+  proposal: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="3" width="14" height="18" rx="2"/><path d="M9 3v3h6V3M9 13l2 2 4-5"/></svg>',
   clock: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>',
   close: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>',
 } as const;
@@ -163,15 +170,35 @@ export function buildStorePopupHtml(info: StorePopupInfo): string {
         minimumFractionDigits: 2,
         maximumFractionDigits: 2,
       })}`;
+  const proposalValue = info.propostaValor == null
+    ? 'Não informado'
+    : info.propostaValor
+      ? 'Tem'
+      : 'Não tem';
+  const agencyLabel = [info.codAg, info.nomeAg].filter(Boolean).join(' - ');
   return `<article class="store-popup-card" aria-label="Informações da loja ${escapeHtml(info.nome)}">
     <header class="store-popup-header">
       <span class="store-popup-store-icon">${icons.store}</span>
       <span class="store-popup-heading">
-        <strong class="store-popup-title" title="${escapeHtml(info.nome)}">${escapeHtml(info.nome)}</strong>
-        <span class="store-popup-key">${info.chaveLoja ? `Chave ${escapeHtml(info.chaveLoja)}` : 'Chave não informada'}</span>
+        <span class="store-popup-title-row">
+          <strong class="store-popup-title" title="${escapeHtml(info.nome)}">${escapeHtml(info.nome)}</strong>
+          ${info.orgaoPagador ? '<span class="store-popup-payer-badge" title="Órgão pagador">Órgão pagador</span>' : ''}
+        </span>
+        <span class="store-popup-identity">
+          <span class="store-popup-key">${info.chaveLoja ? `Chave ${escapeHtml(info.chaveLoja)}` : 'Chave não informada'}</span>
+          ${agencyLabel ? `<i aria-hidden="true">•</i><span class="store-popup-agency" title="${escapeHtml(agencyLabel)}">${escapeHtml(agencyLabel)}</span>` : ''}
+        </span>
         <span class="store-popup-context">
-          <span><b>Tipo de posto</b>${escapeHtml(info.tipoPosto || 'Não informado')}</span>
-          <span><b>Segmento</b>${escapeHtml(info.segmento || 'Não informado')}</span>
+          <span class="store-popup-context-group store-popup-context-group--business">
+            <span title="${escapeHtml(info.tipoPosto || 'Não informado')}">${escapeHtml(info.tipoPosto || 'Não informado')}</span>
+            <i aria-hidden="true">|</i>
+            <span title="${escapeHtml(info.segmento || 'Não informado')}">${escapeHtml(info.segmento || 'Não informado')}</span>
+          </span>
+          <span class="store-popup-context-group store-popup-context-group--management">
+            <span title="${escapeHtml(info.descSupervisao || 'Não informado')}">${escapeHtml(info.descSupervisao || 'Não informado')}</span>
+            <i aria-hidden="true">|</i>
+            <span title="${escapeHtml(info.gerenteComercial || 'Não informado')}">${escapeHtml(info.gerenteComercial || 'Não informado')}</span>
+          </span>
         </span>
       </span>
       <span class="store-popup-close" aria-hidden="true">${icons.close}</span>
@@ -184,7 +211,7 @@ export function buildStorePopupHtml(info: StorePopupInfo): string {
     </section>
     <section class="store-popup-details-grid">
       ${detailItem(icons.cielo, 'Cielo no mês', cieloValue, info.cieloM0 ? 'cielo-positive' : 'cielo-neutral', cieloFaturamento)}
-      <div class="store-popup-detail store-popup-detail--empty" aria-hidden="true"></div>
+      ${detailItem(icons.proposal, 'Proposta de valor', proposalValue, info.propostaValor ? 'proposal-positive' : 'proposal-neutral')}
       ${detailItem(icons.clock, 'Última transação', formatDate(info.dataUltimaTransacao))}
     </section>
     ${

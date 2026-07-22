@@ -274,10 +274,12 @@ const VisitasRoteirosPanel: React.FC<VisitasRoteirosPanelProps> = ({
 
         {ownerSel ? (
           <>
-            <section className="rounded-xl border border-violet-100 bg-violet-50/70 px-3 py-2.5">
-              <p className="text-xs font-bold text-violet-900">{user?.role === 'supervisor' ? 'Meus roteiros' : ownerSel.nome}</p>
-              <p className="mt-0.5 text-[10px] text-violet-700">{ownerSel.descricaoSupervisao ?? `Supervisão ${ownerSel.chaveSupervisao}`}</p>
-            </section>
+            {user?.role !== 'supervisor' && (
+              <section className="rounded-xl border border-violet-100 bg-violet-50/70 px-3 py-2.5">
+                <p className="text-xs font-bold text-violet-900">{ownerSel.nome}</p>
+                <p className="mt-0.5 text-[10px] text-violet-700">{ownerSel.descricaoSupervisao ?? `Supervisão ${ownerSel.chaveSupervisao}`}</p>
+              </section>
+            )}
 
             <section className="grid grid-cols-2 gap-2 rounded-xl border border-slate-200 bg-slate-50 p-2">
               <label className="text-[9px] font-semibold uppercase text-slate-500">De<input type="date" value={range.from} onChange={(event) => setRange((current) => ({ ...current, from: event.target.value }))} className="mt-1 h-8 w-full rounded-lg border border-slate-200 bg-white px-2 text-[10px] text-slate-700" /></label>

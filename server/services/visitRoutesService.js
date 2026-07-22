@@ -1,12 +1,16 @@
 import {
   fetchAuthorizedRouteOwners,
   fetchAuthorizedStoreKeys,
+  fetchUserAuthorizedStoreKeys,
   fetchVisitRouteById,
   fetchVisitRouteSummaries,
   fetchVisitRouteSummaryBySupervision,
   insertVisitRoute,
   deleteVisitRouteById,
 } from '../repositories/visitRoutesRepository.js';
+import { canAssignRouteOutsideOwnerPortfolio } from '../auth/routeAssignmentPolicy.js';
+import { fetchStoreProductionHistory } from '../repositories/mapDataRepository.js';
+import { normalizeStoreProductionRows } from './storeProductionNormalizer.js';
 
 // SQL Server NEWSEQUENTIALID() gera UNIQUEIDENTIFIER válido, mas não
 // necessariamente usa os bits de versão/variante exigidos pelo UUID RFC.
@@ -210,10 +214,21 @@ export async function saveVisitRoute(body, user) {
 
   const payload = normalizeSavePayload(body, user, owner);
   const requestedStoreKeys = [...new Set(payload.stops.map((stop) => stop.chaveLoja))];
-  const authorizedStoreKeys = new Set(await fetchAuthorizedStoreKeys(owner.chaveSupervisao, requestedStoreKeys));
+  const canAssignOutsidePortfolio = canAssignRouteOutsideOwnerPortfolio(user);
+  const authorizedStoreKeys = new Set(await (
+    canAssignOutsidePortfolio
+      ? fetchUserAuthorizedStoreKeys(user, requestedStoreKeys)
+      : fetchAuthorizedStoreKeys(owner.chaveSupervisao, requestedStoreKeys)
+  ));
   const unauthorized = requestedStoreKeys.filter((key) => !authorizedStoreKeys.has(key));
   if (unauthorized.length > 0) {
-    throw new VisitRouteError('Uma ou mais lojas não pertencem ao escopo do GC responsável.', 422, 'STORE_OUT_OF_SCOPE');
+    throw new VisitRouteError(
+      canAssignOutsidePortfolio
+        ? 'Uma ou mais lojas estão fora do seu escopo hierárquico.'
+        : 'Uma ou mais lojas não pertencem ao escopo do GC responsável.',
+      422,
+      'STORE_OUT_OF_SCOPE'
+    );
   }
 
   const inserted = await insertVisitRoute(payload);
@@ -331,6 +346,40 @@ export async function getVisitRoute(id, user) {
       lng: Number(stop.LNG),
     })),
   };
+}
+
+/**
+ * Consolida a producao mensal das lojas de um roteiro ja autorizado.
+ * A autorizacao deriva do cabecalho do roteiro, permitindo que o GC designado
+ * exporte uma rota recebida mesmo quando uma parada nao pertence a sua carteira.
+ */
+export async function getVisitRouteExportData(id, user) {
+  const route = await getVisitRoute(id, user);
+  const storeKeys = [...new Set(
+    route.stops
+      .map((stop) => String(stop.chaveLoja ?? '').trim())
+      .filter(Boolean)
+  )];
+  const stores = [];
+  const concurrency = Math.min(5, storeKeys.length);
+  let cursor = 0;
+
+  async function worker() {
+    while (cursor < storeKeys.length) {
+      const index = cursor;
+      cursor += 1;
+      const chaveLoja = storeKeys[index];
+      const rows = normalizeStoreProductionRows(await fetchStoreProductionHistory(chaveLoja));
+      const latest = rows.reduce(
+        (current, item) => !current || item.periodo > current.periodo ? item : current,
+        null
+      );
+      stores[index] = { chaveLoja, production: latest };
+    }
+  }
+
+  await Promise.all(Array.from({ length: concurrency }, () => worker()));
+  return { stores };
 }
 
 export async function deleteVisitRoute(id, user) {
