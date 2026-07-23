@@ -4,11 +4,18 @@ import {
   fetchCommercialSeatDetail,
   fetchStoreBusinessDailyHistory,
   fetchCommercialSeatCoordinates,
+  fetchProductionHeatmapPeriods,
+  fetchProductionHeatmapRows,
   fetchStoreCoordinates,
   fetchStoreProductionHistory,
   hasStoreAccess,
 } from '../repositories/mapDataRepository.js';
 import { normalizeStoreProductionRows } from './storeProductionNormalizer.js';
+import {
+  getProductionHeatmapMetric,
+  normalizeProductionHeatmapPeriods,
+  PRODUCTION_HEATMAP_METRICS,
+} from '../domain/productionMetrics.js';
 
 function validCoordinate(row) {
   const lon = Number(row.lon);
@@ -171,7 +178,9 @@ export async function getStoreMapPoints({ bbox = null, limit = null, codAg = nul
         cieloFaturamentoM0: normalizeNumber(row.VLR_FAT_CIELO_M0),
         cieloHistorico: normalizeBinaryFlag(row.CIELO_HISTORICO),
         creditoM0: normalizeBinaryFlag(row.CREDITO_M0),
+        creditoHistorico: normalizeBinaryFlag(row.CREDITO_HISTORICO),
         negocioM0: normalizeBinaryFlag(row.NEGOCIO_M0),
+        negocioHistorico: normalizeBinaryFlag(row.NEGOCIO_HISTORICO),
         ativoPadeM0: normalizeBinaryFlag(row.ATIVO_PADE_M0),
         propostaValor: normalizeBinaryFlag(row.PROPOSTA_VALOR),
         checklist: normalizeText(row.STATUS_CHECKLIST)?.toUpperCase() ?? null,
@@ -205,6 +214,65 @@ export async function getStoreProductionHistory(chaveLoja, user) {
     );
 
   return { history, businessDaily };
+}
+
+export class ProductionHeatmapError extends Error {
+  constructor(message, status = 400) {
+    super(message);
+    this.name = 'ProductionHeatmapError';
+    this.status = status;
+  }
+}
+
+export async function getProductionHeatmapOptions(now = new Date()) {
+  const periods = normalizeProductionHeatmapPeriods(await fetchProductionHeatmapPeriods(), now);
+  const requestedCurrent = now.getFullYear() * 100 + now.getMonth() + 1;
+  return {
+    metrics: PRODUCTION_HEATMAP_METRICS.map((metric) => ({ ...metric })),
+    periods,
+    currentPeriod: periods.includes(requestedCurrent) ? requestedCurrent : periods.at(-1) ?? null,
+  };
+}
+
+export async function getProductionHeatmap({ metricId, period, user, now = new Date() }) {
+  const metric = getProductionHeatmapMetric(metricId);
+  if (!metric) throw new ProductionHeatmapError('Indicador inválido para o mapa de produção.');
+
+  const numericPeriod = Number(period);
+  const periods = normalizeProductionHeatmapPeriods(await fetchProductionHeatmapPeriods(), now);
+  if (!periods.includes(numericPeriod)) {
+    throw new ProductionHeatmapError('Período inválido ou indisponível para o mapa de produção.');
+  }
+
+  const result = await fetchProductionHeatmapRows({
+    metricId: metric.id,
+    period: numericPeriod,
+    user,
+  });
+
+  const rows = result.rows.map((row) => ({
+    municipalityCode: String(row.municipalityCode ?? '').padStart(7, '0'),
+    municipalityName: normalizeText(row.municipalityName) ?? '',
+    uf: String(row.uf ?? '').trim().toUpperCase(),
+    value: Number(row.value) || 0,
+    producingStores: Math.max(0, Number(row.producingStores) || 0),
+  }));
+  const rawSummary = result.summary ?? {};
+
+  return {
+    metric: { ...metric },
+    period: numericPeriod,
+    rows,
+    summary: {
+      value: Number(rawSummary.value) || 0,
+      producingStores: Math.max(0, Number(rawSummary.producingStores) || 0),
+      municipalitiesWithData: Math.max(0, Number(rawSummary.municipalitiesWithData) || 0),
+      excludedStoresWithoutMunicipality: Math.max(
+        0,
+        Number(rawSummary.excludedStoresWithoutMunicipality) || 0
+      ),
+    },
+  };
 }
 
 export async function getCommercialSeatMapPoints({ hierarchy = null, user = null } = {}) {

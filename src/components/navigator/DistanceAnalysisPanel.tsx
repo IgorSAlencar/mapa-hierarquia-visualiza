@@ -834,7 +834,8 @@ const DistanceAnalysisPanel: React.FC<DistanceAnalysisPanelProps> = ({
           <div className="flex items-start gap-2 rounded-xl border border-sky-100 bg-sky-50/80 px-3 py-2 text-[10px] leading-relaxed text-sky-800">
             <MapPin className="mt-0.5 h-3.5 w-3.5 shrink-0" />
             <p>
-              Segure <kbd className="rounded border border-sky-200 bg-white px-1 py-0.5 font-semibold">Shift</kbd> e clique em uma loja ou agÃªncia no mapa para preencher A e B.
+              Use <kbd className="rounded border border-sky-200 bg-white px-1 py-0.5 font-semibold">Shift</kbd> + clique no mapa para preencher A e B.
+         
             </p>
           </div>
 

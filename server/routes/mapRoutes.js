@@ -4,6 +4,9 @@ import {
   getAgencyMapPoints,
   getCommercialSeatDetail,
   getCommercialSeatMapPoints,
+  getProductionHeatmap,
+  getProductionHeatmapOptions,
+  ProductionHeatmapError,
   getStoreMapPoints,
   getStoreProductionHistory,
 } from '../services/mapDataService.js';
@@ -13,6 +16,8 @@ import { getAuthorizedSupervisionAreas } from '../services/supervisionAreasServi
 const router = Router();
 const STORE_POINTS_CACHE_MAX_ENTRIES = 120;
 const storePointsCache = new Map();
+const PRODUCTION_HEATMAP_CACHE_MAX_ENTRIES = 120;
+const productionHeatmapCache = new Map();
 
 router.get('/areas-supervisao', async (req, res) => {
   try {
@@ -60,6 +65,34 @@ function trimStorePointsCache() {
     if (!oldestKey) break;
     storePointsCache.delete(oldestKey);
   }
+}
+
+function trimProductionHeatmapCache() {
+  while (productionHeatmapCache.size > PRODUCTION_HEATMAP_CACHE_MAX_ENTRIES) {
+    const oldestKey = productionHeatmapCache.keys().next().value;
+    if (!oldestKey) break;
+    productionHeatmapCache.delete(oldestKey);
+  }
+}
+
+async function loadCachedProductionHeatmap(key, loader) {
+  const now = Date.now();
+  const cached = productionHeatmapCache.get(key);
+  if (cached?.expiresAt > now) return cached.value ?? cached.promise;
+  if (cached) productionHeatmapCache.delete(key);
+  const promise = Promise.resolve(loader())
+    .then((value) => {
+      productionHeatmapCache.set(key, { expiresAt: Date.now() + 5 * 60_000, value });
+      trimProductionHeatmapCache();
+      return value;
+    })
+    .catch((error) => {
+      productionHeatmapCache.delete(key);
+      throw error;
+    });
+  productionHeatmapCache.set(key, { expiresAt: now + 5 * 60_000, promise });
+  trimProductionHeatmapCache();
+  return promise;
 }
 
 async function loadCachedStorePoints(key, ttlMs, loader) {
@@ -213,6 +246,41 @@ router.get('/lojas', async (req, res) => {
   } catch (error) {
     console.error('Erro ao buscar lojas:', error);
     res.status(500).json({ message: 'Erro ao buscar lojas no SQL Server.' });
+  }
+});
+
+router.get('/production-heatmap/options', async (_req, res) => {
+  try {
+    const options = await getProductionHeatmapOptions();
+    res.set('Cache-Control', 'private, max-age=300');
+    res.json(options);
+  } catch (error) {
+    console.error('Erro ao carregar opções do mapa de produção:', error);
+    res.status(500).json({ message: 'Erro ao carregar opções do mapa de produção.' });
+  }
+});
+
+router.get('/production-heatmap', async (req, res) => {
+  try {
+    const metricId = String(req.query.metricId ?? '').trim();
+    const period = Number(req.query.period);
+    const cacheKey = JSON.stringify({
+      access: authCacheKey(req.user),
+      metricId,
+      period,
+    });
+    const data = await loadCachedProductionHeatmap(cacheKey, () =>
+      getProductionHeatmap({ metricId, period, user: req.user })
+    );
+    res.set('Cache-Control', 'private, max-age=300');
+    res.json(data);
+  } catch (error) {
+    if (error instanceof ProductionHeatmapError) {
+      res.status(error.status).json({ message: error.message });
+      return;
+    }
+    console.error('Erro ao carregar mapa de produção:', error);
+    res.status(500).json({ message: 'Erro ao carregar mapa de produção.' });
   }
 });
 

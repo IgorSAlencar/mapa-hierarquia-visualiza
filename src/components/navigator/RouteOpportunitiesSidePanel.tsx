@@ -35,6 +35,9 @@ export interface RouteOpportunityPanelItem extends OpportunitySnapshot {
   daysWithoutVisit: number;
   deviationMinutes: number;
   cieloHadPreviousProduction: boolean;
+  creditoHadPreviousProduction: boolean;
+  negocioHadPreviousProduction: boolean;
+  suggestionReasons: string[];
 }
 
 interface RegionOption {
@@ -445,6 +448,19 @@ function OpportunityCard({ store, priority, selected, onToggle, onHover }: { sto
                 {store.routeRole && <span className="rounded-md bg-blue-50 px-1.5 py-1 text-blue-700">{routeRoleLabel[store.routeRole]}</span>}
                 <span className="rounded-md bg-slate-50 px-1.5 py-1 text-slate-500">{priorityLabel[priority]}</span>
               </div>
+              {store.suggestionReasons.length > 0 && (
+                <div className="mt-1.5 flex flex-wrap items-center gap-1">
+                  {store.suggestionReasons.map((reason) => (
+                    <span
+                      key={reason}
+                      className="inline-flex items-center gap-1 rounded-full border border-violet-200 bg-violet-50 px-1.5 py-0.5 text-[8px] font-bold text-violet-700"
+                    >
+                      <Sparkles className="h-2.5 w-2.5" aria-hidden />
+                      {reason}
+                    </span>
+                  ))}
+                </div>
+              )}
             </div>
             <div className="flex shrink-0 flex-col items-end gap-1">
               <span className={cn('flex h-6 w-6 items-center justify-center rounded-lg border-2 transition-colors', selected ? 'border-violet-600 bg-violet-600 text-white' : 'border-slate-300 bg-white text-transparent group-hover:border-violet-400')}>
@@ -464,6 +480,10 @@ function OpportunityCard({ store, priority, selected, onToggle, onHover }: { sto
         <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-5">
           {opportunityIndicators.map((item) => {
             const active = store[item.field];
+            const hadPreviousProduction =
+              (item.key === 'cielo' && store.cieloHadPreviousProduction) ||
+              (item.key === 'credito' && store.creditoHadPreviousProduction) ||
+              (item.key === 'negocio' && store.negocioHadPreviousProduction);
             return <div
               key={item.key}
               className={cn(
@@ -471,11 +491,11 @@ function OpportunityCard({ store, priority, selected, onToggle, onHover }: { sto
                 active ? 'border-emerald-200 bg-emerald-50/80' : 'border-slate-200 bg-slate-50/90'
               )}
             >
-              {item.key === 'cielo' && store.cieloHadPreviousProduction ? (
+              {hadPreviousProduction ? (
                 <span
                   className="absolute right-1.5 top-1.5 flex h-4 w-4 items-center justify-center rounded-full border border-blue-500 bg-blue-500 text-white shadow-[0_1px_2px_rgba(15,23,42,0.10)]"
-                  title="Teve Cielo em meses anteriores"
-                  aria-label="Teve Cielo em meses anteriores"
+                  title={`Teve ${item.label} em meses anteriores`}
+                  aria-label={`Teve ${item.label} em meses anteriores`}
                 >
                   <History className="h-2.5 w-2.5" aria-hidden />
                 </span>

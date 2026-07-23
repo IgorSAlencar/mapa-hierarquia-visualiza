@@ -38,7 +38,9 @@ export interface SqlMapPoint {
   cieloFaturamentoM0?: number | null;
   cieloHistorico?: boolean | null;
   creditoM0?: boolean | null;
+  creditoHistorico?: boolean | null;
   negocioM0?: boolean | null;
+  negocioHistorico?: boolean | null;
   ativoPadeM0?: boolean | null;
   propostaValor?: boolean | null;
   checklist?: ChecklistStatus | null;
@@ -80,6 +82,42 @@ export interface StoreBusinessDailyPoint {
 export interface StoreProductionOverview {
   history: StoreProductionPoint[];
   businessDaily: StoreBusinessDailyPoint[];
+}
+
+export type ProductionHeatmapUnit = 'quantity' | 'currency';
+
+export interface ProductionHeatmapMetric {
+  id: string;
+  label: string;
+  shortLabel: string;
+  group: string;
+  unit: ProductionHeatmapUnit;
+}
+
+export interface ProductionHeatmapOptions {
+  metrics: ProductionHeatmapMetric[];
+  periods: number[];
+  currentPeriod: number | null;
+}
+
+export interface ProductionHeatmapRow {
+  municipalityCode: string;
+  municipalityName: string;
+  uf: string;
+  value: number;
+  producingStores: number;
+}
+
+export interface ProductionHeatmapData {
+  metric: ProductionHeatmapMetric;
+  period: number;
+  rows: ProductionHeatmapRow[];
+  summary: {
+    value: number;
+    producingStores: number;
+    municipalitiesWithData: number;
+    excludedStoresWithoutMunicipality: number;
+  };
 }
 
 export interface CommercialSeatDetail {
@@ -237,7 +275,9 @@ async function fetchPoints(path: string, options: FetchPointsOptions = {}): Prom
         (Object.prototype.hasOwnProperty.call(point, 'cieloFaturamentoM0') &&
           Object.prototype.hasOwnProperty.call(point, 'cieloHistorico') &&
           Object.prototype.hasOwnProperty.call(point, 'creditoM0') &&
+          Object.prototype.hasOwnProperty.call(point, 'creditoHistorico') &&
           Object.prototype.hasOwnProperty.call(point, 'negocioM0') &&
+          Object.prototype.hasOwnProperty.call(point, 'negocioHistorico') &&
           Object.prototype.hasOwnProperty.call(point, 'ativoPadeM0') &&
           Object.prototype.hasOwnProperty.call(point, 'propostaValor') &&
           Object.prototype.hasOwnProperty.call(point, 'nomeAg') &&
@@ -346,4 +386,39 @@ export async function fetchStoreProductionHistory(
     history: Array.isArray(data.history) ? data.history : [],
     businessDaily: Array.isArray(data.businessDaily) ? data.businessDaily : [],
   };
+}
+
+async function fetchProductionHeatmapJson<T>(path: string, signal?: AbortSignal): Promise<T> {
+  let response: Response;
+  try {
+    response = await apiFetch(`${API_BASE_URL}${path}`, { signal });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') throw error;
+    const detail = error instanceof Error ? ` Detalhe: ${error.message}` : '';
+    throw new Error(`Não foi possível conectar ao mapa de produção.${detail}`);
+  }
+  if (!response.ok) {
+    const body = await response.json().catch(() => null) as { message?: string } | null;
+    throw new Error(body?.message || `Falha ao carregar o mapa de produção (${response.status}).`);
+  }
+  return (await response.json()) as T;
+}
+
+export function fetchProductionHeatmapOptions(signal?: AbortSignal): Promise<ProductionHeatmapOptions> {
+  return fetchProductionHeatmapJson<ProductionHeatmapOptions>(
+    '/api/map/production-heatmap/options',
+    signal
+  );
+}
+
+export function fetchProductionHeatmap(
+  metricId: string,
+  period: number,
+  signal?: AbortSignal
+): Promise<ProductionHeatmapData> {
+  const query = new URLSearchParams({ metricId, period: String(period) });
+  return fetchProductionHeatmapJson<ProductionHeatmapData>(
+    `/api/map/production-heatmap?${query.toString()}`,
+    signal
+  );
 }

@@ -42,6 +42,12 @@ import {
   type OpportunityKey,
   type OpportunitySnapshot,
 } from '@/data/opportunities';
+import {
+  computeRouteDetourKm,
+  detourKmToMinutes,
+  distanceKm,
+  scoreRouteOpportunity,
+} from '@/lib/routeOpportunityScore';
 
 interface Props {
   onBack: () => void;
@@ -71,6 +77,7 @@ interface Props {
 
 const priorityBandLabel = { alta: 'Alerta', media: 'Atenção', baixa: 'Ótimo' };
 const priorityLabel: Record<PlanningPriority, string> = {
+  inteligente: 'Sugestão inteligente',
   potencial: 'Maior potencial',
   sem_visita: 'Lojas sem visita',
   deslocamento: 'Menor deslocamento',
@@ -103,8 +110,14 @@ interface PlannerOpportunity extends OpportunitySnapshot {
   potential: number;
   daysWithoutVisit: number;
   alerts: number;
+  detourKm: number;
   deviationMinutes: number;
   cieloHadPreviousProduction: boolean;
+  creditoHadPreviousProduction: boolean;
+  negocioHadPreviousProduction: boolean;
+  suggestionTier: 0 | 1;
+  suggestionScore: number;
+  suggestionReasons: string[];
 }
 
 function storeHasMissingOpportunity(store: PlannerOpportunity, filter: OpportunityFilterKey): boolean {
@@ -138,11 +151,25 @@ function opportunityRegionKey(store: Pick<PlannerOpportunity, 'municipio' | 'uf'
   return [store.municipio.trim(), store.uf.trim().toUpperCase()].join('|');
 }
 
-function toPlannerOpportunity(point: SqlMapPoint): PlannerOpportunity {
+function toPlannerOpportunity(
+  point: SqlMapPoint,
+  originCoordinates: [number, number] | null,
+  destinationCoordinates: [number, number] | null
+): PlannerOpportunity {
   const location = sqlStoreLocation(point);
   const seed = `${point.id}|${point.chaveLoja ?? ''}|${point.lngLat.join(',')}`;
-  const baseDeviation = point.routeRole === 'corridor' ? 5 : 2;
   const opportunities = opportunitySnapshotFromStoreFlags(point);
+  const detourKm = computeRouteDetourKm(point.lngLat, originCoordinates, destinationCoordinates);
+  const suggestion = scoreRouteOpportunity({
+    ...opportunities,
+    detourKm,
+    cieloM0: point.cieloM0,
+    cieloHistorico: point.cieloHistorico,
+    creditoM0: point.creditoM0,
+    creditoHistorico: point.creditoHistorico,
+    negocioM0: point.negocioM0,
+    negocioHistorico: point.negocioHistorico,
+  });
   return {
     id: point.id || seed,
     chaveLoja: String(point.chaveLoja ?? '').trim(),
@@ -161,8 +188,14 @@ function toPlannerOpportunity(point: SqlMapPoint): PlannerOpportunity {
     ),
     daysWithoutVisit: stableMetric(seed, 'days-without-visit', 4, 95),
     alerts: stableMetric(seed, 'alerts', 0, 3),
-    deviationMinutes: stableMetric(seed, 'deviation', baseDeviation, point.routeRole === 'corridor' ? 28 : 14),
+    detourKm,
+    deviationMinutes: detourKmToMinutes(detourKm),
     cieloHadPreviousProduction: point.cieloM0 === false && point.cieloHistorico === true,
+    creditoHadPreviousProduction: point.creditoM0 === false && point.creditoHistorico === true,
+    negocioHadPreviousProduction: point.negocioM0 === false && point.negocioHistorico === true,
+    suggestionTier: suggestion.tier,
+    suggestionScore: suggestion.score,
+    suggestionReasons: suggestion.reasons,
     ...opportunities,
   };
 }
@@ -171,6 +204,7 @@ function priorityScore(store: PlannerOpportunity, priority: PlanningPriority): n
   const visitScore = Math.min(100, store.daysWithoutVisit);
   const alertScore = Math.min(100, store.alerts * 30 + 10);
   const distanceScore = Math.max(0, 100 - store.deviationMinutes * 3);
+  if (priority === 'inteligente') return store.suggestionScore;
   if (priority === 'potencial') return store.potential;
   if (priority === 'sem_visita') return visitScore;
   if (priority === 'alertas') return alertScore;
@@ -178,6 +212,12 @@ function priorityScore(store: PlannerOpportunity, priority: PlanningPriority): n
   return Math.round(
     store.potential * 0.35 + visitScore * 0.25 + alertScore * 0.25 + distanceScore * 0.15
   );
+}
+
+function compareIntelligentSuggestions(a: PlannerOpportunity, b: PlannerOpportunity): number {
+  return a.suggestionTier - b.suggestionTier ||
+    b.suggestionScore - a.suggestionScore ||
+    a.nome.localeCompare(b.nome, 'pt-BR');
 }
 
 function completedPillarCount(store: PlannerOpportunity): number {
@@ -189,15 +229,6 @@ function priorityBand(store: PlannerOpportunity): PriorityBand {
   if (completedPillars <= 2) return 'alta';
   if (completedPillars <= 4) return 'media';
   return 'baixa';
-}
-
-function distanceKm(a: [number, number], b: [number, number]): number {
-  const toRad = (value: number) => (value * Math.PI) / 180;
-  const dLat = toRad(b[1] - a[1]);
-  const dLng = toRad(b[0] - a[0]);
-  const h = Math.sin(dLat / 2) ** 2 +
-    Math.cos(toRad(a[1])) * Math.cos(toRad(b[1])) * Math.sin(dLng / 2) ** 2;
-  return 2 * 6371 * Math.asin(Math.sqrt(h));
 }
 
 function orderStoresByNearestNeighbor(
@@ -389,7 +420,7 @@ const RoutePlannerPanel: React.FC<Props> = ({
   const [journeyComplete, setJourneyComplete] = useState(false);
   const [journeyStartScreen, setJourneyStartScreen] = useState<RoutePlanningScreen>(0);
   const [resultsMinimized, setResultsMinimized] = useState(false);
-  const [planningPriority, setPlanningPriority] = useState<PlanningPriority>('potencial');
+  const [planningPriority, setPlanningPriority] = useState<PlanningPriority>('inteligente');
   const [originId, setOriginId] = useState('');
   const [destination, setDestination] = useState('São Paulo');
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
@@ -555,15 +586,21 @@ const RoutePlannerPanel: React.FC<Props> = ({
 
   const origin = agencies.find((agency) => agency.id === originId);
   const originAgencyLabel = formatAgencyLabel(origin);
+  const originCoordinates = useMemo<[number, number] | null>(() => originStore?.lngLat
+    ?? (originLocation ? [originLocation.longitude, originLocation.latitude] : origin?.lngLat ?? null),
+  [origin, originLocation, originStore]);
+  const destinationCoordinates = useMemo<[number, number] | null>(() => destinationLocation
+    ? [destinationLocation.longitude, destinationLocation.latitude]
+    : null, [destinationLocation]);
   const sqlOpportunities = useMemo(() => {
     const unique = new Map<string, PlannerOpportunity>();
     for (const point of plannerStores) {
       if (point.kind !== 'loja') continue;
-      const opportunity = toPlannerOpportunity(point);
+      const opportunity = toPlannerOpportunity(point, originCoordinates, destinationCoordinates);
       unique.set(opportunity.id, opportunity);
     }
     return [...unique.values()];
-  }, [plannerStores]);
+  }, [destinationCoordinates, originCoordinates, plannerStores]);
   const opportunityClassifications = useMemo(() => Object.fromEntries(
     sqlOpportunities.map((store) => [store.id, priorityBand(store)])
   ) as Record<string, PriorityBand>, [sqlOpportunities]);
@@ -589,6 +626,9 @@ const RoutePlannerPanel: React.FC<Props> = ({
       `${store.nome} ${store.municipio} ${store.uf} ${store.codAg} ${store.endereco}`
         .toLocaleLowerCase('pt-BR')
         .includes(text));
+    if (planningPriority === 'inteligente') {
+      return stores.sort(compareIntelligentSuggestions);
+    }
     return stores.sort((a, b) =>
       priorityScore(b, planningPriority) - priorityScore(a, planningPriority) ||
       a.nome.localeCompare(b.nome, 'pt-BR')
@@ -664,12 +704,6 @@ const RoutePlannerPanel: React.FC<Props> = ({
   const alertPriorityCount = opportunityFilteredSuggestions.filter((store) => priorityBand(store) === 'alta').length;
   const attentionPriorityCount = opportunityFilteredSuggestions.filter((store) => priorityBand(store) === 'media').length;
   const optimalPriorityCount = opportunityFilteredSuggestions.filter((store) => priorityBand(store) === 'baixa').length;
-  const originCoordinates = useMemo<[number, number] | null>(() => originStore?.lngLat
-    ?? (originLocation ? [originLocation.longitude, originLocation.latitude] : origin?.lngLat ?? null),
-  [origin, originLocation, originStore]);
-  const destinationCoordinates = useMemo<[number, number] | null>(() => destinationLocation
-    ? [destinationLocation.longitude, destinationLocation.latitude]
-    : null, [destinationLocation]);
   const orderedSelected = useMemo(
     () => originCoordinates ? orderStoresByNearestNeighbor(originCoordinates, selected) : selected,
     [originCoordinates, selected]

@@ -8,7 +8,7 @@
     "dev:api": "node --watch server/index.js",
     "build": "vite build",
     "build:dev": "vite build --mode development",
-    "test": "node --experimental-strip-types --test src/data/opportunities.test.ts src/lib/routePdfExport.test.ts server/auth/routeAssignmentPolicy.test.js server/services/storeProductionNormalizer.test.js",
+    "test": "node --experimental-strip-types --test src/data/opportunities.test.ts src/lib/routePdfExport.test.ts src/lib/municipalityChoropleth.test.ts server/auth/routeAssignmentPolicy.test.js server/services/storeProductionNormalizer.test.js server/domain/productionMetrics.test.js",
     "lint": "eslint .",
     "preview": "vite preview"
   },

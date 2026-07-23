@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
 import MapComponent from '@/components/MapComponent';
-import CommercialStructureFilters from '@/components/CommercialStructureFilters';
 import NavigatorPanel, { type NavigatorSection } from '@/components/navigator/NavigatorPanel';
 import CompararAreasPanel from '@/components/navigator/CompararAreasPanel';
 import { HIERARCHY_ALL } from '@/components/navigator/HierarchyScopeSelect';
@@ -10,11 +9,19 @@ import VisitStopDetailCard from '@/components/navigator/VisitStopDetailCard';
 import RouteDetailsPanel from '@/components/navigator/RouteDetailsPanel';
 import RoutePlannerPanel from '@/components/navigator/RoutePlannerPanel';
 import DistanceAnalysisPanel from '@/components/navigator/DistanceAnalysisPanel';
+import ProductionHeatmapPanel from '@/components/navigator/ProductionHeatmapPanel';
 import type { VisitRoute, VisitStop } from '@/data/visitRoutes';
 import type { RegionMapPoint } from '@/data/regionMapPointsMock';
 import type { DeviceLocation } from '@/lib/deviceGeolocation';
 import type { DistanceAnalysisMapPoint, DistanceAnalysisMapSelection } from '@/lib/distanceAnalysis';
-import type { SqlMapPoint } from '@/lib/mapDataApi';
+import {
+  fetchProductionHeatmap,
+  fetchProductionHeatmapOptions,
+  type ProductionHeatmapData,
+  type ProductionHeatmapMetric,
+  type SqlMapPoint,
+} from '@/lib/mapDataApi';
+import { buildProductionQuantileScale } from '@/lib/municipalityChoropleth';
 import { usePanelDrag } from '@/hooks/usePanelDrag';
 import {
   FILTROS_INICIAIS,
@@ -22,8 +29,7 @@ import {
   type FiltrosEstrutura,
   getMarcadoresParaFiltros,
 } from '@/data/commercialStructureMock';
-import { Map, Building2, X } from 'lucide-react';
-import { LogOut, UserRound } from 'lucide-react';
+import { Map as MapIcon, LogOut, UserRound } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { fetchDrivingRoute } from '@/lib/mapboxDirections';
 import { useAuth } from '@/context/AuthContext';
@@ -98,8 +104,6 @@ const Index = () => {
   const { user, logout } = useAuth();
   const baseFilters = useMemo(() => baseFiltersForUser(user), [user]);
   const [filters, setFilters] = useState<FiltrosEstrutura>(() => baseFiltersForUser(user));
-  const [filtersPanelOpen, setFiltersPanelOpen] = useState(false);
-  const [territoryFocusTick, setTerritoryFocusTick] = useState(0);
 
   useEffect(() => {
     setFilters(baseFilters);
@@ -131,6 +135,21 @@ const Index = () => {
   const [compareApplyTick, setCompareApplyTick] = useState(0);
   /** "Todos" em GG e GC III: compara as áreas de toda a estrutura. */
   const [compareAllTerritory, setCompareAllTerritory] = useState(false);
+  const [heatmapMetrics, setHeatmapMetrics] = useState<ProductionHeatmapMetric[]>([]);
+  const [heatmapPeriods, setHeatmapPeriods] = useState<number[]>([]);
+  const [heatmapMetricId, setHeatmapMetricId] = useState('');
+  const [heatmapPeriod, setHeatmapPeriod] = useState<number | null>(null);
+  const [heatmapData, setHeatmapData] = useState<ProductionHeatmapData | null>(null);
+  const [heatmapUf, setHeatmapUf] = useState<string | null>(null);
+  const [heatmapStateLabel, setHeatmapStateLabel] = useState<string | null>(null);
+  const [heatmapOptionsLoading, setHeatmapOptionsLoading] = useState(false);
+  const [heatmapDataLoading, setHeatmapDataLoading] = useState(false);
+  const [heatmapOptionsError, setHeatmapOptionsError] = useState<string | null>(null);
+  const [heatmapDataError, setHeatmapDataError] = useState<string | null>(null);
+  const [heatmapRetryTick, setHeatmapRetryTick] = useState(0);
+  /** No escopo Brasil o calor é por estado; o usuário pode optar por ver por município. */
+  const [heatmapViewByMunicipality, setHeatmapViewByMunicipality] = useState(false);
+  const heatmapCacheRef = useRef(new Map<string, ProductionHeatmapData>());
 
   const navigatorDrag = usePanelDrag(NAVIGATOR_PANEL_DOCK);
   const visitasDrag = usePanelDrag({ x: 332, y: 150 });
@@ -154,15 +173,118 @@ const Index = () => {
 
   const mapMarkers = useMemo(() => getMarcadoresParaFiltros(filters), [filters]);
 
-  const hasActiveFilter =
-    Boolean(
-      filters.diretoriaRegionalId ||
-        filters.gerenteRegionalId ||
-        filters.gerenteAreaId ||
-        filters.coordenadorId ||
-        filters.supervisorId ||
-        filters.agenciaId
-    );
+  useEffect(() => {
+    if (activeSection !== 'heatmap') return;
+    const controller = new AbortController();
+    setHeatmapOptionsLoading(true);
+    setHeatmapOptionsError(null);
+    void fetchProductionHeatmapOptions(controller.signal)
+      .then((options) => {
+        setHeatmapMetrics(Array.isArray(options.metrics) ? options.metrics : []);
+        setHeatmapPeriods(Array.isArray(options.periods) ? options.periods : []);
+        setHeatmapPeriod((current) =>
+          current && options.periods.includes(current)
+            ? current
+            : options.currentPeriod ?? options.periods.at(-1) ?? null
+        );
+      })
+      .catch((error) => {
+        if (error instanceof DOMException && error.name === 'AbortError') return;
+        setHeatmapOptionsError(error instanceof Error ? error.message : 'Falha ao carregar os períodos.');
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setHeatmapOptionsLoading(false);
+      });
+    return () => controller.abort();
+  }, [activeSection, heatmapRetryTick]);
+
+  useEffect(() => {
+    if (activeSection !== 'heatmap' || !heatmapMetricId || !heatmapPeriod) {
+      setHeatmapData(null);
+      setHeatmapDataLoading(false);
+      setHeatmapDataError(null);
+      return;
+    }
+    const key = `${heatmapMetricId}:${heatmapPeriod}`;
+    const cached = heatmapCacheRef.current.get(key);
+    if (cached) {
+      setHeatmapData(cached);
+      setHeatmapDataLoading(false);
+      setHeatmapDataError(null);
+      return;
+    }
+    const controller = new AbortController();
+    setHeatmapData(null);
+    setHeatmapDataLoading(true);
+    setHeatmapDataError(null);
+    void fetchProductionHeatmap(heatmapMetricId, heatmapPeriod, controller.signal)
+      .then((data) => {
+        heatmapCacheRef.current.set(key, data);
+        setHeatmapData(data);
+        const index = heatmapPeriods.indexOf(heatmapPeriod);
+        for (const adjacent of [heatmapPeriods[index - 1], heatmapPeriods[index + 1]]) {
+          if (!adjacent) continue;
+          const adjacentKey = `${heatmapMetricId}:${adjacent}`;
+          if (heatmapCacheRef.current.has(adjacentKey)) continue;
+          void fetchProductionHeatmap(heatmapMetricId, adjacent)
+            .then((next) => heatmapCacheRef.current.set(adjacentKey, next))
+            .catch(() => undefined);
+        }
+      })
+      .catch((error) => {
+        if (error instanceof DOMException && error.name === 'AbortError') return;
+        setHeatmapDataError(error instanceof Error ? error.message : 'Falha ao carregar a produção.');
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setHeatmapDataLoading(false);
+      });
+    return () => controller.abort();
+  }, [activeSection, heatmapMetricId, heatmapPeriod, heatmapPeriods, heatmapRetryTick]);
+
+  // Município quando um estado está selecionado OU quando o usuário pede a visão detalhada.
+  const heatmapByMunicipality = Boolean(heatmapUf) || heatmapViewByMunicipality;
+
+  const heatmapRows = useMemo(
+    () => heatmapData?.rows.filter((row) => !heatmapUf || row.uf === heatmapUf) ?? [],
+    [heatmapData, heatmapUf]
+  );
+  // Agregado por UF para o calor no escopo Brasil (uma cor por estado).
+  const heatmapStateRows = useMemo(() => {
+    if (!heatmapData) return [];
+    const byUf = new Map<
+      string,
+      { uf: string; value: number; producingStores: number; municipalitiesWithData: number }
+    >();
+    for (const row of heatmapData.rows) {
+      const uf = String(row.uf ?? '').toUpperCase();
+      if (!uf) continue;
+      const entry = byUf.get(uf) ?? { uf, value: 0, producingStores: 0, municipalitiesWithData: 0 };
+      entry.value += Number(row.value) || 0;
+      entry.producingStores += Number(row.producingStores) || 0;
+      entry.municipalitiesWithData += 1;
+      byUf.set(uf, entry);
+    }
+    return Array.from(byUf.values());
+  }, [heatmapData]);
+  const heatmapScale = useMemo(
+    () =>
+      buildProductionQuantileScale(
+        heatmapByMunicipality
+          ? heatmapRows.map((row) => row.value)
+          : heatmapStateRows.map((state) => state.value)
+      ),
+    [heatmapByMunicipality, heatmapRows, heatmapStateRows]
+  );
+  const heatmapSummary = useMemo(() => {
+    if (!heatmapData) return null;
+    if (!heatmapUf) return heatmapData.summary;
+    return {
+      value: heatmapRows.reduce((sum, row) => sum + row.value, 0),
+      producingStores: heatmapRows.reduce((sum, row) => sum + row.producingStores, 0),
+      municipalitiesWithData: heatmapRows.length,
+      excludedStoresWithoutMunicipality: 0,
+    };
+  }, [heatmapData, heatmapRows, heatmapUf]);
 
   const selectedStop = useMemo(
     () => activeRoute?.stops.find((stop) => stop.id === selectedStopId) ?? null,
@@ -362,7 +484,20 @@ const Index = () => {
   const handleSelectSection = (section: NavigatorSection | null) => {
     const leavingComparar = activeSection === 'comparar' && section !== 'comparar';
     const leavingPlanner = activeSection === 'planejar' && section !== 'planejar';
+    const leavingHeatmap = activeSection === 'heatmap' && section !== 'heatmap';
+    if (section === 'heatmap' && activeSection !== 'heatmap') {
+      setHeatmapMetricId('');
+      setHeatmapData(null);
+      setHeatmapDataError(null);
+      setHeatmapUf(null);
+      setHeatmapStateLabel(null);
+      setHeatmapViewByMunicipality(false);
+    }
     setActiveSection(section);
+    if (section === 'heatmap') {
+      navigatorDrag.setPosition(NAVIGATOR_PANEL_DOCK);
+      setNavigatorMinimized(true);
+    }
     if (section === 'planejar') {
       const viewportHeight = window.innerHeight;
       const compactNotebook = window.innerWidth <= 1600 && viewportHeight <= 900;
@@ -386,6 +521,13 @@ const Index = () => {
       navigatorDrag.setPosition(NAVIGATOR_PANEL_DOCK);
       distanceDrag.setPosition({ x: 16, y: DISTANCE_PANEL_TOP });
       setNavigatorMinimized(true);
+    }
+    if (leavingHeatmap) {
+      setHeatmapMetricId('');
+      setHeatmapData(null);
+      setHeatmapDataError(null);
+      setHeatmapUf(null);
+      setHeatmapStateLabel(null);
     }
     if (section !== 'planejar') {
       setPlannerTerritory(null);
@@ -616,6 +758,37 @@ const Index = () => {
         />
       )}
 
+      {activeSection === 'heatmap' && (
+        <ProductionHeatmapPanel
+          metrics={heatmapMetrics}
+          periods={heatmapPeriods}
+          selectedMetricId={heatmapMetricId}
+          selectedPeriod={heatmapPeriod}
+          contextUf={heatmapUf}
+          contextLabel={heatmapStateLabel ?? (heatmapUf ? heatmapUf : 'Brasil')}
+          optionsLoading={heatmapOptionsLoading}
+          dataLoading={heatmapDataLoading}
+          error={heatmapOptionsError ?? heatmapDataError}
+          viewByMunicipality={heatmapViewByMunicipality}
+          onToggleViewByMunicipality={() => setHeatmapViewByMunicipality((value) => !value)}
+          onMetricChange={setHeatmapMetricId}
+          onPeriodChange={setHeatmapPeriod}
+          onBackToBrazil={() => {
+            setHeatmapUf(null);
+            setHeatmapStateLabel(null);
+            setHeatmapViewByMunicipality(false);
+          }}
+          onRetry={() => {
+            if (heatmapMetricId && heatmapPeriod) {
+              heatmapCacheRef.current.delete(`${heatmapMetricId}:${heatmapPeriod}`);
+            }
+            setHeatmapRetryTick((tick) => tick + 1);
+          }}
+          onBack={() => handleSelectSection(null)}
+          onClose={() => handleSelectSection(null)}
+        />
+      )}
+
       {activeSection === 'distancia' && (
         <DistanceAnalysisPanel
           onBack={() => {
@@ -684,7 +857,7 @@ const Index = () => {
           <div className="flex items-center gap-3">
             <div className="flex shrink-0 items-center gap-3">
               <div className="rounded-lg bg-map-primary/10 p-2">
-                <Map className="h-6 w-6 text-map-primary" />
+                <MapIcon className="h-6 w-6 text-map-primary" />
               </div>
               <div>
                 <h1 className="text-xl font-bold">Mapa Comercial</h1>
@@ -724,9 +897,28 @@ const Index = () => {
           hierarchyFilter={buildSqlHierarchyFilterFromUi(filters)}
           fitInitialAgencyScope={!user?.isAdmin}
           initialTerritoryRole={user?.role}
-          territoryFocusTick={territoryFocusTick}
-          filtersPanelOpen={filtersPanelOpen}
-          onOpenFilters={() => setFiltersPanelOpen(true)}
+          productionHeatmapActive={activeSection === 'heatmap'}
+          productionHeatmapRows={heatmapRows}
+          productionHeatmapScale={heatmapScale}
+          productionHeatmapMetric={
+            heatmapData?.metric ?? heatmapMetrics.find((metric) => metric.id === heatmapMetricId) ?? null
+          }
+          productionHeatmapPeriod={heatmapPeriod}
+          productionHeatmapUf={heatmapUf}
+          productionHeatmapSummary={heatmapSummary}
+          productionHeatmapLevel={heatmapByMunicipality ? 'municipio' : 'estado'}
+          productionHeatmapStateRows={heatmapStateRows}
+          onProductionHeatmapStateChange={(uf, label) => {
+            setHeatmapUf(uf);
+            setHeatmapStateLabel(label);
+          }}
+          onProductionHeatmapRequest={(scope) => {
+            handleSelectSection('heatmap');
+            if (scope) {
+              setHeatmapUf(scope.uf);
+              setHeatmapStateLabel(scope.label);
+            }
+          }}
           visitRoute={activeRoute ?? distanceAnalysisRoute ?? plannerPreviewRoute}
           selectedVisitStopId={selectedStopId}
           onVisitStopSelect={setSelectedStopId}
@@ -753,54 +945,6 @@ const Index = () => {
           compareAllTerritory={compareAllTerritory}
           navigatorOverlays={navigatorOverlays}
         />
-
-        <div
-          className={`absolute inset-0 z-30 bg-black/20 transition-opacity duration-300 ${
-            filtersPanelOpen ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'
-          }`}
-          onClick={() => setFiltersPanelOpen(false)}
-          aria-hidden={!filtersPanelOpen}
-        />
-
-        <aside
-          className={`absolute inset-y-0 left-0 z-40 w-[90vw] max-w-sm border-r bg-background/95 backdrop-blur-md shadow-xl transition-transform duration-300 ease-out ${
-            filtersPanelOpen ? 'translate-x-0' : '-translate-x-full'
-          }`}
-          aria-hidden={!filtersPanelOpen}
-        >
-          <div className="flex h-full flex-col">
-            <div className="flex items-center justify-between border-b px-4 py-3">
-              <h2 className="text-sm font-semibold">Filtros da estrutura comercial</h2>
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                onClick={() => setFiltersPanelOpen(false)}
-                aria-label="Fechar filtros"
-              >
-                <X className="h-4 w-4" />
-              </Button>
-            </div>
-
-            <div className="flex-1 overflow-y-auto p-4">
-              <CommercialStructureFilters
-                filters={filters}
-                onFiltersChange={setFilters}
-                baseFilters={baseFilters}
-                onReturnToTerritory={() => setTerritoryFocusTick((tick) => tick + 1)}
-              />
-              {!hasActiveFilter && (
-                <div className="mt-4 rounded-lg border border-dashed p-4 text-sm text-muted-foreground flex gap-2">
-                  <Building2 className="h-4 w-4 shrink-0 mt-0.5" />
-                  <p>
-                    Escolha pelo menos um nível ou uma agência para plotar pontos. Subir na escada
-                    (ex.: só Diretoria) mostra toda a subárvore e as agências dos supervisores.
-                  </p>
-                </div>
-              )}
-            </div>
-          </div>
-        </aside>
       </main>
     </div>
   );

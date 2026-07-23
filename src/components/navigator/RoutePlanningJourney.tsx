@@ -34,7 +34,7 @@ import {
 } from '@/lib/mapboxGeocoding';
 import { mergeHeaderDrag } from './mergeHeaderDrag';
 
-export type PlanningPriority = 'potencial' | 'sem_visita' | 'deslocamento' | 'alertas' | 'equilibrado';
+export type PlanningPriority = 'inteligente' | 'potencial' | 'sem_visita' | 'deslocamento' | 'alertas' | 'equilibrado';
 export type RoutePlanningScreen = 0 | 1 | 2 | 3 | 4;
 
 interface JourneyResult {
@@ -82,6 +82,7 @@ const INTENTIONS = [
 ];
 
 const PRIORITIES: Array<{ id: PlanningPriority; title: string; description: string; icon: React.ElementType }> = [
+  { id: 'inteligente', title: 'Sugestão inteligente', description: 'Alerta/Atenção perto da rota, com reativação e foco em crédito', icon: Zap },
   { id: 'potencial', title: 'Maior potencial comercial', description: 'Priorizar oportunidades com maior potencial', icon: Target },
   { id: 'sem_visita', title: 'Lojas sem visita', description: 'Priorizar lojas sem visita há mais tempo', icon: Clock3 },
   { id: 'deslocamento', title: 'Menor deslocamento', description: 'Priorizar menor distância e tempo', icon: Route },
@@ -103,7 +104,7 @@ const ROUTE_PLANNER_HERO_EDGE_FADE: React.CSSProperties = {
   WebkitMaskComposite: 'source-in',
 };
 
-const RoutePlanningJourney: React.FC<Props> = ({ agencies, originId, destination, initialScreen = 0, initialPriority = 'potencial', initialOriginStore = null, initialOriginLocation = null, initialDestinationLocation = null, onClose, onComplete, onOriginAgencySelect, onOriginStoreSelect, onOriginLocationSelect, onDestinationAgencySelect, onDestinationLocationSelect, onDestinationClear, onTerritoryRadiusSelect, headerDragProps }) => {
+const RoutePlanningJourney: React.FC<Props> = ({ agencies, originId, destination, initialScreen = 0, initialPriority = 'inteligente', initialOriginStore = null, initialOriginLocation = null, initialDestinationLocation = null, onClose, onComplete, onOriginAgencySelect, onOriginStoreSelect, onOriginLocationSelect, onDestinationAgencySelect, onDestinationLocationSelect, onDestinationClear, onTerritoryRadiusSelect, headerDragProps }) => {
   const initialDestinationAgencyId = agencies.find((agency) => agency.nome === destination)?.id ?? '';
   const initialTerritoryRadius = /^Território em um raio de (\d+(?:[.,]\d+)?) km$/i.exec(destination)?.[1];
   const parsedInitialTerritoryRadius = initialTerritoryRadius
@@ -121,7 +122,7 @@ const RoutePlanningJourney: React.FC<Props> = ({ agencies, originId, destination
         ? 'territorio'
         : initialDestinationLocation
           ? 'municipio'
-          : 'municipio'
+          : 'agencia'
   );
   const [destinationAgencyId, setDestinationAgencyId] = useState(initialDestinationAgencyId);
   const [selectedDestination, setSelectedDestination] = useState(destination);
@@ -328,12 +329,14 @@ const RoutePlanningJourney: React.FC<Props> = ({ agencies, originId, destination
         {screen === 3 && <>
           <JourneyTitle title="Para onde pretende ir?" subtitle="Defina seu destino ou área de atuação." />
           <div className="route-planning-choice-list route-planning-destination-list mt-4 space-y-2 sm:mt-5">
+          <ChoiceRow icon={Building2} title="Agência" description="Escolher uma agência como destino" selected={destinationType === 'agencia'} onClick={() => handleDestinationTypeSelect('agencia')}>
+              {destinationType === 'agencia' && <AgencySearchSelect agencies={agencies} value={destinationAgencyId} onChange={setDestinationAgencyId} placeholder="Buscar agência de destino..." />}
+            </ChoiceRow>
+
             <ChoiceRow icon={MapPin} title="Município" description="Buscar uma cidade pelo nome" selected={destinationType === 'municipio'} onClick={() => handleDestinationTypeSelect('municipio')}>
               {destinationType === 'municipio' && <MunicipalityAutocomplete value={destinationLocation} onChange={handleDestinationLocation} />}
             </ChoiceRow>
-            <ChoiceRow icon={Building2} title="Agência" description="Escolher uma agência como destino" selected={destinationType === 'agencia'} onClick={() => handleDestinationTypeSelect('agencia')}>
-              {destinationType === 'agencia' && <AgencySearchSelect agencies={agencies} value={destinationAgencyId} onChange={setDestinationAgencyId} placeholder="Buscar agência de destino..." />}
-            </ChoiceRow>
+
             <ChoiceRow icon={Navigation} title="Endereço" description="Digitar um endereço específico" selected={destinationType === 'endereco'} onClick={() => handleDestinationTypeSelect('endereco')}>
               {destinationType === 'endereco' && <AddressAutocomplete value={destinationLocation} inputLabel="Buscar endereço de destino" onChange={handleDestinationLocation} />}
             </ChoiceRow>

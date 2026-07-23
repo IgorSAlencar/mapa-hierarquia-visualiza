@@ -63,14 +63,31 @@ export function applyMapScrollZoomSettings(m: mapboxgl.Map): void {
   }
 }
 
+/** Liga/desliga o zoom por retângulo (Shift+arrastar) do Mapbox. */
+export function setMapBoxZoomEnabled(m: mapboxgl.Map, enabled: boolean): void {
+  try {
+    if (enabled) m.boxZoom.enable();
+    else m.boxZoom.disable();
+  } catch {
+    /* ignore */
+  }
+}
+
 /**
  * Garante que um foco programatico de camera nao deixe o mapa preso.
  * Cada handler e restaurado isoladamente para manter compatibilidade entre
  * versoes do Mapbox GL e dispositivos com mouse ou toque.
+ *
+ * `enableBoxZoom` deve ficar `false` na jornada de análise de distância,
+ * onde Shift+clique seleciona pontos A/B e o boxZoom do Mapbox conflita.
  */
-export function enableMapInteractions(m: mapboxgl.Map): void {
+export function enableMapInteractions(
+  m: mapboxgl.Map,
+  options?: { enableBoxZoom?: boolean }
+): void {
+  const enableBoxZoom = options?.enableBoxZoom ?? true;
   try { m.dragPan.enable(); } catch { /* ignore */ }
-  try { m.boxZoom.enable(); } catch { /* ignore */ }
+  setMapBoxZoomEnabled(m, enableBoxZoom);
   try { m.doubleClickZoom.enable(); } catch { /* ignore */ }
   try { m.keyboard.enable(); } catch { /* ignore */ }
   try { m.dragRotate.enable(); } catch { /* ignore */ }

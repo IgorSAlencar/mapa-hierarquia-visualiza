@@ -16,14 +16,37 @@ import { cn } from '@/lib/utils';
 import type { PanelHeaderDragProps } from '@/hooks/usePanelDrag';
 import { mergeHeaderDrag } from '@/components/navigator/mergeHeaderDrag';
 
-export type NavigatorSection = 'visitas' | 'planejar' | 'comparar' | 'distancia';
+export type NavigatorSection = 'visitas' | 'planejar' | 'comparar' | 'distancia' | 'heatmap';
 
 interface ProductItem {
   id: string;
   label: string;
   icon: React.ElementType;
   accent: string;
+  section?: NavigatorSection;
 }
+
+const BrazilHeatIcon: React.FC<{ className?: string }> = ({ className }) => (
+  <span className={cn('relative flex items-center justify-center', className)} aria-hidden>
+    <span className="absolute h-6 w-6 rounded-full bg-sky-400/30 blur-[5px]" />
+    <svg viewBox="0 0 32 32" className="relative h-full w-full drop-shadow-sm" fill="none">
+      <path
+        d="M11.2 3.1 17 4.5l2.4 2.2 4.2.8 2.2 3.4-1.5 3.7.4 3.2-3.1 2.5-1.2 4.4-3.1 4.2-2.1-2.7-2.4-1.2-1.1-3.9-3.5-2.2.8-4-2.1-3.3 2.4-2.2.2-3.5 2.9-1.3Z"
+        fill="url(#brazilHeatGradient)"
+        stroke="currentColor"
+        strokeWidth="1.25"
+        strokeLinejoin="round"
+      />
+      <defs>
+        <linearGradient id="brazilHeatGradient" x1="8" y1="4" x2="23" y2="27" gradientUnits="userSpaceOnUse">
+          <stop stopColor="#E0F2FE" />
+          <stop offset=".55" stopColor="#38BDF8" />
+          <stop offset="1" stopColor="#0C4A6E" />
+        </linearGradient>
+      </defs>
+    </svg>
+  </span>
+);
 
 const PRODUCTS: ProductItem[] = [
   { id: 'corbans-ativos', label: 'CorBans Ativos', icon: Building2, accent: 'text-blue-600 bg-blue-50/90 border-blue-100' },
@@ -31,6 +54,7 @@ const PRODUCTS: ProductItem[] = [
   { id: 'ab-contas', label: 'Ab. de Contas', icon: CreditCard, accent: 'text-indigo-600 bg-indigo-50/90 border-indigo-100' },
   { id: 'emprestimos', label: 'Empréstimos e Crédito', icon: HandCoins, accent: 'text-emerald-600 bg-emerald-50/90 border-emerald-100' },
   { id: 'seguros', label: 'Seguros', icon: Shield, accent: 'text-violet-600 bg-violet-50/90 border-violet-100' },
+  { id: 'heatmap', label: 'Mapa de produção', icon: BrazilHeatIcon, accent: 'text-sky-700 bg-sky-50/90 border-sky-200', section: 'heatmap' },
 ];
 
 interface SubjectItem {
@@ -115,21 +139,30 @@ const NavigatorPanel: React.FC<NavigatorPanelProps> = ({
         <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-slate-500">Produtos</p>
         <div className="grid grid-cols-3 gap-2">
           {PRODUCTS.map((product) => (
-            <button
-              key={product.id}
-              type="button"
-              className={cn(
-                'flex h-[72px] w-full min-w-0 flex-col items-center justify-center gap-1 rounded-lg border p-1.5 text-center transition-colors',
-                product.accent,
-                'cursor-default'
-              )}
-              title={`${product.label} (em breve)`}
-            >
-              <product.icon className="h-4 w-4 shrink-0" aria-hidden />
-              <span className="line-clamp-2 min-h-[2em] w-full px-0.5 text-[9px] font-medium leading-snug text-slate-700">
-                {product.label}
-              </span>
-            </button>
+            (() => {
+              const isClickable = Boolean(product.section);
+              const isActive = isClickable && activeSection === product.section;
+              return (
+                <button
+                  key={product.id}
+                  type="button"
+                  onClick={isClickable ? () => onSelectSection(isActive ? null : product.section!) : undefined}
+                  aria-pressed={isClickable ? isActive : undefined}
+                  className={cn(
+                    'flex h-[72px] w-full min-w-0 flex-col items-center justify-center gap-1 rounded-lg border p-1.5 text-center transition-all',
+                    product.accent,
+                    isActive && 'border-sky-400 bg-sky-100 ring-2 ring-sky-200 shadow-sm',
+                    isClickable ? 'cursor-pointer hover:-translate-y-0.5 hover:shadow-sm' : 'cursor-default'
+                  )}
+                  title={isClickable ? product.label : `${product.label} (em breve)`}
+                >
+                  <product.icon className={cn('shrink-0', product.id === 'heatmap' ? 'h-7 w-7' : 'h-4 w-4')} aria-hidden />
+                  <span className="line-clamp-2 min-h-[2em] w-full px-0.5 text-[9px] font-medium leading-snug text-slate-700">
+                    {product.label}
+                  </span>
+                </button>
+              );
+            })()
           ))}
         </div>
 

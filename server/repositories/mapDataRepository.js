@@ -1,5 +1,10 @@
 import { pool } from '../db/sqlServer.js';
 import { applyAccessScope, accessScopeExistsForEntity } from '../auth/scopeSql.js';
+import {
+  productionMetricSql,
+  storeBusinessQuantitySql,
+  storeCreditQuantitySql,
+} from '../domain/productionMetrics.js';
 
 function applyBboxFilter(request, bbox, lonExpr, latExpr) {
   if (!bbox) return '';
@@ -27,70 +32,6 @@ function normalizeStoreSearchParam(search) {
 
 function escapeSqlLike(value) {
   return value.replace(/[\\%_[\]]/g, '\\$&');
-}
-
-function storeCreditQuantitySql(indicatorAlias) {
-  return `
-    ISNULL(${indicatorAlias}.QTD_CONSIG_AVERBADO, 0)
-      + ISNULL(${indicatorAlias}.QTD_CONSIG_AVERBADO_PLATAF, 0)
-      + ISNULL(${indicatorAlias}.QTD_CRED_CONSIG_PUB_AVERB, 0)
-      + ISNULL(${indicatorAlias}.QTD_CRED_CONSIG_PRIV_AVERB, 0)
-      + ISNULL(${indicatorAlias}.QTD_LIME_DTLHES, 0)
-      + ISNULL(${indicatorAlias}.QTD_LIME_DTLHES_PLATAFORMA, 0)
-      + ISNULL(${indicatorAlias}.QTD_CREDITO_PARCEL_DTLHES, 0)
-  `;
-}
-
-function storeBusinessQuantitySql(indicatorAlias, consortiumAlias) {
-  return `
-    CASE
-      WHEN TRY_CONVERT(int, ${indicatorAlias}.PERIODO) <= 202606 THEN
-        ISNULL(${indicatorAlias}.QTD_CONTAS_TABLET_POS, 0)
-          + ISNULL(${indicatorAlias}.QTD_CONTA_SALARIO, 0)
-          + ISNULL(${indicatorAlias}.QTD_CONSIG_AVERBADO, 0)
-          + ISNULL(${indicatorAlias}.QTD_CONSIG_AVERBADO_PLATAF, 0)
-          + ISNULL(${indicatorAlias}.QTD_LIME_DTLHES, 0)
-          + ISNULL(${indicatorAlias}.QTD_LIME_DTLHES_PLATAFORMA, 0)
-          + ISNULL(${indicatorAlias}.QTD_CREDITO_PARCEL_DTLHES, 0)
-          + ISNULL(${indicatorAlias}.QTD_CARTAO_CONTRATADO, 0)
-          + ISNULL(${indicatorAlias}.QTD_CARTAO_CONTRATADO_PLATAFORMA, 0)
-          + ISNULL(${indicatorAlias}.QTD_CARTAO_AVULSO_PLATAFORMA, 0)
-          + ISNULL(${indicatorAlias}.QTD_FGTS, 0)
-          + ISNULL(${indicatorAlias}.QTD_MICRO_VIVAVIDA, 0)
-          + ISNULL(${indicatorAlias}.QTD_MICROSSEGUROS, 0)
-          + ISNULL(${indicatorAlias}.QTD_SEG_RESIDENCIAL, 0)
-          + ISNULL(${indicatorAlias}.QTD_PLANO_ODONTO, 0)
-          + ISNULL(${indicatorAlias}.QTD_DEPENDENTES_ODONTO, 0)
-          + ISNULL(${indicatorAlias}.QTD_SUPER_PROTEGIDO, 0)
-          + ISNULL(${indicatorAlias}.QTD_SUPERPROTEGIDO_PLATAFORMA, 0)
-          + ISNULL(${indicatorAlias}.QTD_SEG_CARTAO_DEB_CTA, 0)
-          + ISNULL(${indicatorAlias}.QTD_SEG_CARTAO_DEB_DESBL, 0)
-          + (ISNULL(${indicatorAlias}.VLR_EXP_SORTE, 0) / 50.0)
-      ELSE
-        ISNULL(${indicatorAlias}.QTD_CONTAS_TABLET_POS, 0)
-          + ISNULL(${indicatorAlias}.QTD_CONTA_SALARIO, 0)
-          + ISNULL(${indicatorAlias}.QTD_CONSIG_AVERBADO, 0)
-          + ISNULL(${indicatorAlias}.QTD_CONSIG_AVERBADO_PLATAF, 0)
-          + ISNULL(${indicatorAlias}.QTD_LIME_DTLHES, 0)
-          + ISNULL(${indicatorAlias}.QTD_LIME_DTLHES_PLATAFORMA, 0)
-          + ISNULL(${indicatorAlias}.QTD_CREDITO_PARCEL_DTLHES, 0)
-          + ISNULL(${indicatorAlias}.QTD_CARTAO_CONTRATADO, 0)
-          + ISNULL(${indicatorAlias}.QTD_CARTAO_CONTRATADO_PLATAFORMA, 0)
-          + ISNULL(${indicatorAlias}.QTD_CARTAO_AVULSO_PLATAFORMA, 0)
-          + ISNULL(${indicatorAlias}.QTD_FGTS, 0)
-          + FLOOR(ISNULL(${indicatorAlias}.QTD_MICRO_VIVAVIDA, 0) / 3.0)
-          + FLOOR(ISNULL(${indicatorAlias}.QTD_MICROSSEGUROS, 0) / 3.0)
-          + ISNULL(${indicatorAlias}.QTD_SEG_RESIDENCIAL, 0)
-          + ISNULL(${indicatorAlias}.QTD_PLANO_ODONTO, 0)
-          + ISNULL(${indicatorAlias}.QTD_DEPENDENTES_ODONTO, 0)
-          + ISNULL(${indicatorAlias}.QTD_SUPER_PROTEGIDO, 0)
-          + ISNULL(${indicatorAlias}.QTD_SUPERPROTEGIDO_PLATAFORMA, 0)
-          + ISNULL(${indicatorAlias}.QTD_SEG_CARTAO_DEB_CTA, 0)
-          + ISNULL(${indicatorAlias}.QTD_SEG_CARTAO_DEB_DESBL, 0)
-          + CASE WHEN ISNULL(${consortiumAlias}.REALIZADO, 0) > 0 THEN 1 ELSE 0 END
-          + FLOOR(ISNULL(${indicatorAlias}.VLR_EXP_SORTE, 0) / 50.0)
-    END
-  `;
 }
 
 function applyHierarchyFilter(request, hierarchy = null, escadaAlias = 'esc') {
@@ -339,7 +280,9 @@ export async function fetchStoreCoordinates({ bbox = null, limit = null, codAg =
       ISNULL(ind.VLR_FAT_CIELO, 0) AS VLR_FAT_CIELO_M0,
       CASE WHEN previousCielo.CHAVE_LOJA IS NOT NULL THEN 1 ELSE 0 END AS CIELO_HISTORICO,
       CASE WHEN (${creditQuantitySql}) > 0 THEN 1 ELSE 0 END AS CREDITO_M0,
+      CASE WHEN previousCredito.CHAVE_LOJA IS NOT NULL THEN 1 ELSE 0 END AS CREDITO_HISTORICO,
       CASE WHEN (${businessQuantitySql}) > 0 THEN 1 ELSE 0 END AS NEGOCIO_M0,
+      CASE WHEN previousNegocio.CHAVE_LOJA IS NOT NULL THEN 1 ELSE 0 END AS NEGOCIO_HISTORICO,
       CASE
         WHEN ISNULL(ind.QTD_TRX_CONTABIL_DTLHES, 0) >= 200
           OR (${businessQuantitySql}) >= 5
@@ -378,6 +321,39 @@ export async function fetchStoreCoordinates({ bbox = null, limit = null, codAg =
       GROUP BY CHAVE_LOJA
     ) AS previousCielo
       ON previousCielo.CHAVE_LOJA = l.CHAVE_LOJA
+    LEFT JOIN (
+      SELECT prevCred.CHAVE_LOJA
+      FROM DATAWAREHOUSE..TB_INDICADORES_BE AS prevCred
+      WHERE TRY_CONVERT(int, prevCred.PERIODO) >=
+          YEAR(DATEADD(MONTH, -12, GETDATE())) * 100
+            + MONTH(DATEADD(MONTH, -12, GETDATE()))
+        AND TRY_CONVERT(int, prevCred.PERIODO) < YEAR(GETDATE()) * 100 + MONTH(GETDATE())
+        AND (${storeCreditQuantitySql('prevCred')}) > 0
+      GROUP BY prevCred.CHAVE_LOJA
+    ) AS previousCredito
+      ON previousCredito.CHAVE_LOJA = l.CHAVE_LOJA
+    LEFT JOIN (
+      SELECT prevNeg.CHAVE_LOJA
+      FROM DATAWAREHOUSE..TB_INDICADORES_BE AS prevNeg
+      LEFT JOIN (
+        SELECT
+          CHAVE_LOJA,
+          ANO_MES,
+          SUM(REALIZADO) AS REALIZADO
+        FROM PADE..REALIZADO_CREDITO_CONCEDIDO
+        WHERE INDICADOR = 'CONSORCIO'
+        GROUP BY CHAVE_LOJA, ANO_MES
+      ) AS prevNegConsortium
+        ON prevNegConsortium.CHAVE_LOJA = prevNeg.CHAVE_LOJA
+        AND prevNegConsortium.ANO_MES = TRY_CONVERT(int, prevNeg.PERIODO)
+      WHERE TRY_CONVERT(int, prevNeg.PERIODO) >=
+          YEAR(DATEADD(MONTH, -12, GETDATE())) * 100
+            + MONTH(DATEADD(MONTH, -12, GETDATE()))
+        AND TRY_CONVERT(int, prevNeg.PERIODO) < YEAR(GETDATE()) * 100 + MONTH(GETDATE())
+        AND (${storeBusinessQuantitySql('prevNeg', 'prevNegConsortium')}) > 0
+      GROUP BY prevNeg.CHAVE_LOJA
+    ) AS previousNegocio
+      ON previousNegocio.CHAVE_LOJA = l.CHAVE_LOJA
     LEFT JOIN (
       SELECT
         CHAVE_LOJA,
@@ -579,6 +555,91 @@ export async function hasStoreAccess(chaveLoja, user) {
       ${authSql}
   `);
   return result.recordset.length > 0;
+}
+
+export async function fetchProductionHeatmapPeriods() {
+  const result = await pool.request().query(`
+    SELECT DISTINCT TOP (12)
+      TRY_CONVERT(int, PERIODO) AS periodo
+    FROM DATAWAREHOUSE..TB_INDICADORES_BE
+    WHERE TRY_CONVERT(int, PERIODO) IS NOT NULL
+      AND TRY_CONVERT(int, PERIODO) <= YEAR(GETDATE()) * 100 + MONTH(GETDATE())
+    ORDER BY periodo DESC
+  `);
+  return result.recordset;
+}
+
+export async function fetchProductionHeatmapRows({ metricId, period, user }) {
+  const metricExpression = productionMetricSql(metricId, 'A', 'E');
+  if (!metricExpression) throw new Error('Indicador de mapa de produção inválido.');
+
+  const request = pool.request();
+  request.input('period', period);
+  const accessSql = applyAccessScope(request, user, 'esc', 'heatmapAuthCodFunc');
+
+  const result = await request.query(`
+    SELECT DISTINCT
+      store.CHAVE_LOJA,
+      LTRIM(RTRIM(CONVERT(varchar(20), store.CD_MUNIC))) AS municipalityCode,
+      LTRIM(RTRIM(CONVERT(nvarchar(200), store.MUNICIPIO))) AS municipalityName,
+      UPPER(LTRIM(RTRIM(CONVERT(varchar(2), store.UF)))) AS uf,
+      CAST(${metricExpression} AS float) AS metricValue
+    INTO #ProductionHeatmapBase
+    FROM DATAWAREHOUSE..TB_INDICADORES_BE AS A
+    INNER JOIN DATALAKE..DL_BRADESCO_EXPRESSO AS store
+      ON store.CHAVE_LOJA = A.CHAVE_LOJA
+    INNER JOIN MESU..CONS_DISTRIBUICAO_ENTIDADES AS esc
+      ON TRY_CONVERT(bigint, esc.COD_AG) = TRY_CONVERT(bigint, store.COD_AG_LOJA)
+    LEFT JOIN (
+      SELECT
+        ANO_MES,
+        CHAVE_LOJA,
+        SUM(REALIZADO) AS REALIZADO
+      FROM PADE..REALIZADO_CREDITO_CONCEDIDO
+      WHERE INDICADOR = 'CONSORCIO'
+      GROUP BY ANO_MES, CHAVE_LOJA
+    ) AS E
+      ON TRY_CONVERT(int, E.ANO_MES) = TRY_CONVERT(int, A.PERIODO)
+      AND E.CHAVE_LOJA = A.CHAVE_LOJA
+    WHERE TRY_CONVERT(int, A.PERIODO) = @period
+      ${accessSql};
+
+    SELECT
+      municipalityCode,
+      MAX(municipalityName) AS municipalityName,
+      MAX(uf) AS uf,
+      SUM(metricValue) AS value,
+      COUNT(DISTINCT CASE WHEN metricValue <> 0 THEN CHAVE_LOJA END) AS producingStores
+    FROM #ProductionHeatmapBase
+    WHERE LEN(municipalityCode) = 7
+      AND municipalityCode NOT LIKE '%[^0-9]%'
+    GROUP BY municipalityCode
+    ORDER BY municipalityCode;
+
+    SELECT
+      ISNULL(SUM(CASE
+        WHEN LEN(municipalityCode) = 7 AND municipalityCode NOT LIKE '%[^0-9]%'
+          THEN metricValue ELSE 0 END), 0) AS value,
+      COUNT(DISTINCT CASE
+        WHEN LEN(municipalityCode) = 7
+          AND municipalityCode NOT LIKE '%[^0-9]%'
+          AND metricValue <> 0
+          THEN CHAVE_LOJA END) AS producingStores,
+      COUNT(DISTINCT CASE
+        WHEN LEN(municipalityCode) = 7 AND municipalityCode NOT LIKE '%[^0-9]%'
+          THEN municipalityCode END) AS municipalitiesWithData,
+      COUNT(DISTINCT CASE
+        WHEN municipalityCode IS NULL
+          OR LEN(municipalityCode) <> 7
+          OR municipalityCode LIKE '%[^0-9]%'
+          THEN CHAVE_LOJA END) AS excludedStoresWithoutMunicipality
+    FROM #ProductionHeatmapBase;
+  `);
+
+  return {
+    rows: result.recordsets?.[0] ?? [],
+    summary: result.recordsets?.[1]?.[0] ?? null,
+  };
 }
 
 export async function fetchStoreProductionHistory(chaveLoja) {

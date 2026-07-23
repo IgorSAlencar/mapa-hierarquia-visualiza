@@ -2,18 +2,15 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import mapboxgl, { type FilterSpecification } from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
 import {
-  BarChart3,
   LayoutGrid,
   Layers,
   MapPinOff,
   Search,
   ChevronLeft,
-  SlidersHorizontal,
   Store,
   Users,
   X,
 } from 'lucide-react';
-import ExpressoBottomSheet from '@/components/ExpressoBottomSheet';
 import ExpressoStatePanel from '@/components/ExpressoStatePanel';
 import MapOverlayMarkerInfoPanel from '@/components/MapOverlayMarkerInfoPanel';
 import {
@@ -48,15 +45,12 @@ import {
   applyMapScrollZoomSettings,
   enableMapInteractions,
   getPointCoordinates,
+  setMapBoxZoomEnabled,
   type SavedMapCamera,
 } from '@/lib/mapCameraFocus';
 import {
   buildExpressoRegionMetrics,
-  buildMunicipalityProductivityRows,
-  emptyProdutoExpressoResumo,
   type ExpressoRegionMetrics,
-  type MunicipalityProductivityRow,
-  type ProdutoExpressoId,
 } from '@/lib/expressoRegionMock';
 import {
   resolveSqlHierarchyFromUiMarkerId,
@@ -71,18 +65,21 @@ import {
   type CommercialTeamLevel,
 } from '@/data/regionMapPointsMock';
 import {
-  buildMunicipalityValueMap,
-  computeValueRangeFromRows,
-  mergeChoroplethIntoFeatureCollection,
+  mergeProductionHeatmapIntoFeatureCollection,
+  productionQuantileClass,
+  PRODUCTION_HEATMAP_COLORS,
+  type ProductionQuantileScale,
 } from '@/lib/municipalityChoropleth';
 import {
   fetchAgencyPoints,
   fetchCommercialSeatPoints,
   fetchStorePoints,
   type BboxQuery,
+  type ProductionHeatmapMetric,
+  type ProductionHeatmapRow,
   type SqlMapPoint,
 } from '@/lib/mapDataApi';
-import { fetchExpressoProductivityRows, fetchExpressoStateMetrics } from '@/lib/expressoApi';
+import { fetchExpressoStateMetrics } from '@/lib/expressoApi';
 import { loadSupervisionAreas } from '@/lib/supervisionAreas';
 import {
   getVisitRouteBounds,
@@ -107,6 +104,11 @@ import {
   PLANNER_TRANSIENT_SOURCE_IDS,
 } from '@/lib/plannerMapArtifacts';
 import RouteLegend from '@/components/navigator/RouteLegend';
+import {
+  ProductionHeatmapThermometer,
+  ProductionHeatmapTotalsCard,
+  type ProductionHeatmapPanelSummary,
+} from '@/components/navigator/ProductionHeatmapPanel';
 import { isCompareScopeHierarchy } from '@/lib/compareAreasScope';
 import {
   fetchSupervisoesForCompareScope,
@@ -1015,6 +1017,28 @@ function featureBounds(feature: GeoJSON.Feature): Bounds | null {
   ];
 }
 
+function featureCollectionBounds(fc: GeoJSON.FeatureCollection): Bounds | null {
+  const bounds = new mapboxgl.LngLatBounds();
+  for (const feature of fc.features) {
+    const geometry = feature.geometry;
+    if (!geometry) continue;
+    if (geometry.type === 'GeometryCollection') {
+      for (const item of geometry.geometries) {
+        expandBoundsFromCoords(
+          (item as Exclude<GeoJSON.Geometry, GeoJSON.GeometryCollection>).coordinates,
+          bounds
+        );
+      }
+    } else {
+      expandBoundsFromCoords(geometry.coordinates, bounds);
+    }
+  }
+  if (bounds.isEmpty()) return null;
+  const sw = bounds.getSouthWest();
+  const ne = bounds.getNorthEast();
+  return [[sw.lng, sw.lat], [ne.lng, ne.lat]];
+}
+
 function resetMunicipalityVisuals(
   m: mapboxgl.Map,
   fcRef?: React.MutableRefObject<GeoJSON.FeatureCollection>,
@@ -1899,8 +1923,23 @@ interface MapComponentProps {
   fitInitialAgencyScope?: boolean;
   initialTerritoryRole?: 'admin' | 'gerente_area' | 'coordenador' | 'supervisor';
   territoryFocusTick?: number;
-  filtersPanelOpen?: boolean;
-  onOpenFilters?: () => void;
+  productionHeatmapActive?: boolean;
+  productionHeatmapRows?: ProductionHeatmapRow[];
+  productionHeatmapScale?: ProductionQuantileScale;
+  productionHeatmapMetric?: ProductionHeatmapMetric | null;
+  productionHeatmapPeriod?: number | null;
+  productionHeatmapUf?: string | null;
+  productionHeatmapSummary?: ProductionHeatmapPanelSummary | null;
+  /** No escopo Brasil: 'estado' pinta o polígono do estado; 'municipio' desenha a malha municipal. */
+  productionHeatmapLevel?: 'estado' | 'municipio';
+  productionHeatmapStateRows?: Array<{
+    uf: string;
+    value: number;
+    producingStores: number;
+    municipalitiesWithData: number;
+  }>;
+  onProductionHeatmapStateChange?: (uf: string, label: string) => void;
+  onProductionHeatmapRequest?: (scope?: { uf: string; label: string }) => void;
   /** Roteiro de visitas ativo (linha + paradas numeradas no mapa). */
   visitRoute?: VisitRoute | null;
   selectedVisitStopId?: number | null;
@@ -2122,8 +2161,17 @@ const MapComponent: React.FC<MapComponentProps> = ({
   fitInitialAgencyScope = false,
   initialTerritoryRole,
   territoryFocusTick = 0,
-  filtersPanelOpen = false,
-  onOpenFilters,
+  productionHeatmapActive = false,
+  productionHeatmapRows = [],
+  productionHeatmapScale = { thresholds: [], ranges: [] },
+  productionHeatmapMetric = null,
+  productionHeatmapPeriod = null,
+  productionHeatmapUf = null,
+  productionHeatmapSummary = null,
+  productionHeatmapLevel = 'municipio',
+  productionHeatmapStateRows = [],
+  onProductionHeatmapStateChange,
+  onProductionHeatmapRequest,
   visitRoute = null,
   selectedVisitStopId = null,
   onVisitStopSelect,
@@ -2179,7 +2227,26 @@ const MapComponent: React.FC<MapComponentProps> = ({
   distanceAnalysisModeRef.current = distanceAnalysisMode;
   const onDistanceAnalysisPointSelectRef = useRef(onDistanceAnalysisPointSelect);
   onDistanceAnalysisPointSelectRef.current = onDistanceAnalysisPointSelect;
+  const productionHeatmapActiveRef = useRef(productionHeatmapActive);
+  productionHeatmapActiveRef.current = productionHeatmapActive;
+  const productionHeatmapUfRef = useRef(productionHeatmapUf);
+  productionHeatmapUfRef.current = productionHeatmapUf;
+  const productionHeatmapMetricRef = useRef(productionHeatmapMetric);
+  productionHeatmapMetricRef.current = productionHeatmapMetric;
+  const productionHeatmapPeriodRef = useRef(productionHeatmapPeriod);
+  productionHeatmapPeriodRef.current = productionHeatmapPeriod;
+  const onProductionHeatmapStateChangeRef = useRef(onProductionHeatmapStateChange);
+  onProductionHeatmapStateChangeRef.current = onProductionHeatmapStateChange;
+  const productionHeatmapPopupRef = useRef<mapboxgl.Popup | null>(null);
   const lastDistanceMapSelectionRef = useRef<{ key: string; at: number } | null>(null);
+
+  // Shift+clique preenche A/B na análise de distância; o boxZoom nativo do Mapbox
+  // (Shift+arrastar) precisa ficar desligado nessa jornada para não roubar o gesto.
+  useEffect(() => {
+    const m = map.current;
+    if (!m) return;
+    setMapBoxZoomEnabled(m, !distanceAnalysisMode);
+  }, [distanceAnalysisMode]);
   const visitRouteFitIdRef = useRef<string | null>(null);
   const { toast } = useToast();
   const clickHandlerRef = useRef<((e: mapboxgl.MapLayerMouseEvent) => void) | null>(null);
@@ -2429,15 +2496,9 @@ const MapComponent: React.FC<MapComponentProps> = ({
   useEffect(() => () => clearLayoutHoverTimer(), [clearLayoutHoverTimer]);
 
   const showLayoutFlyout = mapLayoutMenuPinned || mapLayoutFlyoutHover;
-  const [productivitySheetOpen, setProductivitySheetOpen] = useState(false);
-  const [selectedBottomProduct, setSelectedBottomProduct] = useState<ProdutoExpressoId | null>(null);
-  const [productivityScope, setProductivityScope] = useState<'estado' | 'municipio'>('estado');
   const [sqlExpressoMetrics, setSqlExpressoMetrics] = useState<ExpressoRegionMetrics | null>(null);
-  const [sqlProductivityRows, setSqlProductivityRows] = useState<MunicipalityProductivityRow[] | null>(null);
-  const [municipalityChoroplethEnabled, setMunicipalityChoroplethEnabled] = useState(false);
   /** Incrementa quando o GeoJSON de municípios (UF ou Brasil) é escrito nos refs — refs sozinhos não disparam o efeito do coroplético. */
   const [municipalitiesGeoVersion, setMunicipalitiesGeoVersion] = useState(0);
-  const [choroplethLegend, setChoroplethLegend] = useState<{ min: number; max: number } | null>(null);
   /** Malha municipal (preenchimento + contornos do contexto); não afeta zoom nem contorno do município selecionado. */
   const [municipalityMeshVisible, setMunicipalityMeshVisible] = useState(false);
   const municipalityMeshVisibleRef = useRef(municipalityMeshVisible);
@@ -2667,12 +2728,26 @@ const MapComponent: React.FC<MapComponentProps> = ({
     [compareScopeHierarchy, compareSupervisionsList.length]
   );
 
+  /** Gerente Comercial (supervisor) não vê o controle de equipe comercial. */
+  const canShowCommercialTeamOverlay = initialTerritoryRole !== 'supervisor';
+
+  useEffect(() => {
+    if (canShowCommercialTeamOverlay) return;
+    setOverlaySupervisores(false);
+    setCommercialTeamMenuOpen(false);
+  }, [canShowCommercialTeamOverlay]);
+
   /** Só exibe o controle de comparar áreas com GG ou GC III visíveis em "Mostrar Equipe Comercial". */
   const showCompareSupervisionAreasButton = useMemo(
     () =>
+      canShowCommercialTeamOverlay &&
       overlaySupervisores &&
       (commercialTeamLevelVisibility.coordenador || commercialTeamLevelVisibility.gerente_area),
-    [overlaySupervisores, commercialTeamLevelVisibility]
+    [
+      canShowCommercialTeamOverlay,
+      overlaySupervisores,
+      commercialTeamLevelVisibility,
+    ]
   );
 
   const compareScopeLabel = useMemo(() => {
@@ -3208,7 +3283,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
       released = true;
       if (fallbackTimer != null) window.clearTimeout(fallbackTimer);
       m.off('moveend', releaseInteractions);
-      enableMapInteractions(m);
+      enableMapInteractions(m, { enableBoxZoom: !distanceAnalysisModeRef.current });
     };
 
     try {
@@ -3236,7 +3311,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
     return () => {
       if (fallbackTimer != null) window.clearTimeout(fallbackTimer);
       m.off('moveend', releaseInteractions);
-      enableMapInteractions(m);
+      enableMapInteractions(m, { enableBoxZoom: !distanceAnalysisModeRef.current });
     };
   }, [plannerAgencyFocus]);
 
@@ -3682,40 +3757,11 @@ const MapComponent: React.FC<MapComponentProps> = ({
     });
   }, [searchOpen, searchQuery, municipalitySearchOptions.length, mapReadyVersion]);
 
-  const municipalityNamesForTable = useMemo(() => {
-    const names =
-      selectedStateFeature == null
-        ? allMunicipalityNames
-        : municipalitySearchOptions.map((item) => item.label).filter(Boolean);
-    return names.length > 0 ? names.slice(0, 60) : selectedCityLabel ? [selectedCityLabel] : [];
-  }, [allMunicipalityNames, municipalitySearchOptions, selectedCityLabel, selectedStateFeature]);
-
-  const stateNamesForTable = useMemo(
-    () => stateSearchOptions.map((item) => item.label).filter(Boolean).slice(0, 60),
-    [stateSearchOptions]
-  );
-
-  const fallbackMunicipalityProductivityRows = useMemo(() => {
-    if (!selectedBottomProduct) return [];
-    const names = productivityScope === 'estado' ? stateNamesForTable : municipalityNamesForTable;
-    return buildMunicipalityProductivityRows(selectedBottomProduct, names);
-  }, [selectedBottomProduct, productivityScope, stateNamesForTable, municipalityNamesForTable]);
-  const municipalityProductivityRows = sqlProductivityRows ?? fallbackMunicipalityProductivityRows;
-
-  const productsForBottomSheet = useMemo(
-    () =>
-      expressoMetrics?.produtos ?? [
-        emptyProdutoExpressoResumo('consignado', 'Consignado'),
-        emptyProdutoExpressoResumo('lime', 'Lime'),
-        emptyProdutoExpressoResumo('contas', 'Contas'),
-        emptyProdutoExpressoResumo('seguros', 'Seguros'),
-      ],
-    [expressoMetrics]
-  );
   const hasStatePanel = Boolean(selectedStateLabel && expressoMetrics);
   const [statePanelMinimized, setStatePanelMinimized] = useState(false);
-  /** Painel ocupando a tela (expandido). Minimizado mantém a seleção mas libera o layout. */
-  const statePanelExpanded = hasStatePanel && !statePanelMinimized;
+  /** Painel ocupando a tela (expandido). Minimizado mantém a seleção mas libera o layout.
+   *  No mapa de produção o painel de estado não existe, então não deve deslocar o layout. */
+  const statePanelExpanded = hasStatePanel && !statePanelMinimized && !productionHeatmapActive;
   const rightSidePanelExpanded = plannerResultsPanelExpanded || (statePanelExpanded && !plannerMode);
 
   /** Toda nova seleção de estado/município reabre o painel (cancela o estado minimizado). */
@@ -3738,12 +3784,6 @@ const MapComponent: React.FC<MapComponentProps> = ({
   const hasMapSelection = Boolean(
     selectedStateFeature || selectedMunicipalityFeature || selectedCityLabel
   );
-  const choroplethModeLabel = useMemo(() => {
-    if (!municipalityChoroplethEnabled || !selectedBottomProduct) return null;
-    if (productivityScope === 'estado') return 'Estados (Brasil)';
-    return selectedStateFeature ? 'Municípios do estado selecionado' : 'Todos os municípios (Brasil)';
-  }, [municipalityChoroplethEnabled, selectedBottomProduct, productivityScope, selectedStateFeature]);
-
   const selectedStateUf = useMemo(
     () => resolveStateCode(selectedStateFeature?.properties),
     [selectedStateFeature]
@@ -3778,47 +3818,6 @@ const MapComponent: React.FC<MapComponentProps> = ({
     };
   }, [selectedStateUf, selectedMunicipalityIbge]);
 
-  useEffect(() => {
-    let active = true;
-    if (!selectedBottomProduct) {
-      setSqlProductivityRows(null);
-      return () => {
-        active = false;
-      };
-    }
-
-    const ufSigla = productivityScope === 'municipio' ? selectedStateUf : null;
-    if (productivityScope === 'municipio' && !ufSigla) {
-      setSqlProductivityRows(null);
-      return () => {
-        active = false;
-      };
-    }
-
-    void fetchExpressoProductivityRows({
-      produtoId: selectedBottomProduct,
-      scope: productivityScope,
-      ufSigla,
-    })
-      .then((rows) => {
-        if (!active) return;
-        if (Array.isArray(rows) && rows.length > 0) {
-          setSqlProductivityRows(rows);
-          return;
-        }
-        setSqlProductivityRows(null);
-      })
-      .catch((error) => {
-        if (!active) return;
-        console.warn('Falha ao carregar produtividade Expresso via SQL, usando fallback mock.', error);
-        setSqlProductivityRows(null);
-      });
-
-    return () => {
-      active = false;
-    };
-  }, [selectedBottomProduct, productivityScope, selectedStateUf]);
-
   const clusterClickHandlerRef = useRef<((e: mapboxgl.MapLayerMouseEvent) => void) | null>(null);
   const regionOverlayClickHandlerRef = useRef<((e: mapboxgl.MapLayerMouseEvent) => void) | null>(null);
   const regionOverlayAgencyClickHandlerRef = useRef<
@@ -3845,7 +3844,8 @@ const MapComponent: React.FC<MapComponentProps> = ({
     storeFilterCodAgRef.current = storeFilterCodAg;
   }, [storeFilterCodAg]);
 
-  const meshSelectionEnabled = () => municipalityMeshVisibleRef.current;
+  const meshSelectionEnabled = () =>
+    municipalityMeshVisibleRef.current || productionHeatmapActiveRef.current;
   const agencyHoverEnterHandlerRef = useRef<((e: mapboxgl.MapLayerMouseEvent) => void) | null>(null);
   const agencyHoverLeaveHandlerRef = useRef<((e: mapboxgl.MapLayerMouseEvent) => void) | null>(null);
   const agencyHoverPopupRef = useRef<mapboxgl.Popup | null>(null);
@@ -3999,6 +3999,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
   };
 
   const handleToggleCommercialTeamOverlay = () => {
+    if (!canShowCommercialTeamOverlay) return;
     if (overlaySupervisores) {
       setOverlaySupervisores(false);
       setCommercialTeamMenuOpen(false);
@@ -4095,14 +4096,6 @@ const MapComponent: React.FC<MapComponentProps> = ({
     }
   };
 
-  const openProductivitySheet = () => {
-    setProductivityScope(selectedStateFeature ? 'municipio' : 'estado');
-    setSelectedBottomProduct(null);
-    setMunicipalityChoroplethEnabled(false);
-    setChoroplethLegend(null);
-    setProductivitySheetOpen(true);
-  };
-
   const clearSelectedState = () => {
     resetAgencyStoreFilterSync();
     const m = map.current;
@@ -4141,11 +4134,6 @@ const MapComponent: React.FC<MapComponentProps> = ({
     setMunicipalitySearchOptions([]);
     setSearchQuery('');
     setSearchOpen(false);
-    setProductivitySheetOpen(false);
-    setSelectedBottomProduct(null);
-    setProductivityScope('estado');
-    setMunicipalityChoroplethEnabled(false);
-    setChoroplethLegend(null);
     setStatePanelMinimized(false);
     selectedStateCodeRef.current = null;
     if (m?.isStyleLoaded()) {
@@ -4210,6 +4198,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
         return;
       }
       applyMapScrollZoomSettings(map.current);
+      setMapBoxZoomEnabled(map.current, !distanceAnalysisModeRef.current);
       mapPointerGestureGuardRef.current?.detach();
       mapPointerGestureGuardRef.current = attachMapPointerGestureGuard(map.current);
 
@@ -4217,6 +4206,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
         if (initGen !== mapInitGenRef.current || map.current == null) return;
 
         const m = map.current!;
+        setMapBoxZoomEnabled(m, !distanceAnalysisModeRef.current);
         if (activeStandardTheme) {
           applyStandardThemeBasemap(m, activeStandardTheme);
         }
@@ -4300,12 +4290,12 @@ const MapComponent: React.FC<MapComponentProps> = ({
 
           if (kind === 'agencia') {
             const info = readAgencyPopupInfoFromProperties(properties);
-            const label = [info.codAg, info.nome].filter(Boolean).join(' - ') || 'AgÃªncia';
+            const label = [info.codAg, info.nome].filter(Boolean).join(' - ') || 'Agência';
             onSelect({
               id: String(properties.id ?? `map-agencia-${info.codAg || coords.join('-')}`),
               kind,
               label,
-              description: info.enderecoFormatado || 'AgÃªncia selecionada no mapa',
+              description: info.enderecoFormatado || 'Agência selecionada no mapa',
               lngLat: coords,
             });
           } else {
@@ -4316,8 +4306,8 @@ const MapComponent: React.FC<MapComponentProps> = ({
               id: String(properties.id ?? `map-loja-${info.chaveLoja || coords.join('-')}`),
               kind,
               label,
-              description: agencyDescription
-                ? `AgÃªncia vinculada: ${agencyDescription}`
+              description: agencyDescription  
+                ? `Agência vinculada: ${agencyDescription}`
                 : 'Loja selecionada no mapa',
               lngLat: coords,
             });
@@ -4553,7 +4543,22 @@ const MapComponent: React.FC<MapComponentProps> = ({
           const url = `${GEODATA_BR_BASE}/geojs-${ibgeCode}-mun.json`;
           const response = await fetch(url);
           if (!response.ok) throw new Error(`Falha ao carregar municípios de ${uf}: ${response.status}`);
-          const fc = (await response.json()) as GeoJSON.FeatureCollection;
+          const raw = (await response.json()) as GeoJSON.FeatureCollection;
+          const fc: GeoJSON.FeatureCollection = {
+            type: 'FeatureCollection',
+            features: raw.features.map((feature) => {
+              const municipalityCode = resolveMunicipalityIbgeCode(feature.properties);
+              return {
+                ...feature,
+                properties: {
+                  ...(feature.properties as GeoJSON.GeoJsonProperties),
+                  heatUf: uf,
+                  heatMunicipalityCode:
+                    municipalityCode == null ? null : String(municipalityCode).padStart(7, '0'),
+                },
+              } as GeoJSON.Feature;
+            }),
+          };
           municipiosCacheRef.current[uf] = fc;
           return fc;
         };
@@ -4769,7 +4774,10 @@ const MapComponent: React.FC<MapComponentProps> = ({
             setSelectedStateLabel(resolveStateName(f.properties));
             setSelectedStateFeature(f);
 
-            if (uf) {
+            if (uf && !productionHeatmapActiveRef.current) {
+              // No mapa de produção quem popula a malha municipal (com as
+              // propriedades de calor mescladas) é o efeito do heatmap; carregar
+              // a malha crua aqui sobrescreveria as cores do calor.
               void loadMunicipiosByUf(uf)
                 .then((munis) => {
                   if (!map.current || !munis) return;
@@ -4777,7 +4785,9 @@ const MapComponent: React.FC<MapComponentProps> = ({
                   const ctx = map.current.getSource('municipalities-context') as
                     | mapboxgl.GeoJSONSource
                     | undefined;
-                  if (municipalityMeshVisibleRef.current) ctx?.setData(munis);
+                  if (municipalityMeshVisibleRef.current) {
+                    ctx?.setData(munis);
+                  }
                   municipalitiesFcRef.current = munis;
                   municipalitiesRawFcRef.current = munis;
                   setMunicipalitySearchOptions(buildMunicipalitySearchOptions(munis, uf));
@@ -4816,6 +4826,12 @@ const MapComponent: React.FC<MapComponentProps> = ({
             const f = e.features?.[0] as GeoJSON.Feature | undefined;
             if (!f) return;
             applyStateSelection(f);
+            // No mapa de produção (calor por estado), clicar no estado passa a
+            // detalhar por município e mantém o foco/escurecimento da região.
+            if (productionHeatmapActiveRef.current) {
+              const uf = resolveStateCode(f.properties);
+              if (uf) onProductionHeatmapStateChangeRef.current?.(uf, resolveStateName(f.properties));
+            }
           };
 
           stateClickHandlerRef.current = onStateClick;
@@ -5050,6 +5066,78 @@ const MapComponent: React.FC<MapComponentProps> = ({
             if (!meshSelectionEnabled()) return;
             const direct = (e.features?.[0] as GeoJSON.Feature | undefined) ?? null;
             if (!direct) return;
+            if (productionHeatmapActiveRef.current) {
+              const directUf = String(direct.properties?.heatUf ?? '').trim().toUpperCase();
+              if (!productionHeatmapUfRef.current) {
+                if (!directUf) return;
+                const stateHit = m.queryRenderedFeatures(e.point, { layers: ['br-states-hit'] })[0] as
+                  | GeoJSON.Feature
+                  | undefined;
+                const stateLabel = stateHit ? resolveStateName(stateHit.properties) : directUf;
+                // Aplica o efeito de foco/escurecer nos demais estados e enquadra a região,
+                // reaproveitando a mesma seleção usada fora do mapa de produção.
+                if (stateHit) selectStateFeatureRef.current?.(stateHit);
+                onProductionHeatmapStateChangeRef.current?.(directUf, stateLabel || directUf);
+                return;
+              }
+
+              const fullFeature = resolveFullMunicipalityFromRenderedHit(
+                direct,
+                municipalitiesRawFcRef.current
+              );
+              const selectedSource = m.getSource('selected-municipality') as mapboxgl.GeoJSONSource | undefined;
+              selectedSource?.setData({ type: 'FeatureCollection', features: [fullFeature] });
+
+              const props = direct.properties ?? {};
+              const name = String(
+                props.heatMunicipalityName ?? municipalityNameFromProperties(props) ?? 'Município'
+              );
+              const value = Number(props.heatValue);
+              const stores = Math.max(0, Number(props.heatStores) || 0);
+              const metric = productionHeatmapMetricRef.current;
+              const period = productionHeatmapPeriodRef.current;
+              const content = document.createElement('div');
+              content.className = 'min-w-[190px] p-1 text-slate-800';
+              const title = document.createElement('strong');
+              title.className = 'block text-sm font-semibold';
+              title.textContent = `${name}/${directUf || productionHeatmapUfRef.current}`;
+              const metricLine = document.createElement('p');
+              metricLine.className = 'mt-1 text-xs text-slate-600';
+              const formattedValue = Number.isFinite(value)
+                ? metric?.unit === 'currency'
+                  ? value.toLocaleString('pt-BR', {
+                      style: 'currency',
+                      currency: 'BRL',
+                      maximumFractionDigits: 0,
+                    })
+                  : Math.round(value).toLocaleString('pt-BR')
+                : 'Sem dado';
+              metricLine.textContent = `${metric?.shortLabel ?? 'Produção'}: ${formattedValue}`;
+              const storesLine = document.createElement('p');
+              storesLine.className = 'mt-1 text-[11px] text-slate-500';
+              storesLine.textContent = `${stores.toLocaleString('pt-BR')} lojas produtoras`;
+              const periodLine = document.createElement('p');
+              periodLine.className = 'mt-1 text-[10px] text-slate-400';
+              if (period) {
+                const year = Math.trunc(period / 100);
+                const month = period % 100;
+                periodLine.textContent = new Intl.DateTimeFormat('pt-BR', {
+                  month: 'long',
+                  year: 'numeric',
+                }).format(new Date(year, month - 1, 1));
+              }
+              content.append(title, metricLine, storesLine, periodLine);
+              productionHeatmapPopupRef.current?.remove();
+              productionHeatmapPopupRef.current = new mapboxgl.Popup({
+                closeButton: true,
+                closeOnClick: true,
+                maxWidth: '260px',
+              })
+                .setLngLat(e.lngLat)
+                .setDOMContent(content)
+                .addTo(m);
+              return;
+            }
             selectMunicipalityFeature(
               resolveFullMunicipalityFromRenderedHit(direct, municipalitiesRawFcRef.current)
             );
@@ -6159,23 +6247,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
     return runWhenMapStyleReady(m, applyHighlightPaint);
   }, [overlayAgencias, overlayLojas, storeFilterCodAg, mapReadyVersion, activeBaseStyle]);
 
-  useEffect(() => {
-    const m = map.current;
-    if (!m) return;
-
-    const syncMapSize = () => {
-      try {
-        m.resize();
-      } catch {
-        /* ignore */
-      }
-    };
-
-    syncMapSize();
-    const timer = window.setTimeout(syncMapSize, 360);
-    return () => window.clearTimeout(timer);
-  }, [filtersPanelOpen]);
-
+  /* Fluxo legado de coroplético por nome, substituído pelo modo controlado por CD_MUNIC.
   useEffect(() => {
     const m = map.current;
     if (!m?.isStyleLoaded()) return;
@@ -6194,7 +6266,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
           m.setPaintProperty('municipalities-context-line', 'line-emissive-strength', 1);
         }
       } catch {
-        /* estilo / ordem de camadas */
+        estilo / ordem de camadas
       }
     };
     const restoreStateChoroplethPaint = () => {
@@ -6206,7 +6278,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
           m.setPaintProperty('br-states-choropleth', 'fill-emissive-strength', 1);
         }
       } catch {
-        /* ignore */
+        ignore
       }
     };
 
@@ -6228,7 +6300,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
         restoreDefaultMunicipalityPaint();
         restoreStateChoroplethPaint();
       } catch {
-        /* ignore */
+        ignore
       }
       setChoroplethLegend(null);
       return;
@@ -6264,7 +6336,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
         statesSource?.setData(statesMerged);
         restoreDefaultMunicipalityPaint();
         m.setPaintProperty('br-states-choropleth', 'fill-color', fillColorExpr);
-        m.setPaintProperty('br-states-choropleth', 'fill-opacity', 0.72);
+        m.setPaintProperty('br-states-choropleth', 'fill-opacity', 0.82);
         if (stdBasemap) {
           m.setPaintProperty('br-states-choropleth', 'fill-emissive-strength', 1);
         }
@@ -6319,17 +6391,293 @@ const MapComponent: React.FC<MapComponentProps> = ({
     municipalitiesGeoVersion,
     activeBaseStyle,
   ]);
+  */
+
+  useEffect(() => {
+    const m = map.current;
+    if (!m) return;
+    let cancelled = false;
+
+    // isStyleLoaded() fica false transitoriamente durante carregamento de tiles;
+    // se os dados do calor chegarem nesse momento, reagenda a pintura para o
+    // próximo idle em vez de desistir (senão o calor só aplica ao mexer no slider).
+    if (!m.isStyleLoaded()) {
+      const retry = () => {
+        if (!cancelled) applyProductionHeatmapPaint();
+      };
+      m.once('idle', retry);
+      return () => {
+        cancelled = true;
+        m.off('idle', retry);
+      };
+    }
+
+    function applyProductionHeatmapPaint() {
+    const contextSource = m.getSource('municipalities-context') as mapboxgl.GeoJSONSource | undefined;
+    if (!contextSource) return;
+
+    if (!productionHeatmapActive) {
+      productionHeatmapPopupRef.current?.remove();
+      productionHeatmapPopupRef.current = null;
+      try {
+        // Limpa o calor por município.
+        m.setPaintProperty('municipalities-context-fill', 'fill-color', '#67e8f9');
+        m.setPaintProperty('municipalities-context-fill', 'fill-opacity', 0.06);
+        m.setPaintProperty('municipalities-context-line', 'line-color', '#0891b2');
+        m.setPaintProperty('municipalities-context-line', 'line-width', 1.1);
+        m.setPaintProperty('municipalities-context-line', 'line-opacity', 0.42);
+        // Limpa o calor por estado (senão os polígonos coloridos ficam no mapa após fechar).
+        if (m.getLayer('br-states-choropleth')) {
+          m.setPaintProperty('br-states-choropleth', 'fill-opacity', 0);
+        }
+      } catch {
+        /* estilo recarregando */
+      }
+      return;
+    }
+
+    const resetStateChoropleth = () => {
+      try {
+        if (m.getLayer('br-states-choropleth')) {
+          m.setPaintProperty('br-states-choropleth', 'fill-opacity', 0);
+        }
+      } catch {
+        /* estilo recarregando */
+      }
+    };
+
+    // Escopo Brasil por estado: pinta os polígonos dos estados e não desenha a malha municipal.
+    if (productionHeatmapLevel === 'estado' && !productionHeatmapUf) {
+      try {
+        contextSource.setData({ type: 'FeatureCollection', features: [] });
+        municipalitiesFcRef.current = { type: 'FeatureCollection', features: [] };
+      } catch {
+        /* estilo recarregando */
+      }
+
+      if (!productionHeatmapMetric) {
+        resetStateChoropleth();
+        return;
+      }
+
+      const valueByUf = new Map(
+        productionHeatmapStateRows.map((row) => [row.uf.toUpperCase(), row])
+      );
+      const statesMerged: GeoJSON.FeatureCollection = {
+        type: 'FeatureCollection',
+        features: stateSearchOptions.map((option) => {
+          const uf = String(
+            option.uf ?? resolveStateCode(option.feature.properties) ?? ''
+          ).toUpperCase();
+          const row = valueByUf.get(uf);
+          const value = Number(row?.value) || 0;
+          const heatClass = row
+            ? productionQuantileClass(value, productionHeatmapScale.thresholds)
+            : -1;
+          return {
+            ...option.feature,
+            properties: {
+              ...(option.feature.properties as GeoJSON.GeoJsonProperties),
+              heatUf: uf,
+              heatValue: value,
+              heatStores: Number(row?.producingStores) || 0,
+              heatMissing: row ? 0 : 1,
+              heatClass,
+            },
+          } as GeoJSON.Feature;
+        }),
+      };
+      const stateFillColor: mapboxgl.ExpressionSpecification = [
+        'case',
+        ['==', ['get', 'heatMissing'], 1], 'rgba(0, 0, 0, 0)',
+        ['match', ['get', 'heatClass'],
+          0, PRODUCTION_HEATMAP_COLORS[0],
+          1, PRODUCTION_HEATMAP_COLORS[1],
+          2, PRODUCTION_HEATMAP_COLORS[2],
+          3, PRODUCTION_HEATMAP_COLORS[3],
+          4, PRODUCTION_HEATMAP_COLORS[4],
+          'rgba(0, 0, 0, 0)'],
+      ];
+      try {
+        const statesSource = m.getSource('br-states') as mapboxgl.GeoJSONSource | undefined;
+        statesSource?.setData(statesMerged);
+        m.setPaintProperty('br-states-choropleth', 'fill-color', stateFillColor);
+        m.setPaintProperty('br-states-choropleth', 'fill-opacity', 0.72);
+        if (isStandardStyleUrl(activeBaseStyle)) {
+          m.setPaintProperty('br-states-choropleth', 'fill-emissive-strength', 1);
+        }
+      } catch {
+        /* estilo recarregando */
+      }
+      return;
+    }
+
+    // Município: remove o calor por estado antes de desenhar a malha municipal.
+    resetStateChoropleth();
+
+    void loadAllMunicipalitiesRef.current()
+      .then((allMunicipalities) => {
+        if (cancelled || !map.current?.isStyleLoaded() || allMunicipalities.features.length === 0) return;
+        const scopedRaw: GeoJSON.FeatureCollection = productionHeatmapUf
+          ? {
+              type: 'FeatureCollection',
+              features: allMunicipalities.features.filter(
+                (feature) => String(feature.properties?.heatUf ?? '').toUpperCase() === productionHeatmapUf
+              ),
+            }
+          : allMunicipalities;
+        municipalitiesRawFcRef.current = scopedRaw;
+        const merged = productionHeatmapMetric
+          ? mergeProductionHeatmapIntoFeatureCollection(
+              scopedRaw,
+              productionHeatmapRows,
+              productionHeatmapScale
+            )
+          : scopedRaw;
+        municipalitiesFcRef.current = merged;
+        const source = map.current.getSource('municipalities-context') as mapboxgl.GeoJSONSource | undefined;
+        source?.setData(merged);
+
+        const fillColor: mapboxgl.ExpressionSpecification | string = productionHeatmapMetric
+          ? [
+              'case',
+              ['==', ['get', 'heatMissing'], 1], 'rgba(0, 0, 0, 0)',
+              ['==', ['get', 'heatZero'], 1], 'rgba(0, 0, 0, 0)',
+              ['match', ['get', 'heatClass'],
+                0, PRODUCTION_HEATMAP_COLORS[0],
+                1, PRODUCTION_HEATMAP_COLORS[1],
+                2, PRODUCTION_HEATMAP_COLORS[2],
+                3, PRODUCTION_HEATMAP_COLORS[3],
+                4, PRODUCTION_HEATMAP_COLORS[4],
+                'rgba(0, 0, 0, 0)'],
+            ]
+          : '#c8dcf0';
+        try {
+          map.current.setPaintProperty('municipalities-context-fill', 'fill-color', fillColor);
+          map.current.setPaintProperty(
+            'municipalities-context-fill',
+            'fill-opacity',
+            productionHeatmapMetric ? 0.68 : 0.18
+          );
+          map.current.setPaintProperty('municipalities-context-line', 'line-color', '#0369a1');
+          map.current.setPaintProperty('municipalities-context-line', 'line-width', 0.65);
+          map.current.setPaintProperty('municipalities-context-line', 'line-opacity', 0.32);
+        } catch {
+          /* estilo recarregando */
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) console.warn('Malha municipal nacional não carregada:', error);
+      });
+    }
+
+    applyProductionHeatmapPaint();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    productionHeatmapActive,
+    productionHeatmapMetric,
+    productionHeatmapRows,
+    productionHeatmapScale,
+    productionHeatmapUf,
+    productionHeatmapLevel,
+    productionHeatmapStateRows,
+    stateSearchOptions,
+    activeBaseStyle,
+    municipalitiesGeoVersion,
+    mapReadyVersion,
+  ]);
+
+  useEffect(() => {
+    if (!productionHeatmapActive) return;
+    const m = map.current;
+    if (!m?.isStyleLoaded()) return;
+    productionHeatmapPopupRef.current?.remove();
+    productionHeatmapPopupRef.current = null;
+    try {
+      const selected = m.getSource('selected-municipality') as mapboxgl.GeoJSONSource | undefined;
+      selected?.setData({ type: 'FeatureCollection', features: [] });
+    } catch {
+      /* ignore */
+    }
+    if (!productionHeatmapUf) {
+      // Voltar ao Brasil: remove o realce/escurecimento aplicado ao estado.
+      try {
+        if (m.getLayer('br-states-selected')) {
+          m.setFilter('br-states-selected', ['==', ['get', 'sigla'], '__none__']);
+        }
+        if (m.getLayer('br-states-dim')) {
+          m.setFilter('br-states-dim', ['==', ['get', 'sigla'], '__none__']);
+        }
+        if (m.getLayer('br-states-outline')) {
+          m.setFilter('br-states-outline', null);
+        }
+      } catch {
+        /* estilo recarregando */
+      }
+      setSelectedStateFeature(null);
+      setSelectedStateLabel(null);
+      fitMapToBrazilOverview(m, { duration: 650 });
+      return;
+    }
+    // No detalhe municipal: mantém o escurecimento das demais regiões e só
+    // remove o preenchimento azul do estado selecionado (o calor fica nos municípios).
+    try {
+      if (m.getLayer('br-states-selected')) {
+        m.setFilter('br-states-selected', ['==', ['get', 'sigla'], '__none__']);
+      }
+      if (m.getLayer('br-states-dim')) {
+        m.setFilter('br-states-dim', ['!=', ['get', 'sigla'], productionHeatmapUf]);
+      }
+      if (m.getLayer('br-states-outline')) {
+        m.setFilter('br-states-outline', ['==', ['get', 'sigla'], productionHeatmapUf]);
+      }
+    } catch {
+      /* estilo recarregando */
+    }
+    const all = allMunicipalitiesFcRef.current;
+    const scoped: GeoJSON.FeatureCollection = {
+      type: 'FeatureCollection',
+      features: all.features.filter(
+        (feature) => String(feature.properties?.heatUf ?? '').toUpperCase() === productionHeatmapUf
+      ),
+    };
+    const bounds = featureCollectionBounds(scoped);
+    if (!bounds) return;
+    try {
+      m.fitBounds(bounds, { padding: 58, maxZoom: 7.8, duration: 700 });
+    } catch {
+      /* ignore */
+    }
+  }, [productionHeatmapActive, productionHeatmapUf, municipalitiesGeoVersion, mapReadyVersion]);
+
+  // Ao sair do mapa de produção: limpa seleção de malha para não abrir o painel
+  // de performance comercial com o estado que estava em foco.
+  const wasProductionHeatmapActiveRef = useRef(false);
+  useEffect(() => {
+    if (productionHeatmapActive) {
+      wasProductionHeatmapActiveRef.current = true;
+      return;
+    }
+    if (!wasProductionHeatmapActiveRef.current) return;
+    wasProductionHeatmapActiveRef.current = false;
+    clearSelectedState();
+  }, [productionHeatmapActive]);
 
   useEffect(() => {
     const m = map.current;
     if (!m?.isStyleLoaded()) return;
-    const visibility = municipalityMeshVisible ? 'visible' : 'none';
+    const effectiveMunicipalityMeshVisible =
+      municipalityMeshVisible ||
+      (productionHeatmapActive && productionHeatmapLevel === 'municipio');
+    const visibility = effectiveMunicipalityMeshVisible ? 'visible' : 'none';
     const contextSource = m.getSource('municipalities-context') as
       | mapboxgl.GeoJSONSource
       | undefined;
     try {
       contextSource?.setData(
-        municipalityMeshVisible
+        effectiveMunicipalityMeshVisible
           ? municipalitiesFcRef.current
           : { type: 'FeatureCollection', features: [] }
       );
@@ -6344,7 +6692,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
         /* estilo recarregando */
       }
     }
-  }, [municipalityMeshVisible, mapReadyVersion]);
+  }, [municipalityMeshVisible, productionHeatmapActive, productionHeatmapLevel, mapReadyVersion]);
 
   /** Sai do modo "Comparar áreas" quando o escopo hierárquico (GG/GC III) deixa de existir. */
   useEffect(() => {
@@ -6410,7 +6758,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
     if (!m.getLayer('selected-municipality-fill') || !m.getLayer('selected-municipality-line')) return;
     const stdBasemap = isStandardStyleUrl(activeBaseStyle);
     try {
-      if (municipalityChoroplethEnabled) {
+      if (productionHeatmapActive) {
         m.setPaintProperty('selected-municipality-fill', 'fill-opacity', 0);
         m.setPaintProperty('selected-municipality-line', 'line-width', 1.1);
         m.setPaintProperty('selected-municipality-line', 'line-opacity', 0.55);
@@ -6428,7 +6776,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
     } catch {
       /* estilo recarregando */
     }
-  }, [municipalityChoroplethEnabled, activeBaseStyle]);
+  }, [productionHeatmapActive, activeBaseStyle]);
 
   const fitVisitRouteInAvailableViewport = useCallback((m: mapboxgl.Map, route: VisitRoute, duration: number) => {
     const bounds = getVisitRouteBounds(route);
@@ -6671,6 +7019,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
             >
               {loadingAgencyPoints ? '…' : 'AG'}
             </button>
+            {canShowCommercialTeamOverlay ? (
             <div ref={commercialTeamPickerRef} className="relative">
               <button
                 type="button"
@@ -6724,6 +7073,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
                 </div>
               )}
             </div>
+            ) : null}
             <div ref={storeSegmentPickerRef} className="relative">
               <button
                 type="button"
@@ -6818,123 +7168,119 @@ const MapComponent: React.FC<MapComponentProps> = ({
           rightSidePanelExpanded ? 'right-[calc(min(96vw,480px)+0.75rem)]' : 'right-4'
         }`}
       >
-        <div className="rounded-3xl border border-slate-200/90 bg-white/95 p-2 shadow-lg shadow-slate-900/10 backdrop-blur-sm">
-          <div className="flex flex-col items-center gap-2">
-            <Button
-              type="button"
-              size="icon"
-              onClick={onOpenFilters}
-              aria-label="Abrir filtros"
-              className="h-10 w-10 rounded-full border border-slate-200/90 bg-white text-slate-600 shadow-sm hover:bg-slate-50 hover:text-slate-900"
-            >
-              <SlidersHorizontal className="h-4 w-4" />
-            </Button>
-            <div ref={mapLayoutPickerRef} className="relative z-[60] h-10 w-10 shrink-0">
-              <div
-                role="radiogroup"
-                aria-label="Estilo do mapa"
-                onMouseEnter={openLayoutFlyoutHover}
-                onMouseLeave={scheduleLayoutHoverEnd}
-                className={`absolute right-full top-1/2 z-10 mr-4 flex w-max -translate-y-1/2 flex-row items-center gap-1.5 rounded-2xl border border-slate-200/90 bg-white/95 p-1.5 shadow-lg shadow-slate-900/10 backdrop-blur-sm transition duration-200 ease-out ${
-                  showLayoutFlyout
-                    ? 'pointer-events-auto translate-x-0 opacity-100'
-                    : 'pointer-events-none -translate-x-3 opacity-0'
-                }`}
-              >
-                {MAP_LAYOUT_OPTIONS.map((opt) => {
-                  const selected = mapStyleMode === opt.id;
-                  return (
-                    <button
-                      key={opt.id}
-                      type="button"
-                      role="radio"
-                      aria-checked={selected}
-                      title={opt.label}
-                      onClick={() => {
-                        setMapStyleMode(opt.id);
-                        setMapLayoutMenuPinned(false);
-                        setMapLayoutFlyoutHover(false);
-                        clearLayoutHoverTimer();
-                      }}
-                      className="group flex flex-col items-center gap-1 rounded-lg p-1 transition-colors hover:bg-slate-100/90 focus:outline-none focus-visible:bg-slate-100/90"
-                    >
-                      <span className="sr-only">{opt.label}</span>
-                      <span
-                        className={`relative block h-9 w-9 shrink-0 overflow-hidden rounded-full shadow-inner transition ${
-                          selected
-                            ? 'ring-2 ring-blue-600 ring-offset-2 ring-offset-white'
-                            : 'ring-1 ring-slate-200/80 group-hover:ring-slate-300'
-                        }`}
-                        aria-hidden
+        <div className="flex items-start gap-2">
+          {productionHeatmapActive && productionHeatmapSummary && productionHeatmapMetric ? (
+            <ProductionHeatmapTotalsCard
+              summary={productionHeatmapSummary}
+              metric={productionHeatmapMetric}
+            />
+          ) : null}
+          <div className="rounded-3xl border border-slate-200/90 bg-white/95 p-2 shadow-lg shadow-slate-900/10 backdrop-blur-sm">
+            <div className="flex flex-col items-center gap-2">
+              <div ref={mapLayoutPickerRef} className="relative z-[60] h-10 w-10 shrink-0">
+                <div
+                  role="radiogroup"
+                  aria-label="Estilo do mapa"
+                  onMouseEnter={openLayoutFlyoutHover}
+                  onMouseLeave={scheduleLayoutHoverEnd}
+                  className={`absolute right-full top-1/2 z-10 mr-4 flex w-max -translate-y-1/2 flex-row items-center gap-1.5 rounded-2xl border border-slate-200/90 bg-white/95 p-1.5 shadow-lg shadow-slate-900/10 backdrop-blur-sm transition duration-200 ease-out ${
+                    showLayoutFlyout
+                      ? 'pointer-events-auto translate-x-0 opacity-100'
+                      : 'pointer-events-none -translate-x-3 opacity-0'
+                  }`}
+                >
+                  {MAP_LAYOUT_OPTIONS.map((opt) => {
+                    const selected = mapStyleMode === opt.id;
+                    return (
+                      <button
+                        key={opt.id}
+                        type="button"
+                        role="radio"
+                        aria-checked={selected}
+                        title={opt.label}
+                        onClick={() => {
+                          setMapStyleMode(opt.id);
+                          setMapLayoutMenuPinned(false);
+                          setMapLayoutFlyoutHover(false);
+                          clearLayoutHoverTimer();
+                        }}
+                        className="group flex flex-col items-center gap-1 rounded-lg p-1 transition-colors hover:bg-slate-100/90 focus:outline-none focus-visible:bg-slate-100/90"
                       >
+                        <span className="sr-only">{opt.label}</span>
                         <span
-                          className={`block h-full w-full rounded-full ${opt.previewClass}`}
-                        />
-                      </span>
-                      <span
-                        className={`max-w-[3rem] truncate text-center text-[9px] font-semibold leading-tight ${
-                          selected ? 'text-blue-700' : 'text-slate-600'
-                        }`}
-                      >
-                        {opt.caption}
-                      </span>
-                    </button>
-                  );
-                })}
+                          className={`relative block h-9 w-9 shrink-0 overflow-hidden rounded-full shadow-inner transition ${
+                            selected
+                              ? 'ring-2 ring-blue-600 ring-offset-2 ring-offset-white'
+                              : 'ring-1 ring-slate-200/80 group-hover:ring-slate-300'
+                          }`}
+                          aria-hidden
+                        >
+                          <span
+                            className={`block h-full w-full rounded-full ${opt.previewClass}`}
+                          />
+                        </span>
+                        <span
+                          className={`max-w-[3rem] truncate text-center text-[9px] font-semibold leading-tight ${
+                            selected ? 'text-blue-700' : 'text-slate-600'
+                          }`}
+                        >
+                          {opt.caption}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+                <Button
+                  type="button"
+                  size="icon"
+                  aria-haspopup="true"
+                  aria-expanded={showLayoutFlyout}
+                  onClick={() => setMapLayoutMenuPinned((p) => !p)}
+                  onMouseEnter={openLayoutFlyoutHover}
+                  onMouseLeave={scheduleLayoutHoverEnd}
+                  title="Estilo do mapa — menu à esquerda deste botão; passe o mouse ou clique para fixar"
+                  aria-label="Estilo do mapa: abrir opções de layout"
+                  className={`h-10 w-10 rounded-full border shadow-sm hover:text-slate-900 ${
+                    mapStyleMode === 'standardWarm'
+                      ? 'border-amber-300/90 bg-amber-50 text-amber-950 hover:bg-amber-100/90'
+                      : mapStyleMode === 'standardCool'
+                        ? 'border-cyan-300/90 bg-cyan-50 text-cyan-950 hover:bg-cyan-100/90'
+                        : mapStyleMode === 'satellite' || mapStyleMode === 'dark'
+                          ? 'border-slate-600 bg-slate-700 text-white shadow-slate-900/15 hover:bg-slate-600'
+                          : 'border-slate-200/90 bg-white text-slate-600 hover:bg-slate-50'
+                  }`}
+                >
+                  <Layers className="h-4 w-4" />
+                </Button>
               </div>
+              <div className="my-1 h-px w-8 bg-slate-200/90" />
               <Button
                 type="button"
                 size="icon"
-                aria-haspopup="true"
-                aria-expanded={showLayoutFlyout}
-                onClick={() => setMapLayoutMenuPinned((p) => !p)}
-                onMouseEnter={openLayoutFlyoutHover}
-                onMouseLeave={scheduleLayoutHoverEnd}
-                title="Estilo do mapa — menu à esquerda deste botão; passe o mouse ou clique para fixar"
-                aria-label="Estilo do mapa: abrir opções de layout"
-                className={`h-10 w-10 rounded-full border shadow-sm hover:text-slate-900 ${
-                  mapStyleMode === 'standardWarm'
-                    ? 'border-amber-300/90 bg-amber-50 text-amber-950 hover:bg-amber-100/90'
-                    : mapStyleMode === 'standardCool'
-                      ? 'border-cyan-300/90 bg-cyan-50 text-cyan-950 hover:bg-cyan-100/90'
-                      : mapStyleMode === 'satellite' || mapStyleMode === 'dark'
-                        ? 'border-slate-600 bg-slate-700 text-white shadow-slate-900/15 hover:bg-slate-600'
-                        : 'border-slate-200/90 bg-white text-slate-600 hover:bg-slate-50'
-                }`}
+                onClick={handleZoomIn}
+                aria-label="Aproximar mapa"
+                className="h-10 w-10 rounded-full border border-slate-200/90 bg-white text-slate-600 shadow-sm hover:bg-slate-50 hover:text-slate-900"
               >
-                <Layers className="h-4 w-4" />
+                <span className="text-xl leading-none">+</span>
+              </Button>
+              <Button
+                type="button"
+                size="icon"
+                onClick={handleZoomOut}
+                aria-label="Afastar mapa"
+                className="h-10 w-10 rounded-full border border-slate-200/90 bg-white text-slate-600 shadow-sm hover:bg-slate-50 hover:text-slate-900"
+              >
+                <span className="text-xl leading-none">-</span>
               </Button>
             </div>
-            <Button
-              type="button"
-              size="icon"
-              onClick={openProductivitySheet}
-              aria-label="Abrir produtividade por município"
-              className="h-10 w-10 rounded-full border border-slate-200/90 bg-white text-slate-600 shadow-sm hover:bg-slate-50 hover:text-slate-900"
-            >
-              <BarChart3 className="h-4 w-4" />
-            </Button>
-            <div className="my-1 h-px w-8 bg-slate-200/90" />
-            <Button
-              type="button"
-              size="icon"
-              onClick={handleZoomIn}
-              aria-label="Aproximar mapa"
-              className="h-10 w-10 rounded-full border border-slate-200/90 bg-white text-slate-600 shadow-sm hover:bg-slate-50 hover:text-slate-900"
-            >
-              <span className="text-xl leading-none">+</span>
-            </Button>
-            <Button
-              type="button"
-              size="icon"
-              onClick={handleZoomOut}
-              aria-label="Afastar mapa"
-              className="h-10 w-10 rounded-full border border-slate-200/90 bg-white text-slate-600 shadow-sm hover:bg-slate-50 hover:text-slate-900"
-            >
-              <span className="text-xl leading-none">-</span>
-            </Button>
           </div>
         </div>
+        {productionHeatmapActive && productionHeatmapMetric ? (
+          <ProductionHeatmapThermometer
+            scale={productionHeatmapScale}
+            metric={productionHeatmapMetric}
+          />
+        ) : null}
       </div>
       <div
         data-map-bottom-controls
@@ -6942,7 +7288,8 @@ const MapComponent: React.FC<MapComponentProps> = ({
           rightSidePanelExpanded ? 'right-[calc(min(96vw,480px)+0.75rem)]' : 'right-4'
         }`}
       >
-        {overlaySupervisores &&
+        {canShowCommercialTeamOverlay &&
+        overlaySupervisores &&
         (seatLegendCompact ||
           seatLegendGc3Detail ||
           seatLegendGgDetail ||
@@ -7246,18 +7593,22 @@ const MapComponent: React.FC<MapComponentProps> = ({
           </p>
         </div>
       )}
-      {hasStatePanel && !plannerMode && (
+      {hasStatePanel && !plannerMode && !productionHeatmapActive && (
         <ExpressoStatePanel
           regionName={selectedStateLabel}
           cityFocus={selectedCityLabel}
           metrics={expressoMetrics}
           onClose={clearSelectedState}
-          onOpenProductivitySheet={openProductivitySheet}
+          onOpenProductivitySheet={() => {
+            if (!selectedStateUf || !selectedStateLabel) return;
+            onProductionHeatmapRequest?.({ uf: selectedStateUf, label: selectedStateLabel });
+          }}
           minimized={statePanelMinimized}
           onMinimize={() => setStatePanelMinimized(true)}
           onRestore={() => setStatePanelMinimized(false)}
         />
       )}
+      {/* Fluxo legado de bottom sheet substituído pelo painel Mapa de produção.
       {(() => {
         const productivityDockInset = rightSidePanelExpanded ? 'left-0 right-[min(96vw,480px)]' : 'left-0 right-0';
         const showChoroplethLegend =
@@ -7298,7 +7649,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
             <div
               className={`pointer-events-none absolute bottom-0 z-30 flex flex-col-reverse gap-2 pb-[env(safe-area-inset-bottom,0px)] ${productivityDockInset}`}
             >
-              {/* Em column-reverse o 1º filho fica colado ao rodapé: sheet primeiro, legenda acima. */}
+              { comentário interno removido }
               <div className="pointer-events-auto min-w-0 w-full">
                 <ExpressoBottomSheet
                   dock
@@ -7346,6 +7697,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
           </div>
         ) : null;
       })()}
+      */}
     </div>
   );
 };
