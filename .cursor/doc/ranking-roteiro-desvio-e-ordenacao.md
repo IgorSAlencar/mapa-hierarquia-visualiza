@@ -231,39 +231,77 @@ Motivos (`reasons`) associados:
 
 ### 5.3 Reativação — \(S_{\text{reat}}\)
 
-Uma loja “reativável” em um pilar é aquela que **teve produção em meses anteriores** (histórico = true nos últimos 12 meses, excluindo o mês atual) e **não tem no mês atual** (M0 = false).
+Uma loja “reativável” em um pilar é aquela que **teve produção em meses anteriores** (janela de 12 meses, excluindo o mês atual) e **não tem no mês atual** (M0 = false).
 
-Pontos por pilar:
+O backend expõe, para cada pilar:
+
+- flag booleana (`CIELO_HISTORICO`, `CREDITO_HISTORICO`, `NEGOCIO_HISTORICO`) — usada em badges/UI e no foco estratégico;
+- \(m\) = meses desde a **última** produção na janela (`CIELO_HISTORICO_MESES`, etc.): \(m = 1\) é o mês imediatamente anterior; \(m = 12\) é há 12 meses.
+
+#### Peso de recência (linear agressivo)
+
+Só o mês da última produção entra no peso (não se somam meses intermediários):
+
+\[
+w(m) =
+\begin{cases}
+\dfrac{12 - m}{11} & \text{se } 1 \le m \le 12 \\
+0 & \text{caso contrário}
+\end{cases}
+\]
+
+| \(m\) (meses atrás) | \(w(m)\) | Interpretação |
+| ---: | ---: | --- |
+| 1 | \(1{,}00\) (100%) | produziu no mês anterior |
+| 3 | \(0{,}82\) | |
+| 6 | \(0{,}55\) (≈50%) | meio da janela |
+| 9 | \(0{,}27\) | |
+| 12 | \(0{,}00\) | última produção há 12 meses — **não pontua** reativação |
+
+Função: `historyRecencyWeight`.
+
+> Quem só aparece no extremo antigo da janela (\(m = 12\)) ainda pode ter o badge “teve antes”, mas **não recebe pontos** de reativação. Quem produziu no mês passado recebe o peso máximo.
+
+Pontos base por pilar (antes da recência):
 
 \[
 \begin{align*}
-\text{Cielo}   &\to +8 \\
-\text{Crédito} &\to +8 \\
-\text{Negócio} &\to +4
+\text{Cielo}   &\to 8 \\
+\text{Crédito} &\to 8 \\
+\text{Negócio} &\to 4
 \end{align*}
 \]
 
-Soma bruta limitada ao peso máximo:
+Score de reativação:
 
 \[
-S_{\text{reat}} = \min\!\big(20,\; 8\cdot\mathbb{1}_{\text{cielo}} + 8\cdot\mathbb{1}_{\text{credito}} + 4\cdot\mathbb{1}_{\text{negocio}}\big)
+S_{\text{reat}} = \min\!\Big(
+  20,\;
+  8\,w(m_{\text{cielo}})\,\mathbb{1}_{\text{cielo}}
+  + 8\,w(m_{\text{credito}})\,\mathbb{1}_{\text{credito}}
+  + 4\,w(m_{\text{negocio}})\,\mathbb{1}_{\text{negocio}}
+\Big)
 \]
 
-onde \(\mathbb{1}\) vale 1 se a condição de reativação daquele pilar for verdadeira.
+onde \(\mathbb{1}\) vale 1 se M0 = false **e** \(w(m) > 0\) para aquele pilar.
 
-Máximo teórico da soma bruta = \(8+8+4 = 20\), portanto o teto `min(20, …)` em geral não corta — existe como salvaguarda.
+Exemplos (só Cielo reativável):
 
-Motivos:
+| Última produção Cielo | \(w\) | Pontos (\(8\cdot w\)) |
+| --- | ---: | ---: |
+| mês anterior (\(m=1\)) | 1,00 | 8,00 |
+| há 6 meses (\(m=6\)) | 0,55 | 4,36 |
+| há 12 meses (\(m=12\)) | 0,00 | 0 |
 
-- `"Reativar Cielo"`, `"Reativar Crédito"`, `"Reativar Negócio"` conforme o caso.
+Motivos (`reasons`): `"Reativar Cielo"`, `"Reativar Crédito"`, `"Reativar Negócio"` — só quando \(w(m) > 0\).
 
-Históricos no backend: `CIELO_HISTORICO`, `CREDITO_HISTORICO`, `NEGOCIO_HISTORICO` (subqueries sobre `DATAWAREHOUSE..TB_INDICADORES_BE`, janela de 12 meses anteriores ao mês corrente).
+Históricos no backend: subqueries sobre `DATAWAREHOUSE..TB_INDICADORES_BE` com `MAX(PERIODO)` na janela de 12 meses anteriores ao mês corrente; \(m\) via `DATEDIFF(MONTH, …)`.
 
 ### 5.4 Foco estratégico do canal — \(S_{\text{estrat}}\)
 
 Prioridade do canal: **impulsionar Crédito em lojas com presença Cielo**.
 
-Condição:
+A presença Cielo continua **binária** (M0 ou qualquer histórico na janela) — não usa o peso de recência:
 
 \[
 \text{creditoM0} = \text{false}
@@ -287,18 +325,20 @@ Loja \(L\):
 
 - pilares cumpridos: 1 → **Alerta** → \(S_{\text{band}} = 30\)
 - \(\delta = 3\) km → \(S_{\text{prox}} = 35 \cdot (1 - 3/15) = 35 \cdot 0{,}8 = 28\)
-- teve Cielo no passado, sem Cielo M0 → \(+8\)
-- teve Crédito no passado, sem Crédito M0 → \(+8\)
+- teve Cielo há **1 mês**, sem Cielo M0 → \(8 \cdot w(1) = 8 \cdot 1 = 8\)
+- teve Crédito há **6 meses**, sem Crédito M0 → \(8 \cdot w(6) = 8 \cdot \frac{6}{11} \approx 4{,}36\)
 - Negócio sem histórico reativável → \(0\)
-- \(S_{\text{reat}} = \min(20, 16) = 16\)
+- \(S_{\text{reat}} = \min(20,\, 12{,}36) = 12{,}36\)
 - sem Crédito M0 e com histórico Cielo → \(S_{\text{estrat}} = 15\)
 
 \[
-S = 30 + 28 + 16 + 15 = 89
-\quad\Rightarrow\quad S_{\text{final}} = 89
+S = 30 + 28 + 12{,}36 + 15 = 85{,}36
+\quad\Rightarrow\quad S_{\text{final}} = 85
 \]
 
 Reasons: `"Desvio curto"`, `"Reativar Cielo"`, `"Reativar Crédito"`, `"Crédito + Cielo"`.
+
+Comparando com o modelo antigo (histórico binário = pontos cheios): a mesma loja teria \(S_{\text{reat}} = 16\) e \(S_{\text{final}} = 89\). A penalização do Crédito “antigo” (\(m=6\)) é exatamente o efeito da ponderação por recência.
 
 ---
 
@@ -364,7 +404,7 @@ Correção:
 ### 6.4 Fluxo resumido
 
 ```text
-Pontos SQL (M0 + históricos)
+Pontos SQL (M0 + histórico + meses desde última produção)
         │
         ▼
 toPlannerOpportunity(origem, destino)
@@ -372,6 +412,7 @@ toPlannerOpportunity(origem, destino)
         ├─ computeRouteDetourKm  →  δ km  →  minutos (UI)
         │
         └─ scoreRouteOpportunity → { tier, score, band, reasons }
+              (reativação × historyRecencyWeight)
         │
         ▼
 rankedSuggestions (priority = inteligente)
@@ -408,9 +449,11 @@ Para evitar interpretações erradas:
 | `WEIGHT_PROXIMITY` | 35 | proximidade |
 | `WEIGHT_REACTIVATION` | 20 | reativação |
 | `WEIGHT_STRATEGIC` | 15 | crédito + cielo |
-| Reativação Cielo | 8 | pontos |
-| Reativação Crédito | 8 | pontos |
-| Reativação Negócio | 4 | pontos |
+| `HISTORY_WINDOW_MONTHS` | 12 | janela do histórico |
+| Peso recência \(w(m)\) | \((12-m)/11\) | linear agressivo |
+| Reativação Cielo | \(8\cdot w(m)\) | pontos |
+| Reativação Crédito | \(8\cdot w(m)\) | pontos |
+| Reativação Negócio | \(4\cdot w(m)\) | pontos |
 | Reason “No caminho” | \(\delta \le 2\) | chip |
 | Reason “Desvio curto” | \(2 < \delta \le 6\) | chip |
 

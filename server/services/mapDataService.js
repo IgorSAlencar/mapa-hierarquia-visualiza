@@ -31,6 +31,29 @@ function normalizeText(v) {
   return s.length > 0 ? s : null;
 }
 
+/** CD_MUNIC chega como float(53); evita "4.102321e+006" / "4102321.0". */
+function normalizeMunicipalityCode(value) {
+  if (value == null || value === '') return null;
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value) || value <= 0) return null;
+    const digits = String(Math.round(value));
+    if (!/^\d{6,7}$/.test(digits)) return null;
+    return digits.padStart(7, '0');
+  }
+  const raw = String(value).trim();
+  if (!raw) return null;
+  if (/e/i.test(raw) || /^\d+\.0+$/.test(raw)) {
+    const numeric = Number(raw);
+    if (!Number.isFinite(numeric) || numeric <= 0) return null;
+    const digits = String(Math.round(numeric));
+    if (!/^\d{6,7}$/.test(digits)) return null;
+    return digits.padStart(7, '0');
+  }
+  const digits = raw.replace(/\.0+$/, '');
+  if (!/^\d{6,7}$/.test(digits)) return null;
+  return digits.padStart(7, '0');
+}
+
 function normalizeCodAg(v) {
   const s = normalizeText(v);
   if (!s) return null;
@@ -177,10 +200,13 @@ export async function getStoreMapPoints({ bbox = null, limit = null, codAg = nul
         cieloM0: normalizeBinaryFlag(row.CIELO_M0),
         cieloFaturamentoM0: normalizeNumber(row.VLR_FAT_CIELO_M0),
         cieloHistorico: normalizeBinaryFlag(row.CIELO_HISTORICO),
+        cieloHistoricoMeses: normalizeNumber(row.CIELO_HISTORICO_MESES),
         creditoM0: normalizeBinaryFlag(row.CREDITO_M0),
         creditoHistorico: normalizeBinaryFlag(row.CREDITO_HISTORICO),
+        creditoHistoricoMeses: normalizeNumber(row.CREDITO_HISTORICO_MESES),
         negocioM0: normalizeBinaryFlag(row.NEGOCIO_M0),
         negocioHistorico: normalizeBinaryFlag(row.NEGOCIO_HISTORICO),
+        negocioHistoricoMeses: normalizeNumber(row.NEGOCIO_HISTORICO_MESES),
         ativoPadeM0: normalizeBinaryFlag(row.ATIVO_PADE_M0),
         propostaValor: normalizeBinaryFlag(row.PROPOSTA_VALOR),
         checklist: normalizeText(row.STATUS_CHECKLIST)?.toUpperCase() ?? null,
@@ -250,13 +276,19 @@ export async function getProductionHeatmap({ metricId, period, user, now = new D
     user,
   });
 
-  const rows = result.rows.map((row) => ({
-    municipalityCode: String(row.municipalityCode ?? '').padStart(7, '0'),
-    municipalityName: normalizeText(row.municipalityName) ?? '',
-    uf: String(row.uf ?? '').trim().toUpperCase(),
-    value: Number(row.value) || 0,
-    producingStores: Math.max(0, Number(row.producingStores) || 0),
-  }));
+  const rows = result.rows
+    .map((row) => {
+      const municipalityCode = normalizeMunicipalityCode(row.municipalityCode);
+      if (!municipalityCode) return null;
+      return {
+        municipalityCode,
+        municipalityName: normalizeText(row.municipalityName) ?? '',
+        uf: String(row.uf ?? '').trim().toUpperCase(),
+        value: Number(row.value) || 0,
+        producingStores: Math.max(0, Number(row.producingStores) || 0),
+      };
+    })
+    .filter(Boolean);
   const rawSummary = result.summary ?? {};
 
   return {

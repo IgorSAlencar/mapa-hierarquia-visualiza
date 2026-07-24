@@ -37,10 +37,14 @@ export interface SqlMapPoint {
   cieloM0?: boolean | null;
   cieloFaturamentoM0?: number | null;
   cieloHistorico?: boolean | null;
+  /** Meses desde a última produção Cielo no histórico (1 = mês anterior, 12 = há 12 meses). */
+  cieloHistoricoMeses?: number | null;
   creditoM0?: boolean | null;
   creditoHistorico?: boolean | null;
+  creditoHistoricoMeses?: number | null;
   negocioM0?: boolean | null;
   negocioHistorico?: boolean | null;
+  negocioHistoricoMeses?: number | null;
   ativoPadeM0?: boolean | null;
   propostaValor?: boolean | null;
   checklist?: ChecklistStatus | null;
@@ -274,10 +278,13 @@ async function fetchPoints(path: string, options: FetchPointsOptions = {}): Prom
         point.kind !== 'loja' ||
         (Object.prototype.hasOwnProperty.call(point, 'cieloFaturamentoM0') &&
           Object.prototype.hasOwnProperty.call(point, 'cieloHistorico') &&
+          Object.prototype.hasOwnProperty.call(point, 'cieloHistoricoMeses') &&
           Object.prototype.hasOwnProperty.call(point, 'creditoM0') &&
           Object.prototype.hasOwnProperty.call(point, 'creditoHistorico') &&
+          Object.prototype.hasOwnProperty.call(point, 'creditoHistoricoMeses') &&
           Object.prototype.hasOwnProperty.call(point, 'negocioM0') &&
           Object.prototype.hasOwnProperty.call(point, 'negocioHistorico') &&
+          Object.prototype.hasOwnProperty.call(point, 'negocioHistoricoMeses') &&
           Object.prototype.hasOwnProperty.call(point, 'ativoPadeM0') &&
           Object.prototype.hasOwnProperty.call(point, 'propostaValor') &&
           Object.prototype.hasOwnProperty.call(point, 'nomeAg') &&

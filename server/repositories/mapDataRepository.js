@@ -279,10 +279,34 @@ export async function fetchStoreCoordinates({ bbox = null, limit = null, codAg =
       CASE WHEN ind.QTD_CIELO > 0 THEN 1 ELSE 0 END AS CIELO_M0,
       ISNULL(ind.VLR_FAT_CIELO, 0) AS VLR_FAT_CIELO_M0,
       CASE WHEN previousCielo.CHAVE_LOJA IS NOT NULL THEN 1 ELSE 0 END AS CIELO_HISTORICO,
+      CASE
+        WHEN previousCielo.ULTIMO_PERIODO IS NULL THEN NULL
+        ELSE DATEDIFF(
+          MONTH,
+          DATEFROMPARTS(previousCielo.ULTIMO_PERIODO / 100, previousCielo.ULTIMO_PERIODO % 100, 1),
+          DATEFROMPARTS(YEAR(GETDATE()), MONTH(GETDATE()), 1)
+        )
+      END AS CIELO_HISTORICO_MESES,
       CASE WHEN (${creditQuantitySql}) > 0 THEN 1 ELSE 0 END AS CREDITO_M0,
       CASE WHEN previousCredito.CHAVE_LOJA IS NOT NULL THEN 1 ELSE 0 END AS CREDITO_HISTORICO,
+      CASE
+        WHEN previousCredito.ULTIMO_PERIODO IS NULL THEN NULL
+        ELSE DATEDIFF(
+          MONTH,
+          DATEFROMPARTS(previousCredito.ULTIMO_PERIODO / 100, previousCredito.ULTIMO_PERIODO % 100, 1),
+          DATEFROMPARTS(YEAR(GETDATE()), MONTH(GETDATE()), 1)
+        )
+      END AS CREDITO_HISTORICO_MESES,
       CASE WHEN (${businessQuantitySql}) > 0 THEN 1 ELSE 0 END AS NEGOCIO_M0,
       CASE WHEN previousNegocio.CHAVE_LOJA IS NOT NULL THEN 1 ELSE 0 END AS NEGOCIO_HISTORICO,
+      CASE
+        WHEN previousNegocio.ULTIMO_PERIODO IS NULL THEN NULL
+        ELSE DATEDIFF(
+          MONTH,
+          DATEFROMPARTS(previousNegocio.ULTIMO_PERIODO / 100, previousNegocio.ULTIMO_PERIODO % 100, 1),
+          DATEFROMPARTS(YEAR(GETDATE()), MONTH(GETDATE()), 1)
+        )
+      END AS NEGOCIO_HISTORICO_MESES,
       CASE
         WHEN ISNULL(ind.QTD_TRX_CONTABIL_DTLHES, 0) >= 200
           OR (${businessQuantitySql}) >= 5
@@ -311,7 +335,9 @@ export async function fetchStoreCoordinates({ bbox = null, limit = null, codAg =
       ON ind.CHAVE_LOJA = l.CHAVE_LOJA
       AND ind.PERIODO = YEAR(GETDATE()) * 100 + MONTH(GETDATE())
     LEFT JOIN (
-      SELECT CHAVE_LOJA
+      SELECT
+        CHAVE_LOJA,
+        MAX(TRY_CONVERT(int, PERIODO)) AS ULTIMO_PERIODO
       FROM DATAWAREHOUSE..TB_INDICADORES_BE
       WHERE TRY_CONVERT(int, PERIODO) >=
           YEAR(DATEADD(MONTH, -12, GETDATE())) * 100
@@ -322,7 +348,9 @@ export async function fetchStoreCoordinates({ bbox = null, limit = null, codAg =
     ) AS previousCielo
       ON previousCielo.CHAVE_LOJA = l.CHAVE_LOJA
     LEFT JOIN (
-      SELECT prevCred.CHAVE_LOJA
+      SELECT
+        prevCred.CHAVE_LOJA,
+        MAX(TRY_CONVERT(int, prevCred.PERIODO)) AS ULTIMO_PERIODO
       FROM DATAWAREHOUSE..TB_INDICADORES_BE AS prevCred
       WHERE TRY_CONVERT(int, prevCred.PERIODO) >=
           YEAR(DATEADD(MONTH, -12, GETDATE())) * 100
@@ -333,7 +361,9 @@ export async function fetchStoreCoordinates({ bbox = null, limit = null, codAg =
     ) AS previousCredito
       ON previousCredito.CHAVE_LOJA = l.CHAVE_LOJA
     LEFT JOIN (
-      SELECT prevNeg.CHAVE_LOJA
+      SELECT
+        prevNeg.CHAVE_LOJA,
+        MAX(TRY_CONVERT(int, prevNeg.PERIODO)) AS ULTIMO_PERIODO
       FROM DATAWAREHOUSE..TB_INDICADORES_BE AS prevNeg
       LEFT JOIN (
         SELECT
@@ -580,7 +610,15 @@ export async function fetchProductionHeatmapRows({ metricId, period, user }) {
   const result = await request.query(`
     SELECT DISTINCT
       store.CHAVE_LOJA,
-      LTRIM(RTRIM(CONVERT(varchar(20), store.CD_MUNIC))) AS municipalityCode,
+      -- CD_MUNIC é float(53): CONVERT(varchar, float) vira notação científica
+      -- (ex.: 4.102321e+006). STR(..., 0) força o inteiro IBGE em texto.
+      CASE
+        WHEN store.CD_MUNIC IS NULL THEN NULL
+        ELSE RIGHT(
+          REPLICATE('0', 7) + LTRIM(RTRIM(STR(ROUND(CONVERT(float, store.CD_MUNIC), 0), 20, 0))),
+          7
+        )
+      END AS municipalityCode,
       LTRIM(RTRIM(CONVERT(nvarchar(200), store.MUNICIPIO))) AS municipalityName,
       UPPER(LTRIM(RTRIM(CONVERT(varchar(2), store.UF)))) AS uf,
       CAST(${metricExpression} AS float) AS metricValue

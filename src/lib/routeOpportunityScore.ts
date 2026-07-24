@@ -24,15 +24,22 @@ const WEIGHT_STRATEGIC = 15;
 
 const REACTIVATION_POINTS = { cielo: 8, credito: 8, negocio: 4 } as const;
 
+/** Janela máxima do histórico de reativação (meses anteriores ao M0). */
+export const HISTORY_WINDOW_MONTHS = 12;
+
 export interface RouteOpportunityScoreInput extends OpportunitySnapshot {
   /** Desvio adicional (em km) que a loja acrescenta ao trajeto. */
   detourKm: number;
   cieloM0?: boolean | null;
   cieloHistorico?: boolean | null;
+  /** Meses desde a última produção Cielo no histórico (1 = mês anterior). */
+  cieloHistoricoMeses?: number | null;
   creditoM0?: boolean | null;
   creditoHistorico?: boolean | null;
+  creditoHistoricoMeses?: number | null;
   negocioM0?: boolean | null;
   negocioHistorico?: boolean | null;
+  negocioHistoricoMeses?: number | null;
 }
 
 export interface RouteOpportunityScore {
@@ -91,6 +98,32 @@ export function opportunityPriorityBand(snapshot: OpportunitySnapshot): Opportun
   return 'baixa';
 }
 
+/**
+ * Peso de recência do histórico (linear agressivo).
+ * m = 1 (mês anterior) → 1; m = 6 → ≈0,545; m = 12 → 0.
+ * Usa só o mês da última produção na janela de 12 meses.
+ */
+export function historyRecencyWeight(monthsAgo: number | null | undefined): number {
+  if (monthsAgo == null || !Number.isFinite(monthsAgo)) return 0;
+  const m = Math.trunc(monthsAgo);
+  if (m < 1 || m > HISTORY_WINDOW_MONTHS) return 0;
+  return (HISTORY_WINDOW_MONTHS - m) / (HISTORY_WINDOW_MONTHS - 1);
+}
+
+/**
+ * Resolve o peso de um pilar: prefere meses informados; se só houver flag
+ * booleana de histórico (cache antigo), assume peso cheio.
+ */
+function reactivationWeight(
+  monthsAgo: number | null | undefined,
+  historico: boolean | null | undefined
+): number {
+  if (monthsAgo != null && Number.isFinite(monthsAgo)) {
+    return historyRecencyWeight(monthsAgo);
+  }
+  return historico === true ? 1 : 0;
+}
+
 export function scoreRouteOpportunity(input: RouteOpportunityScoreInput): RouteOpportunityScore {
   const band = opportunityPriorityBand(input);
   const reasons: string[] = [];
@@ -104,19 +137,28 @@ export function scoreRouteOpportunity(input: RouteOpportunityScoreInput): RouteO
   if (detourKm <= 2) reasons.push('No caminho');
   else if (detourKm <= 6) reasons.push('Desvio curto');
 
-  // 3. Reativação (peso 20): produziu em meses anteriores, mas não no mês atual.
+  // 3. Reativação (peso 20): produziu no passado, não no M0; pontos × recência.
   let reactivationScore = 0;
-  if (input.cieloHistorico === true && input.cieloM0 === false) {
-    reactivationScore += REACTIVATION_POINTS.cielo;
-    reasons.push('Reativar Cielo');
+  if (input.cieloM0 === false) {
+    const w = reactivationWeight(input.cieloHistoricoMeses, input.cieloHistorico);
+    if (w > 0) {
+      reactivationScore += REACTIVATION_POINTS.cielo * w;
+      reasons.push('Reativar Cielo');
+    }
   }
-  if (input.creditoHistorico === true && input.creditoM0 === false) {
-    reactivationScore += REACTIVATION_POINTS.credito;
-    reasons.push('Reativar Crédito');
+  if (input.creditoM0 === false) {
+    const w = reactivationWeight(input.creditoHistoricoMeses, input.creditoHistorico);
+    if (w > 0) {
+      reactivationScore += REACTIVATION_POINTS.credito * w;
+      reasons.push('Reativar Crédito');
+    }
   }
-  if (input.negocioHistorico === true && input.negocioM0 === false) {
-    reactivationScore += REACTIVATION_POINTS.negocio;
-    reasons.push('Reativar Negócio');
+  if (input.negocioM0 === false) {
+    const w = reactivationWeight(input.negocioHistoricoMeses, input.negocioHistorico);
+    if (w > 0) {
+      reactivationScore += REACTIVATION_POINTS.negocio * w;
+      reasons.push('Reativar Negócio');
+    }
   }
   reactivationScore = Math.min(WEIGHT_REACTIVATION, reactivationScore);
 

@@ -165,10 +165,13 @@ function toPlannerOpportunity(
     detourKm,
     cieloM0: point.cieloM0,
     cieloHistorico: point.cieloHistorico,
+    cieloHistoricoMeses: point.cieloHistoricoMeses,
     creditoM0: point.creditoM0,
     creditoHistorico: point.creditoHistorico,
+    creditoHistoricoMeses: point.creditoHistoricoMeses,
     negocioM0: point.negocioM0,
     negocioHistorico: point.negocioHistorico,
+    negocioHistoricoMeses: point.negocioHistoricoMeses,
   });
   return {
     id: point.id || seed,

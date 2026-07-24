@@ -96,7 +96,29 @@ export function computeValueRangeFromRows(
 }
 
 export function normalizeMunicipalityCode(value: unknown): string | null {
-  const digits = String(value ?? '').trim().replace(/\.0+$/, '');
+  if (value == null || value === '') return null;
+
+  // Número (float do banco/driver): arredonda antes de virar texto.
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value) || value <= 0) return null;
+    const digits = String(Math.round(value));
+    if (!/^\d{6,7}$/.test(digits)) return null;
+    return digits.padStart(7, '0');
+  }
+
+  const raw = String(value).trim();
+  if (!raw) return null;
+
+  // Notação científica residual ("4.102321e+006") ou inteiro com ".0".
+  if (/e/i.test(raw) || /^\d+\.0+$/.test(raw)) {
+    const numeric = Number(raw);
+    if (!Number.isFinite(numeric) || numeric <= 0) return null;
+    const digits = String(Math.round(numeric));
+    if (!/^\d{6,7}$/.test(digits)) return null;
+    return digits.padStart(7, '0');
+  }
+
+  const digits = raw.replace(/\.0+$/, '');
   if (!/^\d{6,7}$/.test(digits)) return null;
   return digits.padStart(7, '0');
 }

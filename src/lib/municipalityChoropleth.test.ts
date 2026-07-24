@@ -11,6 +11,9 @@ import {
 test('normaliza e resolve códigos municipais sem usar o nome', () => {
   assert.equal(normalizeMunicipalityCode('3550308'), '3550308');
   assert.equal(normalizeMunicipalityCode(3509502), '3509502');
+  assert.equal(normalizeMunicipalityCode(4102321.0), '4102321');
+  assert.equal(normalizeMunicipalityCode('4.102321e+006'), '4102321');
+  assert.equal(normalizeMunicipalityCode('4102321.0'), '4102321');
   assert.equal(normalizeMunicipalityCode('123'), null);
   assert.equal(municipalityCodeFromProperties({ COD_IBGE: '3550308' }), '3550308');
 });
