@@ -12,6 +12,9 @@ import {
   X,
 } from 'lucide-react';
 import ExpressoStatePanel from '@/components/ExpressoStatePanel';
+import ProductionHeatmapStoresPanel, {
+  type ProductionMunicipalityDetail,
+} from '@/components/navigator/ProductionHeatmapStoresPanel';
 import MapOverlayMarkerInfoPanel from '@/components/MapOverlayMarkerInfoPanel';
 import {
   agencyMapPopupHoverOptions,
@@ -67,7 +70,11 @@ import {
 import {
   mergeProductionHeatmapIntoFeatureCollection,
   productionQuantileClass,
-  PRODUCTION_HEATMAP_COLORS,
+  buildProductionQuantileScale,
+  buildProductionHeatmapFillColorExpression,
+  buildProductionHeatmapLineColorExpression,
+  productionHeatmapColorForClass,
+  municipalityCodeFromProperties,
   type ProductionQuantileScale,
 } from '@/lib/municipalityChoropleth';
 import {
@@ -92,6 +99,7 @@ import {
   buildPlannerPriorityBadgeFeatureCollection,
   PLANNER_PRIORITY_BADGE_LAYER_IDS,
   syncPlannerPriorityBadges,
+  type PlannerPriorityBand,
 } from '@/lib/plannerPriorityBadges';
 import {
   AGENCY_MARKER_BADGE_ICON_SIZE,
@@ -1112,6 +1120,7 @@ const AGENCY_CLICK_LAYER_IDS = [
   'structure-agencies-point',
 ] as const;
 const LOJA_CLICK_LAYER_IDS = [
+  'selected-overlay-loja-cir',
   'planner-hovered-loja-cir',
   'planner-selected-lojas-cir',
   'planner-route-lojas-cir',
@@ -1133,6 +1142,8 @@ const MARKER_LAYER_STACK_BOTTOM_TO_TOP = [
   'planner-selected-lojas-cir',
   'planner-hovered-loja-halo',
   'planner-hovered-loja-cir',
+  'selected-overlay-loja-halo',
+  'selected-overlay-loja-cir',
   'structure-agencies-clusters',
   'structure-agencies-cluster-count',
   'structure-agencies-point',
@@ -1279,6 +1290,24 @@ const OVERLAY_LOJA_CIRCLE_RADIUS: mapboxgl.ExpressionSpecification = [
   14,
   8,
 ];
+
+/** Marker da loja selecionada no painel — maior que a bolinha verde comum. */
+const SELECTED_OVERLAY_LOJA_CIRCLE_RADIUS: mapboxgl.ExpressionSpecification = [
+  'interpolate',
+  ['linear'],
+  ['zoom'],
+  3,
+  5.5,
+  6,
+  7,
+  10,
+  9.5,
+  14,
+  13,
+];
+
+const SELECTED_OVERLAY_LOJA_COLOR = '#f59e0b';
+const SELECTED_OVERLAY_LOJA_STROKE = '#fffbeb';
 
 /** interpolate no topo; case só nos valores de cada stop (Mapbox não aceita zoom dentro de case). */
 function overlayLojaCircleRadiusForRouteRole(): mapboxgl.ExpressionSpecification {
@@ -1940,6 +1969,8 @@ interface MapComponentProps {
   }>;
   onProductionHeatmapStateChange?: (uf: string, label: string) => void;
   onProductionHeatmapRequest?: (scope?: { uf: string; label: string }) => void;
+  /** Painel lateral de lojas do heatmap expandido (para recentrar controles no Index). */
+  onProductionStoresPanelExpandedChange?: (expanded: boolean) => void;
   /** Roteiro de visitas ativo (linha + paradas numeradas no mapa). */
   visitRoute?: VisitRoute | null;
   selectedVisitStopId?: number | null;
@@ -2172,6 +2203,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
   productionHeatmapStateRows = [],
   onProductionHeatmapStateChange,
   onProductionHeatmapRequest,
+  onProductionStoresPanelExpandedChange,
   visitRoute = null,
   selectedVisitStopId = null,
   onVisitStopSelect,
@@ -2229,8 +2261,8 @@ const MapComponent: React.FC<MapComponentProps> = ({
   onDistanceAnalysisPointSelectRef.current = onDistanceAnalysisPointSelect;
   const productionHeatmapActiveRef = useRef(productionHeatmapActive);
   productionHeatmapActiveRef.current = productionHeatmapActive;
+  // Sync via effect (abaixo): clique seta UF otimista; não sobrescrever com null no render.
   const productionHeatmapUfRef = useRef(productionHeatmapUf);
-  productionHeatmapUfRef.current = productionHeatmapUf;
   const productionHeatmapMetricRef = useRef(productionHeatmapMetric);
   productionHeatmapMetricRef.current = productionHeatmapMetric;
   const productionHeatmapPeriodRef = useRef(productionHeatmapPeriod);
@@ -2238,7 +2270,56 @@ const MapComponent: React.FC<MapComponentProps> = ({
   const onProductionHeatmapStateChangeRef = useRef(onProductionHeatmapStateChange);
   onProductionHeatmapStateChangeRef.current = onProductionHeatmapStateChange;
   const productionHeatmapPopupRef = useRef<mapboxgl.Popup | null>(null);
+  /** Faixas do termômetro selecionadas (índices 0–4). `null` = todas. */
+  const [productionHeatmapClassFilter, setProductionHeatmapClassFilter] = useState<number[] | null>(
+    null
+  );
+  /** Painel lateral de lojas/municípios do mapa de produção. */
+  const [productionStoresPanelOpen, setProductionStoresPanelOpen] = useState(false);
+  const [productionStoresPanelMinimized, setProductionStoresPanelMinimized] = useState(false);
+  /** Município aberto no painel: markers + sem calor. */
+  const [productionMunicipalityDetail, setProductionMunicipalityDetail] =
+    useState<ProductionMunicipalityDetail | null>(null);
+  /** Pedido de seleção de município a partir do popup do mapa. */
+  const [productionMunicipalitySelectRequest, setProductionMunicipalitySelectRequest] = useState<{
+    row: ProductionHeatmapRow;
+    tick: number;
+  } | null>(null);
+  const productionStoresPanelOpenRef = useRef(false);
+  const requestProductionMunicipalitySelectRef = useRef<(row: ProductionHeatmapRow) => void>(
+    () => undefined
+  );
   const lastDistanceMapSelectionRef = useRef<{ key: string; at: number } | null>(null);
+
+  useEffect(() => {
+    productionStoresPanelOpenRef.current = productionStoresPanelOpen;
+  }, [productionStoresPanelOpen]);
+
+  // Mantém UF otimista do clique até a prop do pai chegar (ou limpar de verdade).
+  useEffect(() => {
+    productionHeatmapUfRef.current = productionHeatmapUf;
+  }, [productionHeatmapUf]);
+
+  useEffect(() => {
+    requestProductionMunicipalitySelectRef.current = (row: ProductionHeatmapRow) => {
+      setProductionStoresPanelOpen(true);
+      setProductionStoresPanelMinimized(false);
+      setProductionMunicipalitySelectRequest((current) => ({
+        row,
+        tick: (current?.tick ?? 0) + 1,
+      }));
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!productionHeatmapActive) {
+      setProductionHeatmapClassFilter(null);
+      setProductionStoresPanelOpen(false);
+      setProductionStoresPanelMinimized(false);
+      setProductionMunicipalityDetail(null);
+      setProductionMunicipalitySelectRequest(null);
+    }
+  }, [productionHeatmapActive]);
 
   // Shift+clique preenche A/B na análise de distância; o boxZoom nativo do Mapbox
   // (Shift+arrastar) precisa ficar desligado nessa jornada para não roubar o gesto.
@@ -2261,10 +2342,21 @@ const MapComponent: React.FC<MapComponentProps> = ({
     features: [],
   });
   const loadingAllMunicipalitiesRef = useRef(false);
+  const loadingAllMunicipalitiesPromiseRef = useRef<Promise<GeoJSON.FeatureCollection> | null>(
+    null
+  );
   const loadAllMunicipalitiesRef = useRef<() => Promise<GeoJSON.FeatureCollection>>(async () => ({
     type: 'FeatureCollection',
     features: [],
   }));
+  const productionHeatmapRowsRef = useRef(productionHeatmapRows);
+  productionHeatmapRowsRef.current = productionHeatmapRows;
+  const productionHeatmapScaleRef = useRef(productionHeatmapScale);
+  productionHeatmapScaleRef.current = productionHeatmapScale;
+  const loadMunicipiosByUfRef = useRef<
+    (uf: string) => Promise<GeoJSON.FeatureCollection | null>
+  >(async () => null);
+  const paintProductionUfRequestRef = useRef(0);
   /** Municípios do UF atual (mesmo dado da fonte municipalities-context) para hit-test por polígono. */
   const municipalitiesFcRef = useRef<GeoJSON.FeatureCollection>({
     type: 'FeatureCollection',
@@ -2361,6 +2453,10 @@ const MapComponent: React.FC<MapComponentProps> = ({
   const [overlayMarkerSelection, setOverlayMarkerSelection] = useState<
     AgencyPopupInfo | StorePopupInfo | null
   >(null);
+  /** Coordenadas do marker de loja selecionado — destaque visual no mapa. */
+  const [selectedStoreHighlightPoint, setSelectedStoreHighlightPoint] = useState<SqlMapPoint | null>(
+    null
+  );
   const storeFilterCodAgRef = useRef<string | null>(null);
   const overlaySeatHierarchyRef = useRef<SqlHierarchyFilter | null>(null);
   const hierarchyFilterRef = useRef<SqlHierarchyFilter | null | undefined>(hierarchyFilter);
@@ -3204,6 +3300,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
     setSqlStorePoints([]);
     setOverlayMarkerSelection(null);
     setSearchFocusedPoint(null);
+    setSelectedStoreHighlightPoint(null);
   }, []);
 
   const resetAgencyStoreFilterSyncRef = useRef(resetAgencyStoreFilterSync);
@@ -3626,6 +3723,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
     ++plannerStoreFetchGenRef.current;
     setPlannerStorePoints([]);
     setOverlayMarkerSelection(null);
+    setSelectedStoreHighlightPoint(null);
 
     const clearArtifacts = () => {
       clearPlannerMapArtifacts(mapInstance);
@@ -3674,6 +3772,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
     overlaySeatFilterKeyRef.current = null;
     setOverlaySeatFilterKey(null);
     setOverlayMarkerSelection(null);
+    setSelectedStoreHighlightPoint(null);
     overlayAgencyCacheRef.current.clear();
     overlayStoreCacheRef.current.clear();
     lastOverlayFcSignatureRef.current = {};
@@ -3762,7 +3861,342 @@ const MapComponent: React.FC<MapComponentProps> = ({
   /** Painel ocupando a tela (expandido). Minimizado mantém a seleção mas libera o layout.
    *  No mapa de produção o painel de estado não existe, então não deve deslocar o layout. */
   const statePanelExpanded = hasStatePanel && !statePanelMinimized && !productionHeatmapActive;
-  const rightSidePanelExpanded = plannerResultsPanelExpanded || (statePanelExpanded && !plannerMode);
+  const productionStoresPanelExpanded =
+    productionHeatmapActive && productionStoresPanelOpen && !productionStoresPanelMinimized;
+  const rightSidePanelExpanded =
+    plannerResultsPanelExpanded ||
+    (statePanelExpanded && !plannerMode) ||
+    productionStoresPanelExpanded;
+
+  useEffect(() => {
+    onProductionStoresPanelExpandedChange?.(productionStoresPanelExpanded);
+  }, [productionStoresPanelExpanded, onProductionStoresPanelExpandedChange]);
+
+  useEffect(() => {
+    return () => onProductionStoresPanelExpandedChange?.(false);
+  }, [onProductionStoresPanelExpandedChange]);
+
+  /** Linhas do painel de lojas: mesmo recorte visível no mapa (respeita o filtro do termômetro). */
+  const productionStoresPanelRows = useMemo(() => {
+    if (!productionHeatmapActive) return [];
+    if (!productionHeatmapClassFilter || productionHeatmapClassFilter.length === 0) {
+      return productionHeatmapRows;
+    }
+    return productionHeatmapRows.filter((row) =>
+      productionHeatmapClassFilter.includes(
+        productionQuantileClass(Number(row.value) || 0, productionHeatmapScale.thresholds)
+      )
+    );
+  }, [
+    productionHeatmapActive,
+    productionHeatmapRows,
+    productionHeatmapClassFilter,
+    productionHeatmapScale,
+  ]);
+
+  /** Resumo do painel de lojas recalculado quando o filtro de faixas está ativo. */
+  const productionStoresPanelSummary = useMemo(() => {
+    if (!productionHeatmapClassFilter || productionHeatmapClassFilter.length === 0) {
+      return productionHeatmapSummary;
+    }
+    return {
+      value: productionStoresPanelRows.reduce((sum, row) => sum + (Number(row.value) || 0), 0),
+      producingStores: productionStoresPanelRows.reduce(
+        (sum, row) => sum + (Number(row.producingStores) || 0),
+        0
+      ),
+      municipalitiesWithData: productionStoresPanelRows.length,
+      excludedStoresWithoutMunicipality: 0,
+    };
+  }, [productionHeatmapClassFilter, productionHeatmapSummary, productionStoresPanelRows]);
+
+  /** Foca o município clicado no painel de lojas usando a malha já carregada. */
+  const focusProductionMunicipality = useCallback((row: ProductionHeatmapRow) => {
+    const m = map.current;
+    if (!m) return;
+    const code = String(row.municipalityCode ?? '');
+    const feature = municipalitiesFcRef.current.features.find(
+      (item) => String(item.properties?.heatMunicipalityCode ?? '') === code
+    );
+    if (!feature) return;
+    const selectedSource = m.getSource('selected-municipality') as mapboxgl.GeoJSONSource | undefined;
+    selectedSource?.setData({ type: 'FeatureCollection', features: [feature] });
+    const bounds = featureCollectionBounds({ type: 'FeatureCollection', features: [feature] });
+    if (!bounds) return;
+    try {
+      m.fitBounds(bounds, { padding: 96, maxZoom: 10.5, duration: 650 });
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  const productionFocusStorePoints = useMemo((): SqlMapPoint[] => {
+    if (!productionMunicipalityDetail) return [];
+    const points: SqlMapPoint[] = [];
+    for (const store of productionMunicipalityDetail.stores) {
+      // Sem lat/lon válido: fica só na lista do painel — nunca vira marker.
+      if (store.lng == null || store.lat == null) continue;
+      const lng = Number(store.lng);
+      const lat = Number(store.lat);
+      if (!Number.isFinite(lng) || !Number.isFinite(lat)) continue;
+      if (lng < -180 || lng > 180 || lat < -90 || lat > 90) continue;
+      if (lng === 0 && lat === 0) continue;
+      const chaveLoja = String(store.chaveLoja ?? '').trim();
+      if (!chaveLoja) continue;
+      points.push({
+        id: `sql-loja-${chaveLoja}`,
+        nome: store.nome || 'Loja',
+        kind: 'loja',
+        lngLat: [lng, lat],
+        chaveLoja,
+        codAg: store.codAg,
+        nomeAg: store.nomeAg,
+        municipio: store.municipalityName,
+        uf: store.uf,
+      });
+    }
+    return points;
+  }, [productionMunicipalityDetail]);
+
+  const productionFocusClassifications = useMemo((): Record<string, PlannerPriorityBand> => {
+    const out: Record<string, PlannerPriorityBand> = {};
+    for (const point of productionFocusStorePoints) {
+      const store = productionMunicipalityDetail?.stores.find(
+        (item) => `sql-loja-${item.chaveLoja}` === point.id
+      );
+      // Badge pelo produto/métrica selecionada: produziu = Ótimo; senão Atenção.
+      const produced =
+        typeof store?.hasProduction === 'boolean'
+          ? store.hasProduction
+          : (Number(store?.value) || 0) !== 0;
+      out[point.id] = produced ? 'baixa' : 'media';
+    }
+    return out;
+  }, [productionFocusStorePoints, productionMunicipalityDetail]);
+
+  const productionPriorityBadgeFeatureCollection = useMemo(
+    () =>
+      buildPlannerPriorityBadgeFeatureCollection(
+        productionFocusStorePoints,
+        productionFocusClassifications
+      ),
+    [productionFocusStorePoints, productionFocusClassifications]
+  );
+
+  /** Markers/badges enquanto o painel de lojas publica um detalhe (estado ou município). */
+  const productionStoresOverlayActive = productionMunicipalityDetail != null;
+  /** Só no drill-down municipal: esconde o calor e foca as lojas do município. */
+  const productionMunicipalityFocusActive = Boolean(
+    productionMunicipalityDetail?.municipality
+  );
+  const productionFocusMunicipalityCode = String(
+    productionMunicipalityDetail?.municipality?.municipalityCode ?? ''
+  ).trim();
+  const productionMunicipalityFocusActiveRef = useRef(false);
+  const productionFocusMunicipalityCodeRef = useRef('');
+  const productionHeatmapClassFilterRef = useRef(productionHeatmapClassFilter);
+  productionMunicipalityFocusActiveRef.current = productionMunicipalityFocusActive;
+  productionFocusMunicipalityCodeRef.current = productionFocusMunicipalityCode;
+  productionHeatmapClassFilterRef.current = productionHeatmapClassFilter;
+
+  /** Aplica calor municipal + oco/borda do foco (lê refs — seguro após async). */
+  const applyProductionFocusChromePaint = useCallback(() => {
+    const m = map.current;
+    if (!m) {
+      return false;
+    }
+    if (!m.isStyleLoaded()) {
+      return false;
+    }
+    if (!productionHeatmapActiveRef.current) {
+      return false;
+    }
+    if (!m.getLayer('municipalities-context-fill') || !m.getLayer('municipalities-context-line')) {
+      return false;
+    }
+
+    const heatHidden = productionMunicipalityFocusActiveRef.current;
+    const focusMunicipalityCode = productionFocusMunicipalityCodeRef.current;
+    const metric = productionHeatmapMetricRef.current;
+    const classFilter = productionHeatmapClassFilterRef.current;
+    const baseFillColor = metric
+      ? (buildProductionHeatmapFillColorExpression(classFilter, {
+          hideZero: true,
+        }) as mapboxgl.ExpressionSpecification)
+      : '#c8dcf0';
+    const fillColor: mapboxgl.ExpressionSpecification | string =
+      heatHidden && focusMunicipalityCode
+        ? ([
+            'case',
+            ['==', ['get', 'heatMunicipalityCode'], focusMunicipalityCode],
+            'rgba(0, 0, 0, 0)',
+            baseFillColor,
+          ] as unknown as mapboxgl.ExpressionSpecification)
+        : baseFillColor;
+    const fillOpacity: mapboxgl.ExpressionSpecification | number =
+      heatHidden && focusMunicipalityCode
+        ? ([
+            'case',
+            ['==', ['get', 'heatMunicipalityCode'], focusMunicipalityCode],
+            0,
+            metric ? 0.68 : 0.18,
+          ] as unknown as mapboxgl.ExpressionSpecification)
+        : metric
+          ? 0.68
+          : 0.18;
+    const lineColor: mapboxgl.ExpressionSpecification | string = heatHidden
+      ? (buildProductionHeatmapLineColorExpression(classFilter) as mapboxgl.ExpressionSpecification)
+      : '#0369a1';
+    const lineOpacity: mapboxgl.ExpressionSpecification | number =
+      heatHidden && focusMunicipalityCode
+        ? ([
+            'case',
+            ['==', ['get', 'heatMunicipalityCode'], focusMunicipalityCode],
+            0.95,
+            0.28,
+          ] as unknown as mapboxgl.ExpressionSpecification)
+        : metric
+          ? ([
+              'case',
+              ['==', ['get', 'heatMissing'], 1],
+              0.18,
+              ['==', ['get', 'heatZero'], 1],
+              0.18,
+              ...(classFilter && classFilter.length > 0
+                ? ([
+                    [
+                      '!',
+                      ['in', ['get', 'heatClass'], ['literal', [...classFilter]]],
+                    ],
+                    0.18,
+                  ] as const)
+                : []),
+              0.38,
+            ] as unknown as mapboxgl.ExpressionSpecification)
+          : 0.32;
+    const lineWidth: mapboxgl.ExpressionSpecification | number =
+      heatHidden && focusMunicipalityCode
+        ? ([
+            'case',
+            ['==', ['get', 'heatMunicipalityCode'], focusMunicipalityCode],
+            2.8,
+            0.55,
+          ] as unknown as mapboxgl.ExpressionSpecification)
+        : 0.65;
+
+    try {
+      m.setPaintProperty('municipalities-context-fill', 'fill-color', fillColor);
+      m.setPaintProperty('municipalities-context-fill', 'fill-opacity', fillOpacity);
+      m.setPaintProperty('municipalities-context-line', 'line-color', lineColor);
+      m.setPaintProperty('municipalities-context-line', 'line-width', lineWidth);
+      m.setPaintProperty('municipalities-context-line', 'line-opacity', lineOpacity);
+      if (isStandardStyleUrl(activeBaseStyle)) {
+        m.setPaintProperty('municipalities-context-fill', 'fill-emissive-strength', 1);
+        m.setPaintProperty('municipalities-context-line', 'line-emissive-strength', 1);
+      }
+    } catch {
+      return false;
+    }
+
+    return true;
+  }, [activeBaseStyle]);
+
+  const applyProductionFocusChromePaintRef = useRef(applyProductionFocusChromePaint);
+  applyProductionFocusChromePaintRef.current = applyProductionFocusChromePaint;
+
+  /** Pinta o calor municipal de um UF (caminho rápido e determinístico). */
+  const paintProductionHeatmapForUf = useCallback(async (uf: string) => {
+    const m = map.current;
+    const ufCode = String(uf ?? '').trim().toUpperCase();
+    if (!m || !ufCode || !productionHeatmapActiveRef.current) return false;
+    const requestId = ++paintProductionUfRequestRef.current;
+    try {
+      const munis = await loadMunicipiosByUfRef.current(ufCode);
+      if (requestId !== paintProductionUfRequestRef.current) return false;
+      if (!map.current || !munis || munis.features.length === 0) return false;
+      if (!productionHeatmapActiveRef.current) return false;
+      // Aborta só se outro UF já foi escolhido. UF ainda null na prop (otimista) ok.
+      const currentUf = (productionHeatmapUfRef.current || '').toUpperCase();
+      if (currentUf && currentUf !== ufCode) return false;
+
+      const ufRows = productionHeatmapRowsRef.current.filter(
+        (row) => String(row.uf ?? '').toUpperCase() === ufCode
+      );
+      const scale = buildProductionQuantileScale(
+        ufRows.map((row) => Number(row.value) || 0)
+      );
+      const merged = mergeProductionHeatmapIntoFeatureCollection(
+        munis,
+        ufRows.length > 0 ? ufRows : productionHeatmapRowsRef.current,
+        scale.thresholds.length > 0 ? scale : productionHeatmapScaleRef.current
+      );
+      municipalitiesRawFcRef.current = munis;
+      municipalitiesFcRef.current = merged;
+      const ctx = map.current.getSource('municipalities-context') as mapboxgl.GeoJSONSource | undefined;
+      ctx?.setData(merged);
+      for (const layerId of [
+        'municipalities-context-fill',
+        'municipalities-context-line',
+      ] as const) {
+        if (!map.current.getLayer(layerId)) continue;
+        try {
+          map.current.setLayoutProperty(layerId, 'visibility', 'visible');
+        } catch {
+          /* estilo recarregando */
+        }
+      }
+      try {
+        if (map.current.getLayer('br-states-choropleth')) {
+          map.current.setPaintProperty('br-states-choropleth', 'fill-opacity', 0);
+        }
+      } catch {
+        /* ignore */
+      }
+      const painted = applyProductionFocusChromePaintRef.current();
+      if (!painted && map.current) {
+        map.current.once('idle', () => {
+          if (requestId !== paintProductionUfRequestRef.current) return;
+          if (!productionHeatmapActiveRef.current) return;
+          applyProductionFocusChromePaintRef.current();
+        });
+      }
+      return true;
+    } catch (error) {
+      console.warn('Falha ao pintar calor municipal do UF:', error);
+      return false;
+    }
+  }, []);
+
+  const paintProductionHeatmapForUfRef = useRef(paintProductionHeatmapForUf);
+  paintProductionHeatmapForUfRef.current = paintProductionHeatmapForUf;
+
+  // Clique/seleção de UF: pinta municípios automaticamente (sem depender do slider).
+  useEffect(() => {
+    if (!productionHeatmapActive || !productionHeatmapUf) return;
+    void paintProductionHeatmapForUf(productionHeatmapUf);
+  }, [
+    productionHeatmapActive,
+    productionHeatmapUf,
+    productionHeatmapRows,
+    productionHeatmapScale,
+    productionHeatmapMetric,
+    productionHeatmapClassFilter,
+    mapReadyVersion,
+    paintProductionHeatmapForUf,
+  ]);
+
+  // Voltar à lista do estado: remove o anel de seleção do município.
+  useEffect(() => {
+    if (productionMunicipalityFocusActive) return;
+    const m = map.current;
+    if (!m?.isStyleLoaded() || !productionHeatmapActive) return;
+    try {
+      const selected = m.getSource('selected-municipality') as mapboxgl.GeoJSONSource | undefined;
+      selected?.setData({ type: 'FeatureCollection', features: [] });
+    } catch {
+      /* ignore */
+    }
+  }, [productionMunicipalityFocusActive, productionHeatmapActive]);
 
   /** Toda nova seleção de estado/município reabre o painel (cancela o estado minimizado). */
   useEffect(() => {
@@ -3780,6 +4214,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
     }
     setOverlayMarkerSelection(null);
     setSearchFocusedPoint(null);
+    setSelectedStoreHighlightPoint(null);
   };
   const hasMapSelection = Boolean(
     selectedStateFeature || selectedMunicipalityFeature || selectedCityLabel
@@ -3867,10 +4302,12 @@ const MapComponent: React.FC<MapComponentProps> = ({
         applyAgencyFetchResult([point], 'merge');
         setOverlayAgencias(true);
         setOverlayMarkerSelection(readAgencyPopupInfoFromProperties(feature.properties));
+        setSelectedStoreHighlightPoint(null);
       } else {
         applyStoreFetchResult([point], 'merge');
         setOverlayLojas(true);
         setOverlayMarkerSelection(readStorePopupInfoFromProperties(feature.properties));
+        setSelectedStoreHighlightPoint(point);
       }
 
       const m = map.current;
@@ -4135,11 +4572,26 @@ const MapComponent: React.FC<MapComponentProps> = ({
     setSearchQuery('');
     setSearchOpen(false);
     setStatePanelMinimized(false);
+    setSqlExpressoMetrics(null);
     selectedStateCodeRef.current = null;
     if (m?.isStyleLoaded()) {
       fitMapToBrazilOverview(m, { duration: 650 });
     }
   };
+
+  // Ao sair do mapa de produção: limpa foco/malha e impede abrir Performance comercial.
+  const wasProductionHeatmapActiveRef = useRef(false);
+  useEffect(() => {
+    if (productionHeatmapActive) {
+      wasProductionHeatmapActiveRef.current = true;
+      return;
+    }
+    if (!wasProductionHeatmapActiveRef.current) return;
+    wasProductionHeatmapActiveRef.current = false;
+    productionHeatmapPopupRef.current?.remove();
+    productionHeatmapPopupRef.current = null;
+    clearSelectedState();
+  }, [productionHeatmapActive]);
 
   const initializeMap = async () => {
     if (!mapContainer.current) return;
@@ -4263,11 +4715,31 @@ const MapComponent: React.FC<MapComponentProps> = ({
         const pinOverlayMarkerSelection = (feature: GeoJSON.Feature) => {
           agencyHoverPopupRef.current?.remove();
           const agencyInfo = readAgencyPopupInfoFromProperties(feature.properties);
-          setOverlayMarkerSelection(
-            agencyInfo.kind === 'loja'
-              ? readStorePopupInfoFromProperties(feature.properties)
-              : agencyInfo
-          );
+          if (agencyInfo.kind === 'loja') {
+            const storeInfo = readStorePopupInfoFromProperties(feature.properties);
+            setOverlayMarkerSelection(storeInfo);
+            const coords =
+              getPointCoordinates(feature) ??
+              (feature.geometry?.type === 'Point'
+                ? (feature.geometry.coordinates as [number, number])
+                : null);
+            if (coords) {
+              setSelectedStoreHighlightPoint({
+                id: String(feature.properties?.id ?? `map-loja-${storeInfo.chaveLoja || coords.join('-')}`),
+                nome: storeInfo.nome || 'Loja',
+                kind: 'loja',
+                lngLat: coords,
+                chaveLoja: storeInfo.chaveLoja || undefined,
+                codAg: storeInfo.codAg || undefined,
+                nomeAg: storeInfo.nomeAg || undefined,
+              });
+            } else {
+              setSelectedStoreHighlightPoint(null);
+            }
+            return;
+          }
+          setOverlayMarkerSelection(agencyInfo);
+          setSelectedStoreHighlightPoint(null);
         };
 
         const tryDistanceAnalysisPointSelection = (
@@ -4537,12 +5009,16 @@ const MapComponent: React.FC<MapComponentProps> = ({
         };
 
         const loadMunicipiosByUf = async (uf: string): Promise<GeoJSON.FeatureCollection | null> => {
-          if (municipiosCacheRef.current[uf]) return municipiosCacheRef.current[uf];
-          const ibgeCode = UF_TO_IBGE_CODE[uf];
+          const ufCode = String(uf ?? '').trim().toUpperCase();
+          if (!ufCode) return null;
+          if (municipiosCacheRef.current[ufCode]) return municipiosCacheRef.current[ufCode];
+          const ibgeCode = UF_TO_IBGE_CODE[ufCode];
           if (!ibgeCode) return null;
           const url = `${GEODATA_BR_BASE}/geojs-${ibgeCode}-mun.json`;
           const response = await fetch(url);
-          if (!response.ok) throw new Error(`Falha ao carregar municípios de ${uf}: ${response.status}`);
+          if (!response.ok) {
+            throw new Error(`Falha ao carregar municípios de ${ufCode}: ${response.status}`);
+          }
           const raw = (await response.json()) as GeoJSON.FeatureCollection;
           const fc: GeoJSON.FeatureCollection = {
             type: 'FeatureCollection',
@@ -4552,45 +5028,53 @@ const MapComponent: React.FC<MapComponentProps> = ({
                 ...feature,
                 properties: {
                   ...(feature.properties as GeoJSON.GeoJsonProperties),
-                  heatUf: uf,
+                  heatUf: ufCode,
                   heatMunicipalityCode:
                     municipalityCode == null ? null : String(municipalityCode).padStart(7, '0'),
                 },
               } as GeoJSON.Feature;
             }),
           };
-          municipiosCacheRef.current[uf] = fc;
+          municipiosCacheRef.current[ufCode] = fc;
           return fc;
         };
+        loadMunicipiosByUfRef.current = loadMunicipiosByUf;
         const loadAllMunicipios = async (): Promise<GeoJSON.FeatureCollection> => {
-          if (allMunicipalitiesFcRef.current.features.length > 0) return allMunicipalitiesFcRef.current;
-          if (loadingAllMunicipalitiesRef.current) {
-            return { type: 'FeatureCollection', features: [] };
+          if (allMunicipalitiesFcRef.current.features.length > 0) {
+            return allMunicipalitiesFcRef.current;
+          }
+          if (loadingAllMunicipalitiesPromiseRef.current) {
+            return loadingAllMunicipalitiesPromiseRef.current;
           }
           loadingAllMunicipalitiesRef.current = true;
-          try {
-            const ufs = Object.keys(UF_TO_IBGE_CODE);
-            const chunks = await Promise.all(
-              ufs.map(async (uf) => {
-                const fc = await loadMunicipiosByUf(uf);
-                return fc?.features ?? [];
-              })
-            );
-            const merged: GeoJSON.FeatureCollection = {
-              type: 'FeatureCollection',
-              features: chunks.flat(),
-            };
-            allMunicipalitiesFcRef.current = merged;
-            const names = merged.features
-              .map((f) => municipalityNameFromProperties(f.properties))
-              .filter((name) => name.trim().length > 0)
-              .slice(0, 5000);
-            setAllMunicipalityNames(names);
-            scheduleMunicipalitiesChoroplethReapply();
-            return merged;
-          } finally {
-            loadingAllMunicipalitiesRef.current = false;
-          }
+          const pending = (async () => {
+            try {
+              const ufs = Object.keys(UF_TO_IBGE_CODE);
+              const chunks = await Promise.all(
+                ufs.map(async (uf) => {
+                  const fc = await loadMunicipiosByUf(uf);
+                  return fc?.features ?? [];
+                })
+              );
+              const merged: GeoJSON.FeatureCollection = {
+                type: 'FeatureCollection',
+                features: chunks.flat(),
+              };
+              allMunicipalitiesFcRef.current = merged;
+              const names = merged.features
+                .map((f) => municipalityNameFromProperties(f.properties))
+                .filter((name) => name.trim().length > 0)
+                .slice(0, 5000);
+              setAllMunicipalityNames(names);
+              scheduleMunicipalitiesChoroplethReapply();
+              return merged;
+            } finally {
+              loadingAllMunicipalitiesRef.current = false;
+              loadingAllMunicipalitiesPromiseRef.current = null;
+            }
+          })();
+          loadingAllMunicipalitiesPromiseRef.current = pending;
+          return pending;
         };
         loadAllMunicipalitiesRef.current = loadAllMunicipios;
 
@@ -4765,19 +5249,40 @@ const MapComponent: React.FC<MapComponentProps> = ({
 
             const uf = resolveStateCode(f.properties);
             selectedStateCodeRef.current = uf;
-            setSearchQuery(resolveStateName(f.properties));
-            setSearchOpen(false);
 
             m.setFilter('br-states-selected', ['==', ['get', 'sigla'], stateId]);
             m.setFilter('br-states-dim', ['!=', ['get', 'sigla'], stateId]);
             m.setFilter('br-states-outline', ['==', ['get', 'sigla'], stateId]);
+
+            // Mapa de produção: foco visual + pintura imediata do calor municipal do UF.
+            // NÃO abre Performance comercial (selectedStateLabel/Feature).
+            if (productionHeatmapActiveRef.current) {
+              setSelectedStateLabel(null);
+              setSelectedStateFeature(null);
+              setSqlExpressoMetrics(null);
+              setSearchQuery('');
+              setSearchOpen(false);
+              const heatBounds = featureBounds(f);
+              if (heatBounds) {
+                try {
+                  m.fitBounds(heatBounds, { padding: 64, maxZoom: 7.8, duration: 700 });
+                } catch {
+                  /* ignore */
+                }
+              }
+              if (uf) {
+                productionHeatmapUfRef.current = uf;
+                void paintProductionHeatmapForUfRef.current(uf);
+              }
+              return;
+            }
+
+            setSearchQuery(resolveStateName(f.properties));
+            setSearchOpen(false);
             setSelectedStateLabel(resolveStateName(f.properties));
             setSelectedStateFeature(f);
 
-            if (uf && !productionHeatmapActiveRef.current) {
-              // No mapa de produção quem popula a malha municipal (com as
-              // propriedades de calor mescladas) é o efeito do heatmap; carregar
-              // a malha crua aqui sobrescreveria as cores do calor.
+            if (uf) {
               void loadMunicipiosByUf(uf)
                 .then((munis) => {
                   if (!map.current || !munis) return;
@@ -4815,9 +5320,13 @@ const MapComponent: React.FC<MapComponentProps> = ({
               return;
             }
             if (!meshSelectionEnabled()) return;
-            // Estado e município ocupam o mesmo ponto. Quando a malha municipal
-            // já está desenhada, deixa o handler municipal ser o único responsável.
-            if (m.getLayer('municipalities-context-fill')) {
+            // No Brasil do mapa de produção, o clique no estado tem prioridade —
+            // malha residual não pode engolir a seleção do UF.
+            const heatmapPickingState =
+              productionHeatmapActiveRef.current && !productionHeatmapUfRef.current;
+            // Estado e município ocupam o mesmo ponto. Com UF já focado, deixa o
+            // handler municipal ser o responsável dentro da malha.
+            if (!heatmapPickingState && m.getLayer('municipalities-context-fill')) {
               const municipalityAtPoint = m.queryRenderedFeatures(e.point, {
                 layers: ['municipalities-context-fill'],
               });
@@ -4830,7 +5339,10 @@ const MapComponent: React.FC<MapComponentProps> = ({
             // detalhar por município e mantém o foco/escurecimento da região.
             if (productionHeatmapActiveRef.current) {
               const uf = resolveStateCode(f.properties);
-              if (uf) onProductionHeatmapStateChangeRef.current?.(uf, resolveStateName(f.properties));
+              if (uf) {
+                productionHeatmapUfRef.current = uf;
+                onProductionHeatmapStateChangeRef.current?.(uf, resolveStateName(f.properties));
+              }
             }
           };
 
@@ -5092,17 +5604,11 @@ const MapComponent: React.FC<MapComponentProps> = ({
               const name = String(
                 props.heatMunicipalityName ?? municipalityNameFromProperties(props) ?? 'Município'
               );
+              const ufLabel = directUf || productionHeatmapUfRef.current || '';
               const value = Number(props.heatValue);
               const stores = Math.max(0, Number(props.heatStores) || 0);
               const metric = productionHeatmapMetricRef.current;
               const period = productionHeatmapPeriodRef.current;
-              const content = document.createElement('div');
-              content.className = 'min-w-[190px] p-1 text-slate-800';
-              const title = document.createElement('strong');
-              title.className = 'block text-sm font-semibold';
-              title.textContent = `${name}/${directUf || productionHeatmapUfRef.current}`;
-              const metricLine = document.createElement('p');
-              metricLine.className = 'mt-1 text-xs text-slate-600';
               const formattedValue = Number.isFinite(value)
                 ? metric?.unit === 'currency'
                   ? value.toLocaleString('pt-BR', {
@@ -5112,26 +5618,110 @@ const MapComponent: React.FC<MapComponentProps> = ({
                     })
                   : Math.round(value).toLocaleString('pt-BR')
                 : 'Sem dado';
-              metricLine.textContent = `${metric?.shortLabel ?? 'Produção'}: ${formattedValue}`;
-              const storesLine = document.createElement('p');
-              storesLine.className = 'mt-1 text-[11px] text-slate-500';
-              storesLine.textContent = `${stores.toLocaleString('pt-BR')} lojas produtoras`;
-              const periodLine = document.createElement('p');
-              periodLine.className = 'mt-1 text-[10px] text-slate-400';
+              let periodLabel = '';
               if (period) {
                 const year = Math.trunc(period / 100);
                 const month = period % 100;
-                periodLine.textContent = new Intl.DateTimeFormat('pt-BR', {
-                  month: 'long',
-                  year: 'numeric',
-                }).format(new Date(year, month - 1, 1));
+                if (month >= 1 && month <= 12) {
+                  const monthShort = new Intl.DateTimeFormat('pt-BR', { month: 'short' })
+                    .format(new Date(year, month - 1, 1))
+                    .replace('.', '')
+                    .trim();
+                  periodLabel = `${monthShort}'${String(year).slice(-2)}`;
+                } else {
+                  periodLabel = String(period);
+                }
               }
-              content.append(title, metricLine, storesLine, periodLine);
+
+              const content = document.createElement('div');
+              content.className =
+                'w-[200px] overflow-hidden rounded-xl border border-slate-200/90 bg-white font-sans text-slate-700 shadow-lg shadow-slate-900/10';
+
+              const header = document.createElement('div');
+              header.className = 'flex items-baseline gap-1.5 border-b border-slate-100 py-2 pl-2.5 pr-8';
+              const title = document.createElement('p');
+              title.className = 'min-w-0 truncate text-[12px] font-semibold leading-tight text-slate-900';
+              title.textContent = name;
+              title.title = name;
+              header.append(title);
+              if (ufLabel) {
+                const ufChip = document.createElement('span');
+                ufChip.className =
+                  'shrink-0 text-[10px] font-semibold uppercase tracking-wide text-slate-400';
+                ufChip.textContent = ufLabel;
+                header.append(ufChip);
+              }
+
+              const body = document.createElement('div');
+              body.className = 'px-2.5 py-2';
+
+              const metricRow = document.createElement('div');
+              metricRow.className = 'flex items-baseline justify-between gap-2';
+              const metricLabel = document.createElement('span');
+              metricLabel.className = 'text-[10px] font-medium text-slate-500';
+              metricLabel.textContent = metric?.shortLabel || metric?.label || 'Produção';
+              const metricValue = document.createElement('span');
+              metricValue.className =
+                'text-[13px] font-semibold tabular-nums tracking-tight text-slate-900';
+              metricValue.textContent = formattedValue;
+              metricRow.append(metricLabel, metricValue);
+
+              const metaRow = document.createElement('div');
+              metaRow.className = 'mt-1.5 flex items-center justify-between gap-2';
+              const storesLine = document.createElement('span');
+              storesLine.className = 'text-[10px] text-slate-500';
+              storesLine.textContent = `${stores.toLocaleString('pt-BR')} ${
+                stores === 1 ? 'loja produtora' : 'lojas produtoras'
+              }`;
+              metaRow.append(storesLine);
+              if (periodLabel) {
+                const periodChip = document.createElement('span');
+                periodChip.className =
+                  'shrink-0 text-[10px] font-semibold capitalize tabular-nums text-teal-700';
+                periodChip.textContent = periodLabel;
+                metaRow.append(periodChip);
+              }
+
+              body.append(metricRow, metaRow);
+
+              if (productionStoresPanelOpenRef.current) {
+                const code = String(
+                  props.heatMunicipalityCode ??
+                    municipalityCodeFromProperties(props) ??
+                    ''
+                ).trim();
+                if (code) {
+                  const selectBtn = document.createElement('button');
+                  selectBtn.type = 'button';
+                  selectBtn.className =
+                    'mt-2 w-full rounded-lg border border-sky-300 bg-sky-600 px-2.5 py-1.5 text-[11px] font-semibold text-white shadow-sm shadow-sky-300 transition-colors hover:bg-sky-700';
+                  selectBtn.textContent = 'Selecionar';
+                  selectBtn.addEventListener('click', (event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    requestProductionMunicipalitySelectRef.current({
+                      municipalityCode: code,
+                      municipalityName: name,
+                      uf: ufLabel,
+                      value: Number.isFinite(value) ? value : 0,
+                      producingStores: stores,
+                    });
+                    productionHeatmapPopupRef.current?.remove();
+                    productionHeatmapPopupRef.current = null;
+                  });
+                  body.append(selectBtn);
+                }
+              }
+
+              content.append(header, body);
+
               productionHeatmapPopupRef.current?.remove();
               productionHeatmapPopupRef.current = new mapboxgl.Popup({
                 closeButton: true,
                 closeOnClick: true,
-                maxWidth: '260px',
+                maxWidth: '220px',
+                className: 'production-heatmap-muni-popup',
+                offset: 14,
               })
                 .setLngLat(e.lngLat)
                 .setDOMContent(content)
@@ -5336,6 +5926,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
         m.addSource('planner-route-lojas', { type: 'geojson', data: emptyRegionFc });
         m.addSource('planner-selected-lojas', { type: 'geojson', data: emptyRegionFc });
         m.addSource('planner-hovered-loja', { type: 'geojson', data: emptyRegionFc });
+        m.addSource('selected-overlay-loja', { type: 'geojson', data: emptyRegionFc });
         m.addSource('planner-territory-area', { type: 'geojson', data: emptyRegionFc });
         m.addSource('supervision-area', { type: 'geojson', data: emptyRegionFc });
         m.addSource('supervisions-compare', { type: 'geojson', data: emptyRegionFc });
@@ -5539,6 +6130,38 @@ const MapComponent: React.FC<MapComponentProps> = ({
             'circle-stroke-color': '#f5f3ff',
           }),
         });
+        m.addLayer({
+          id: 'selected-overlay-loja-halo',
+          type: 'circle',
+          source: 'selected-overlay-loja',
+          layout: {
+            visibility: 'none',
+            'circle-sort-key': MARKER_CIRCLE_SORT_KEY,
+          },
+          paint: circlePaintForStandard(activeBaseStyle, {
+            'circle-radius': 16,
+            'circle-color': SELECTED_OVERLAY_LOJA_COLOR,
+            'circle-opacity': 0.28,
+            'circle-blur': 0.4,
+            'circle-stroke-width': 0,
+          }),
+        });
+        m.addLayer({
+          id: 'selected-overlay-loja-cir',
+          type: 'circle',
+          source: 'selected-overlay-loja',
+          layout: {
+            visibility: 'none',
+            'circle-sort-key': MARKER_CIRCLE_SORT_KEY,
+          },
+          paint: circlePaintForStandard(activeBaseStyle, {
+            'circle-radius': SELECTED_OVERLAY_LOJA_CIRCLE_RADIUS,
+            'circle-color': SELECTED_OVERLAY_LOJA_COLOR,
+            'circle-opacity': 1,
+            'circle-stroke-width': 3.5,
+            'circle-stroke-color': SELECTED_OVERLAY_LOJA_STROKE,
+          }),
+        });
         addPlannerPriorityBadgeLayers(m);
 
         const onRegionOverlayMarkerClick = (e: mapboxgl.MapLayerMouseEvent) => {
@@ -5577,6 +6200,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
           'planner-route-lojas-cir',
           'planner-selected-lojas-cir',
           'planner-hovered-loja-cir',
+          'selected-overlay-loja-cir',
         ] as const) {
           m.on('click', layerId, onRegionOverlayMarkerClick);
           m.on('mouseenter', layerId, setStructPointer);
@@ -5626,6 +6250,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
           'planner-route-lojas-cir',
           'planner-selected-lojas-cir',
           'planner-hovered-loja-cir',
+          'selected-overlay-loja-cir',
           'region-overlay-supervisores-cir',
           'structure-people-circles',
         ] as const;
@@ -6095,8 +6720,8 @@ const MapComponent: React.FC<MapComponentProps> = ({
       syncOverlayGeoJsonSource(
         'region-overlay-lojas',
         'region-overlay-lojas-cir',
-        overlayLojas,
-        filteredRegionLojas
+        productionStoresOverlayActive || overlayLojas,
+        productionStoresOverlayActive ? productionFocusStorePoints : filteredRegionLojas
       );
     });
   }, [
@@ -6107,6 +6732,8 @@ const MapComponent: React.FC<MapComponentProps> = ({
     filteredRegionAgencias,
     filteredRegionSupervisores,
     filteredRegionLojas,
+    productionStoresOverlayActive,
+    productionFocusStorePoints,
     syncOverlayGeoJsonSource,
   ]);
 
@@ -6169,9 +6796,78 @@ const MapComponent: React.FC<MapComponentProps> = ({
   useEffect(() => {
     const m = map.current;
     if (!m) return;
+
+    const highlightStores = selectedStoreHighlightPoint ? [selectedStoreHighlightPoint] : [];
+    const visible = highlightStores.length > 0;
+    const cancelReadySync = runWhenMapStyleReady(m, () => {
+      syncOverlayGeoJsonSource(
+        'selected-overlay-loja',
+        'selected-overlay-loja-cir',
+        visible,
+        highlightStores
+      );
+      if (m.getLayer('selected-overlay-loja-halo')) {
+        try {
+          m.setLayoutProperty(
+            'selected-overlay-loja-halo',
+            'visibility',
+            visible ? 'visible' : 'none'
+          );
+        } catch {
+          /* estilo recarregando */
+        }
+      }
+    });
+
+    if (!visible) {
+      return cancelReadySync;
+    }
+
+    let rafId = 0;
+    const startedAt = performance.now();
+    const pulse = (now: number) => {
+      const mapInst = map.current;
+      if (!mapInst?.getLayer('selected-overlay-loja-halo')) {
+        rafId = window.requestAnimationFrame(pulse);
+        return;
+      }
+      const cycle = ((now - startedAt) % 1200) / 1200;
+      const wave = 0.5 + 0.5 * Math.sin(cycle * Math.PI * 2);
+      try {
+        mapInst.setPaintProperty('selected-overlay-loja-halo', 'circle-radius', 12 + wave * 10);
+        mapInst.setPaintProperty(
+          'selected-overlay-loja-halo',
+          'circle-opacity',
+          0.38 - wave * 0.2
+        );
+      } catch {
+        /* estilo recarregando */
+      }
+      rafId = window.requestAnimationFrame(pulse);
+    };
+    rafId = window.requestAnimationFrame(pulse);
+
+    return () => {
+      cancelReadySync();
+      window.cancelAnimationFrame(rafId);
+    };
+  }, [mapReadyVersion, selectedStoreHighlightPoint, syncOverlayGeoJsonSource]);
+
+  useEffect(() => {
+    const m = map.current;
+    if (!m) return;
     const syncPriorityBadges = () => {
-      const visible = plannerMode && plannerPriorityBadgeFeatureCollection.features.length > 0;
-      syncPlannerPriorityBadges(m, plannerPriorityBadgeFeatureCollection, visible);
+      if (plannerMode) {
+        const visible = plannerPriorityBadgeFeatureCollection.features.length > 0;
+        syncPlannerPriorityBadges(m, plannerPriorityBadgeFeatureCollection, visible);
+        return;
+      }
+      if (productionStoresOverlayActive) {
+        const visible = productionPriorityBadgeFeatureCollection.features.length > 0;
+        syncPlannerPriorityBadges(m, productionPriorityBadgeFeatureCollection, visible);
+        return;
+      }
+      syncPlannerPriorityBadges(m, { type: 'FeatureCollection', features: [] }, false);
     };
     const cancelReadySync = runWhenMapStyleReady(m, syncPriorityBadges);
     // Na primeira abertura, o estilo pode estar pronto antes de as camadas do
@@ -6181,7 +6877,13 @@ const MapComponent: React.FC<MapComponentProps> = ({
       cancelReadySync();
       m.off('idle', syncPriorityBadges);
     };
-  }, [mapReadyVersion, plannerMode, plannerPriorityBadgeFeatureCollection]);
+  }, [
+    mapReadyVersion,
+    plannerMode,
+    plannerPriorityBadgeFeatureCollection,
+    productionStoresOverlayActive,
+    productionPriorityBadgeFeatureCollection,
+  ]);
 
   useEffect(() => {
     const m = map.current;
@@ -6447,7 +7149,13 @@ const MapComponent: React.FC<MapComponentProps> = ({
     };
 
     // Escopo Brasil por estado: pinta os polígonos dos estados e não desenha a malha municipal.
-    if (productionHeatmapLevel === 'estado' && !productionHeatmapUf) {
+    // Com município aberto no painel, pula o calor estadual e segue para a malha.
+    const skipStateHeatForMunicipalityDetail =
+      productionMunicipalityFocusActiveRef.current &&
+      productionHeatmapLevel === 'estado' &&
+      !productionHeatmapUf;
+
+    if (productionHeatmapLevel === 'estado' && !productionHeatmapUf && !skipStateHeatForMunicipalityDetail) {
       try {
         contextSource.setData({ type: 'FeatureCollection', features: [] });
         municipalitiesFcRef.current = { type: 'FeatureCollection', features: [] };
@@ -6487,17 +7195,9 @@ const MapComponent: React.FC<MapComponentProps> = ({
           } as GeoJSON.Feature;
         }),
       };
-      const stateFillColor: mapboxgl.ExpressionSpecification = [
-        'case',
-        ['==', ['get', 'heatMissing'], 1], 'rgba(0, 0, 0, 0)',
-        ['match', ['get', 'heatClass'],
-          0, PRODUCTION_HEATMAP_COLORS[0],
-          1, PRODUCTION_HEATMAP_COLORS[1],
-          2, PRODUCTION_HEATMAP_COLORS[2],
-          3, PRODUCTION_HEATMAP_COLORS[3],
-          4, PRODUCTION_HEATMAP_COLORS[4],
-          'rgba(0, 0, 0, 0)'],
-      ];
+      const stateFillColor = buildProductionHeatmapFillColorExpression(
+        productionHeatmapClassFilter
+      ) as mapboxgl.ExpressionSpecification;
       try {
         const statesSource = m.getSource('br-states') as mapboxgl.GeoJSONSource | undefined;
         statesSource?.setData(statesMerged);
@@ -6515,56 +7215,45 @@ const MapComponent: React.FC<MapComponentProps> = ({
     // Município: remove o calor por estado antes de desenhar a malha municipal.
     resetStateChoropleth();
 
+    const municipalityScopeUf = (
+      productionHeatmapUf ||
+      productionMunicipalityDetail?.municipality?.uf ||
+      ''
+    ).toUpperCase() || null;
+
+    // Com UF selecionado: caminho rápido (geo por estado). Evita esperar o catálogo nacional.
+    if (municipalityScopeUf) {
+      void paintProductionHeatmapForUfRef.current(municipalityScopeUf);
+      return;
+    }
+
     void loadAllMunicipalitiesRef.current()
       .then((allMunicipalities) => {
         if (cancelled || !map.current?.isStyleLoaded() || allMunicipalities.features.length === 0) return;
-        const scopedRaw: GeoJSON.FeatureCollection = productionHeatmapUf
-          ? {
-              type: 'FeatureCollection',
-              features: allMunicipalities.features.filter(
-                (feature) => String(feature.properties?.heatUf ?? '').toUpperCase() === productionHeatmapUf
-              ),
-            }
-          : allMunicipalities;
-        municipalitiesRawFcRef.current = scopedRaw;
+        municipalitiesRawFcRef.current = allMunicipalities;
         const merged = productionHeatmapMetric
           ? mergeProductionHeatmapIntoFeatureCollection(
-              scopedRaw,
+              allMunicipalities,
               productionHeatmapRows,
               productionHeatmapScale
             )
-          : scopedRaw;
+          : allMunicipalities;
         municipalitiesFcRef.current = merged;
         const source = map.current.getSource('municipalities-context') as mapboxgl.GeoJSONSource | undefined;
         source?.setData(merged);
-
-        const fillColor: mapboxgl.ExpressionSpecification | string = productionHeatmapMetric
-          ? [
-              'case',
-              ['==', ['get', 'heatMissing'], 1], 'rgba(0, 0, 0, 0)',
-              ['==', ['get', 'heatZero'], 1], 'rgba(0, 0, 0, 0)',
-              ['match', ['get', 'heatClass'],
-                0, PRODUCTION_HEATMAP_COLORS[0],
-                1, PRODUCTION_HEATMAP_COLORS[1],
-                2, PRODUCTION_HEATMAP_COLORS[2],
-                3, PRODUCTION_HEATMAP_COLORS[3],
-                4, PRODUCTION_HEATMAP_COLORS[4],
-                'rgba(0, 0, 0, 0)'],
-            ]
-          : '#c8dcf0';
-        try {
-          map.current.setPaintProperty('municipalities-context-fill', 'fill-color', fillColor);
-          map.current.setPaintProperty(
-            'municipalities-context-fill',
-            'fill-opacity',
-            productionHeatmapMetric ? 0.68 : 0.18
-          );
-          map.current.setPaintProperty('municipalities-context-line', 'line-color', '#0369a1');
-          map.current.setPaintProperty('municipalities-context-line', 'line-width', 0.65);
-          map.current.setPaintProperty('municipalities-context-line', 'line-opacity', 0.32);
-        } catch {
-          /* estilo recarregando */
+        for (const layerId of [
+          'municipalities-context-fill',
+          'municipalities-context-line',
+        ] as const) {
+          if (!map.current.getLayer(layerId)) continue;
+          try {
+            map.current.setLayoutProperty(layerId, 'visibility', 'visible');
+          } catch {
+            /* estilo recarregando */
+          }
         }
+
+        applyProductionFocusChromePaint();
       })
       .catch((error) => {
         if (!cancelled) console.warn('Malha municipal nacional não carregada:', error);
@@ -6583,175 +7272,33 @@ const MapComponent: React.FC<MapComponentProps> = ({
     productionHeatmapUf,
     productionHeatmapLevel,
     productionHeatmapStateRows,
+    productionHeatmapClassFilter,
+    // NÃO depende do foco municipal: senão cada abertura de município cancela o
+    // reload async e a coloração do drill-down nunca aplica (ver debug H/A).
     stateSearchOptions,
     activeBaseStyle,
     municipalitiesGeoVersion,
     mapReadyVersion,
+    applyProductionFocusChromePaint,
   ]);
 
-  useEffect(() => {
-    if (!productionHeatmapActive) return;
-    const m = map.current;
-    if (!m?.isStyleLoaded()) return;
-    productionHeatmapPopupRef.current?.remove();
-    productionHeatmapPopupRef.current = null;
-    try {
-      const selected = m.getSource('selected-municipality') as mapboxgl.GeoJSONSource | undefined;
-      selected?.setData({ type: 'FeatureCollection', features: [] });
-    } catch {
-      /* ignore */
-    }
-    if (!productionHeatmapUf) {
-      // Voltar ao Brasil: remove o realce/escurecimento aplicado ao estado.
-      try {
-        if (m.getLayer('br-states-selected')) {
-          m.setFilter('br-states-selected', ['==', ['get', 'sigla'], '__none__']);
-        }
-        if (m.getLayer('br-states-dim')) {
-          m.setFilter('br-states-dim', ['==', ['get', 'sigla'], '__none__']);
-        }
-        if (m.getLayer('br-states-outline')) {
-          m.setFilter('br-states-outline', null);
-        }
-      } catch {
-        /* estilo recarregando */
-      }
-      setSelectedStateFeature(null);
-      setSelectedStateLabel(null);
-      fitMapToBrazilOverview(m, { duration: 650 });
-      return;
-    }
-    // No detalhe municipal: mantém o escurecimento das demais regiões e só
-    // remove o preenchimento azul do estado selecionado (o calor fica nos municípios).
-    try {
-      if (m.getLayer('br-states-selected')) {
-        m.setFilter('br-states-selected', ['==', ['get', 'sigla'], '__none__']);
-      }
-      if (m.getLayer('br-states-dim')) {
-        m.setFilter('br-states-dim', ['!=', ['get', 'sigla'], productionHeatmapUf]);
-      }
-      if (m.getLayer('br-states-outline')) {
-        m.setFilter('br-states-outline', ['==', ['get', 'sigla'], productionHeatmapUf]);
-      }
-    } catch {
-      /* estilo recarregando */
-    }
-    const all = allMunicipalitiesFcRef.current;
-    const scoped: GeoJSON.FeatureCollection = {
-      type: 'FeatureCollection',
-      features: all.features.filter(
-        (feature) => String(feature.properties?.heatUf ?? '').toUpperCase() === productionHeatmapUf
-      ),
-    };
-    const bounds = featureCollectionBounds(scoped);
-    if (!bounds) return;
-    try {
-      m.fitBounds(bounds, { padding: 58, maxZoom: 7.8, duration: 700 });
-    } catch {
-      /* ignore */
-    }
-  }, [productionHeatmapActive, productionHeatmapUf, municipalitiesGeoVersion, mapReadyVersion]);
-
-  // Ao sair do mapa de produção: limpa seleção de malha para não abrir o painel
-  // de performance comercial com o estado que estava em foco.
-  const wasProductionHeatmapActiveRef = useRef(false);
-  useEffect(() => {
-    if (productionHeatmapActive) {
-      wasProductionHeatmapActiveRef.current = true;
-      return;
-    }
-    if (!wasProductionHeatmapActiveRef.current) return;
-    wasProductionHeatmapActiveRef.current = false;
-    clearSelectedState();
-  }, [productionHeatmapActive]);
-
-  useEffect(() => {
-    const m = map.current;
-    if (!m?.isStyleLoaded()) return;
-    const effectiveMunicipalityMeshVisible =
-      municipalityMeshVisible ||
-      (productionHeatmapActive && productionHeatmapLevel === 'municipio');
-    const visibility = effectiveMunicipalityMeshVisible ? 'visible' : 'none';
-    const contextSource = m.getSource('municipalities-context') as
-      | mapboxgl.GeoJSONSource
-      | undefined;
-    try {
-      contextSource?.setData(
-        effectiveMunicipalityMeshVisible
-          ? municipalitiesFcRef.current
-          : { type: 'FeatureCollection', features: [] }
-      );
-    } catch {
-      /* estilo recarregando */
-    }
-    for (const layerId of ['municipalities-context-fill', 'municipalities-context-line'] as const) {
-      if (!m.getLayer(layerId)) continue;
-      try {
-        m.setLayoutProperty(layerId, 'visibility', visibility);
-      } catch {
-        /* estilo recarregando */
-      }
-    }
-  }, [municipalityMeshVisible, productionHeatmapActive, productionHeatmapLevel, mapReadyVersion]);
-
-  /** Sai do modo "Comparar áreas" quando o escopo hierárquico (GG/GC III) deixa de existir. */
-  useEffect(() => {
-    if (compareSupervisionAreas && !compareScopeHierarchy) {
-      setCompareSupervisionAreas(false);
-    }
-  }, [compareSupervisionAreas, compareScopeHierarchy, setCompareSupervisionAreas]);
-
   /**
-   * Modo "Comparar áreas das supervisões": carrega o GeoJSON sob demanda, monta uma
-   * FeatureCollection com `compare_color` por feature e despeja na source
-   * `supervisions-compare`. Quando o modo desliga (ou some o escopo), a source é zerada.
+   * Chrome do drill-down (oco + borda na cor da faixa): síncrono, sem recarregar malha.
+   * Isolado do efeito pesado para não perder a pintura por race/cancel.
    */
   useEffect(() => {
-    const m = map.current;
-    if (!m) return;
+    applyProductionFocusChromePaint();
+  }, [
+    applyProductionFocusChromePaint,
+    productionMunicipalityFocusActive,
+    productionFocusMunicipalityCode,
+    productionHeatmapActive,
+    productionHeatmapMetric,
+    productionHeatmapClassFilter,
+    mapReadyVersion,
+  ]);
 
-    let cancelled = false;
-
-    const syncCompareSource = () => {
-      if (cancelled) return;
-      const source = m.getSource('supervisions-compare') as mapboxgl.GeoJSONSource | undefined;
-      if (!source) return;
-
-      if (!compareSupervisionAreas) {
-        try {
-          source.setData({ type: 'FeatureCollection', features: [] });
-        } catch {
-          /* estilo recarregando */
-        }
-        return;
-      }
-
-      if (compareSupervisionsList.length === 0) {
-        return;
-      }
-
-      void writeCompareSupervisionsToMap(m, compareSupervisionsList).catch((error) => {
-        if (!cancelled) {
-          console.warn('Falha ao carregar áreas das supervisões para comparação:', error);
-        }
-      });
-    };
-
-    // Mesmo racional do efeito de visibilidade: não desistir quando isStyleLoaded()
-    // estiver false por mudanças pendentes; reagenda a sincronização no idle.
-    if (m.isStyleLoaded()) {
-      syncCompareSource();
-    } else {
-      m.once('idle', syncCompareSource);
-    }
-
-    return () => {
-      cancelled = true;
-      m.off('idle', syncCompareSource);
-    };
-  }, [compareSupervisionAreas, compareSupervisionsList, mapReadyVersion]);
-
-  /** Com coropleto ativo, o destaque do município não pode cobrir o degradê (fill transparente + contorno leve). */
+  /** Com coropleto ativo, o destaque do município não cobre o centro; no drill-down usa a cor da faixa. */
   useEffect(() => {
     const m = map.current;
     if (!m?.isStyleLoaded()) return;
@@ -6760,9 +7307,25 @@ const MapComponent: React.FC<MapComponentProps> = ({
     try {
       if (productionHeatmapActive) {
         m.setPaintProperty('selected-municipality-fill', 'fill-opacity', 0);
-        m.setPaintProperty('selected-municipality-line', 'line-width', 1.1);
-        m.setPaintProperty('selected-municipality-line', 'line-opacity', 0.55);
-        m.setPaintProperty('selected-municipality-line', 'line-color', '#0f172a');
+        if (productionMunicipalityFocusActive) {
+          const code = String(
+            productionMunicipalityDetail?.municipality?.municipalityCode ?? ''
+          ).trim();
+          const feature = code
+            ? municipalitiesFcRef.current.features.find(
+                (item) => String(item.properties?.heatMunicipalityCode ?? '') === code
+              )
+            : undefined;
+          const heatClass = Number(feature?.properties?.heatClass);
+          const borderColor = productionHeatmapColorForClass(heatClass, '#275d8a');
+          m.setPaintProperty('selected-municipality-line', 'line-width', 2.8);
+          m.setPaintProperty('selected-municipality-line', 'line-opacity', 0.95);
+          m.setPaintProperty('selected-municipality-line', 'line-color', borderColor);
+        } else {
+          m.setPaintProperty('selected-municipality-line', 'line-width', 1.1);
+          m.setPaintProperty('selected-municipality-line', 'line-opacity', 0.55);
+          m.setPaintProperty('selected-municipality-line', 'line-color', '#0f172a');
+        }
       } else {
         m.setPaintProperty('selected-municipality-fill', 'fill-opacity', 0.08);
         m.setPaintProperty('selected-municipality-line', 'line-width', 2.2);
@@ -6776,7 +7339,13 @@ const MapComponent: React.FC<MapComponentProps> = ({
     } catch {
       /* estilo recarregando */
     }
-  }, [productionHeatmapActive, activeBaseStyle]);
+  }, [
+    productionHeatmapActive,
+    productionMunicipalityFocusActive,
+    productionMunicipalityDetail,
+    activeBaseStyle,
+    municipalitiesGeoVersion,
+  ]);
 
   const fitVisitRouteInAvailableViewport = useCallback((m: mapboxgl.Map, route: VisitRoute, duration: number) => {
     const bounds = getVisitRouteBounds(route);
@@ -7169,10 +7738,17 @@ const MapComponent: React.FC<MapComponentProps> = ({
         }`}
       >
         <div className="flex items-start gap-2">
-          {productionHeatmapActive && productionHeatmapSummary && productionHeatmapMetric ? (
+          {productionHeatmapActive &&
+          productionHeatmapSummary &&
+          productionHeatmapMetric &&
+          !productionStoresPanelExpanded ? (
             <ProductionHeatmapTotalsCard
               summary={productionHeatmapSummary}
               metric={productionHeatmapMetric}
+              onOpenStoresPanel={() => {
+                setProductionStoresPanelOpen(true);
+                setProductionStoresPanelMinimized(false);
+              }}
             />
           ) : null}
           <div className="rounded-3xl border border-slate-200/90 bg-white/95 p-2 shadow-lg shadow-slate-900/10 backdrop-blur-sm">
@@ -7279,6 +7855,8 @@ const MapComponent: React.FC<MapComponentProps> = ({
           <ProductionHeatmapThermometer
             scale={productionHeatmapScale}
             metric={productionHeatmapMetric}
+            selectedClasses={productionHeatmapClassFilter}
+            onSelectedClassesChange={setProductionHeatmapClassFilter}
           />
         ) : null}
       </div>
@@ -7593,6 +8171,31 @@ const MapComponent: React.FC<MapComponentProps> = ({
           </p>
         </div>
       )}
+      {productionHeatmapActive &&
+      productionStoresPanelOpen &&
+      productionHeatmapMetric &&
+      productionStoresPanelSummary ? (
+        <ProductionHeatmapStoresPanel
+          rows={productionStoresPanelRows}
+          summary={productionStoresPanelSummary}
+          metric={productionHeatmapMetric}
+          period={productionHeatmapPeriod}
+          contextLabel={productionHeatmapUf ?? 'Brasil'}
+          onClose={() => {
+            setProductionStoresPanelOpen(false);
+            setProductionStoresPanelMinimized(false);
+            setProductionMunicipalityDetail(null);
+            setProductionMunicipalitySelectRequest(null);
+          }}
+          minimized={productionStoresPanelMinimized}
+          onMinimize={() => setProductionStoresPanelMinimized(true)}
+          onRestore={() => setProductionStoresPanelMinimized(false)}
+          scopeUf={productionHeatmapUf}
+          onSelectMunicipality={focusProductionMunicipality}
+          onMunicipalityDetailChange={setProductionMunicipalityDetail}
+          municipalitySelectRequest={productionMunicipalitySelectRequest}
+        />
+      ) : null}
       {hasStatePanel && !plannerMode && !productionHeatmapActive && (
         <ExpressoStatePanel
           regionName={selectedStateLabel}

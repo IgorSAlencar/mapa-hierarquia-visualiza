@@ -29,7 +29,7 @@ import type { CSSProperties } from 'react';
 import type { PanelHeaderDragProps } from '@/hooks/usePanelDrag';
 import { mergeHeaderDrag } from './mergeHeaderDrag';
 import RoutePlanningJourney, { type PlanningPriority, type RoutePlanningScreen } from './RoutePlanningJourney';
-import { fetchAgencyPoints, type SqlMapPoint } from '@/lib/mapDataApi';
+import { fetchAgencyPoints, type ChecklistStatus, type SqlMapPoint } from '@/lib/mapDataApi';
 import type { RegionMapPoint } from '@/data/regionMapPointsMock';
 import type { DeviceLocation } from '@/lib/deviceGeolocation';
 import RouteOpportunitiesSidePanel from './RouteOpportunitiesSidePanel';
@@ -102,6 +102,9 @@ interface PlannerOpportunity extends OpportunitySnapshot {
   chaveLoja: string;
   nome: string;
   codAg: string;
+  nomeAg: string;
+  statusTablet: string;
+  checklist: ChecklistStatus | null;
   endereco: string;
   municipio: string;
   uf: string;
@@ -178,6 +181,9 @@ function toPlannerOpportunity(
     chaveLoja: String(point.chaveLoja ?? '').trim(),
     nome: point.nome,
     codAg: String(point.codAg ?? '').trim(),
+    nomeAg: String(point.nomeAg ?? '').trim(),
+    statusTablet: String(point.statusTablet ?? '').trim(),
+    checklist: point.checklist ?? null,
     endereco: String(point.enderecoFormatado ?? '').trim(),
     municipio: location.municipio,
     uf: location.uf,
@@ -353,6 +359,11 @@ function createSqlSuggestedRoute({
     cep: store.codAg ? `Agência vinculada: ${store.codAg}` : 'Visita planejada',
     chaveLoja: store.chaveLoja,
     codAg: store.codAg,
+    nomeAg: store.nomeAg || null,
+    statusTablet: store.statusTablet || null,
+    checklist: store.checklist,
+    municipio: store.municipio || null,
+    uf: store.uf || null,
     oportunidades: opportunities,
     focos: focus.labels,
     produtoFoco: focus.text,
@@ -1173,7 +1184,7 @@ const RoutePlannerPanel: React.FC<Props> = ({
         latitude: agency.lngLat[1],
         longitude: agency.lngLat[0],
         accuracy: 0,
-        label: agency.nome,
+        label: formatAgencyLabel(agency),
       });
       onTerritoryRadiusChange?.(null);
       onDestinationAgencyFocus?.(agency);

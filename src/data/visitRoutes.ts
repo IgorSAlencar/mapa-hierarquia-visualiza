@@ -1,4 +1,5 @@
 import type { OpportunitySnapshot } from '@/data/opportunities';
+import type { ChecklistStatus } from '@/lib/mapDataApi';
 
 export type VisitStopStatus = 'concluida' | 'pendente';
 
@@ -15,6 +16,11 @@ export interface VisitStop {
   oportunidades?: OpportunitySnapshot;
   chaveLoja?: string | null;
   codAg?: string | null;
+  nomeAg?: string | null;
+  statusTablet?: string | null;
+  checklist?: ChecklistStatus | null;
+  municipio?: string | null;
+  uf?: string | null;
   ultimaVisita: string;
   proximaAcao: string;
   lat: number;

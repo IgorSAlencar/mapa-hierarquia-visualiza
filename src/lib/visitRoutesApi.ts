@@ -27,6 +27,7 @@ export interface VisitRouteSupervisionSummary {
 export interface VisitRouteExportStoreData {
   chaveLoja: string;
   production: StoreProductionPoint | null;
+  previousProduction: StoreProductionPoint | null;
 }
 
 async function responseError(response: Response): Promise<Error> {

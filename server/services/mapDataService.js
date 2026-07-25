@@ -6,6 +6,7 @@ import {
   fetchCommercialSeatCoordinates,
   fetchProductionHeatmapPeriods,
   fetchProductionHeatmapRows,
+  fetchProductionHeatmapStores,
   fetchStoreCoordinates,
   fetchStoreProductionHistory,
   hasStoreAccess,
@@ -18,11 +19,18 @@ import {
 } from '../domain/productionMetrics.js';
 
 function validCoordinate(row) {
-  const lon = Number(row.lon);
-  const lat = Number(row.lat);
+  if (row == null || typeof row !== 'object') return null;
+  const rawLon = row.lon ?? row.lng ?? row.longitude;
+  const rawLat = row.lat ?? row.latitude;
+  // Number(null) === 0 — rejeitar ausentes antes da conversão.
+  if (rawLon == null || rawLat == null || rawLon === '' || rawLat === '') return null;
+  const lon = Number(rawLon);
+  const lat = Number(rawLat);
   if (!Number.isFinite(lon) || !Number.isFinite(lat)) return null;
   if (lon < -180 || lon > 180) return null;
   if (lat < -90 || lat > 90) return null;
+  // (0,0) quase sempre é coordenada ausente/placeholder neste domínio.
+  if (lon === 0 && lat === 0) return null;
   return [lon, lat];
 }
 
@@ -304,6 +312,85 @@ export async function getProductionHeatmap({ metricId, period, user, now = new D
         Number(rawSummary.excludedStoresWithoutMunicipality) || 0
       ),
     },
+  };
+}
+
+export async function getProductionHeatmapStores({
+  metricId,
+  period,
+  municipalityCode = null,
+  uf = null,
+  user,
+  now = new Date(),
+}) {
+  const metric = getProductionHeatmapMetric(metricId);
+  if (!metric) throw new ProductionHeatmapError('Indicador inválido para o mapa de produção.');
+
+  const numericPeriod = Number(period);
+  const periods = normalizeProductionHeatmapPeriods(await fetchProductionHeatmapPeriods(), now);
+  if (!periods.includes(numericPeriod)) {
+    throw new ProductionHeatmapError('Período inválido ou indisponível para o mapa de produção.');
+  }
+
+  const code = normalizeMunicipalityCode(municipalityCode);
+  const ufCode = String(uf ?? '').trim().toUpperCase();
+  if (!code && !/^[A-Z]{2}$/.test(ufCode)) {
+    throw new ProductionHeatmapError('Informe um município ou UF válidos.');
+  }
+
+  const rows = await fetchProductionHeatmapStores({
+    metricId: metric.id,
+    period: numericPeriod,
+    municipalityCode: code || null,
+    uf: code ? null : ufCode,
+    user,
+  });
+
+  const stores = rows
+    .map((row) => {
+      const lngLat = validCoordinate(row);
+      const qtdContas = Number(row.qtdContas) || 0;
+      const value = Number(row.value) || 0;
+      return {
+        chaveLoja: String(row.chaveLoja ?? '').trim(),
+        nome: normalizeText(row.nome) ?? 'Loja',
+        codAg: normalizeText(row.codAg),
+        nomeAg: normalizeText(row.nomeAg),
+        municipalityCode: normalizeMunicipalityCode(row.municipalityCode) ?? '',
+        municipalityName: normalizeText(row.municipalityName) ?? '',
+        uf: String(row.uf ?? '').trim().toUpperCase(),
+        value,
+        qtdContas,
+        hasContas: qtdContas > 0,
+        /** Produziu o indicador selecionado no período. */
+        hasProduction: value !== 0,
+        lng: lngLat ? lngLat[0] : null,
+        lat: lngLat ? lngLat[1] : null,
+      };
+    })
+    .filter((row) => row.chaveLoja)
+    .sort((a, b) => b.value - a.value || a.nome.localeCompare(b.nome, 'pt-BR'));
+
+  const totalValue = stores.reduce((sum, row) => sum + row.value, 0);
+  const producingStores = stores.filter((row) => row.hasProduction).length;
+
+  return {
+    metric: { ...metric },
+    period: numericPeriod,
+    municipalityCode: code || null,
+    municipalityName: code ? stores[0]?.municipalityName ?? '' : '',
+    uf: code ? stores[0]?.uf ?? '' : ufCode,
+    scope: code ? 'municipality' : 'uf',
+    summary: {
+      value: totalValue,
+      producingStores,
+      storeCount: stores.length,
+      storesWithContas: stores.filter((row) => row.hasContas).length,
+      storesWithoutContas: stores.filter((row) => !row.hasContas).length,
+      storesWithProduction: producingStores,
+      storesWithoutProduction: stores.length - producingStores,
+    },
+    stores,
   };
 }
 

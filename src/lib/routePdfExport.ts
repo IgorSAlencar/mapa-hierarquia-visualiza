@@ -9,18 +9,22 @@ import {
 } from 'pdf-lib';
 import type { VisitRoute, VisitStop } from '../data/visitRoutes';
 import type { StoreProductionPoint } from './mapDataApi';
+import {
+  buildProductComparisonRows,
+  dashWhenZero,
+  formatPeriodShort,
+  formatSignedCurrency,
+  formatSignedQuantity,
+  type ProductComparisonRow,
+  type RoutePdfStoreProduction,
+} from './routePdf/productionComparison.ts';
 
-export type RoutePdfProductionByStore = Record<string, StoreProductionPoint | null>;
+export type { RoutePdfStoreProduction } from './routePdf/productionComparison.ts';
+export type RoutePdfProductionByStore = Record<string, RoutePdfStoreProduction | null>;
 
 interface PdfFonts {
   regular: PDFFont;
   bold: PDFFont;
-}
-
-interface BusinessProduct {
-  label: string;
-  quantity: number;
-  value?: number;
 }
 
 const A4_WIDTH = PageSizes.A4[0];
@@ -175,31 +179,12 @@ function endpointName(value: VisitRoute['origin'] | VisitRoute['destination'], f
   return pdfText(value?.nome, fallback);
 }
 
-function currentProduction(
+function storeProduction(
   stop: VisitStop,
   productionByStore: RoutePdfProductionByStore
-): StoreProductionPoint | null {
+): RoutePdfStoreProduction | null {
   const key = String(stop.chaveLoja ?? '').trim();
   return key ? productionByStore[key] ?? null : null;
-}
-
-function businessProducts(production: StoreProductionPoint | null): BusinessProduct[] {
-  return [
-    { label: 'Contas', quantity: clampNumber(production?.qtdContas) },
-    { label: 'Consignado', quantity: clampNumber(production?.qtdConsig), value: clampNumber(production?.vlrConsig) },
-    { label: 'LIME', quantity: clampNumber(production?.qtdLime), value: clampNumber(production?.vlrLime) },
-    { label: 'Crédito parcelado', quantity: clampNumber(production?.qtdCreditoParcelado), value: clampNumber(production?.vlrCreditoParcelado) },
-    { label: 'Cartões', quantity: clampNumber(production?.qtdCartao) },
-    { label: 'FGTS', quantity: clampNumber(production?.qtdFgts) },
-    { label: 'Vida', quantity: clampNumber(production?.qtdVida) },
-    { label: 'Microsseguros', quantity: clampNumber(production?.qtdMicro) },
-    { label: 'Residencial', quantity: clampNumber(production?.qtdResidencial) },
-    { label: 'Dental', quantity: clampNumber(production?.qtdDental) },
-    { label: 'Super Protegido', quantity: clampNumber(production?.qtdSuper) },
-    { label: 'Seguro débito', quantity: clampNumber(production?.qtdSegDebito) },
-    { label: 'Consórcio', quantity: clampNumber(production?.qtdConsorcio) },
-    { label: 'Expresso da Sorte', quantity: clampNumber(production?.qtdExpSorte) },
-  ];
 }
 
 function drawPageChrome(
@@ -212,18 +197,40 @@ function drawPageChrome(
 ): void {
   page.drawRectangle({ x: 0, y: A4_HEIGHT - 8, width: A4_WIDTH, height: 8, color: COLORS.brand });
   page.drawLine({
-    start: { x: MARGIN, y: 34 },
-    end: { x: A4_WIDTH - MARGIN, y: 34 },
+    start: { x: MARGIN, y: 42 },
+    end: { x: A4_WIDTH - MARGIN, y: 42 },
     thickness: 0.6,
     color: COLORS.line,
   });
-  page.drawText(truncateToWidth(route.nome, fonts.regular, 7.5, 250), {
+
+  const leftMaxWidth = 170;
+  const originLabel = truncateToWidth(
+    endpointName(route.origin, 'Início'),
+    fonts.regular,
+    7,
+    leftMaxWidth
+  );
+  const destinationLabel = truncateToWidth(
+    endpointName(route.destination, 'Última visita'),
+    fonts.regular,
+    7,
+    leftMaxWidth
+  );
+  page.drawText(originLabel, {
     x: MARGIN,
-    y: 20,
-    size: 7.5,
+    y: 26,
+    size: 7,
     font: fonts.regular,
     color: COLORS.muted,
   });
+  page.drawText(destinationLabel, {
+    x: MARGIN,
+    y: 14,
+    size: 7,
+    font: fonts.regular,
+    color: COLORS.muted,
+  });
+
   const center = `Gerado em ${formatGeneratedAt(generatedAt)} | Uso interno`;
   const centerWidth = fonts.regular.widthOfTextAtSize(center, 7.5);
   page.drawText(center, {
@@ -393,28 +400,35 @@ function drawCoverMetrics(page: PDFPage, fonts: PdfFonts, route: VisitRoute): vo
 
 function drawCoverSnapshot(page: PDFPage, fonts: PdfFonts, route: VisitRoute): void {
   const totals = [
-    ['Cielo M0', route.stops.filter((stop) => stop.oportunidades?.oportunidadeCielo).length],
+    ['Cielo', route.stops.filter((stop) => stop.oportunidades?.oportunidadeCielo).length],
     ['Proposta de valor', route.stops.filter((stop) => stop.oportunidades?.oportunidadePropostaValor).length],
     ['Ativo PADE', route.stops.filter((stop) => stop.oportunidades?.oportunidadeAtivoPade).length],
-    ['Com negócio M0', route.stops.filter((stop) => stop.oportunidades?.oportunidadeNegocio).length],
+    ['Realizando Negócio', route.stops.filter((stop) => stop.oportunidades?.oportunidadeNegocio).length],
   ] as const;
   page.drawText('PANORAMA COMERCIAL', { x: MARGIN, y: 457, size: 8, font: fonts.bold, color: COLORS.ink });
+  page.drawText('Lojas com a Oportunidade / Total de visitas do roteiro', {
+    x: MARGIN,
+    y: 443,
+    size: 7.5,
+    font: fonts.regular,
+    color: COLORS.muted,
+  });
   const width = (A4_WIDTH - MARGIN * 2) / totals.length;
   totals.forEach(([label, total], index) => {
     const x = MARGIN + width * index;
     if (index > 0) {
-      page.drawLine({ start: { x, y: 417 }, end: { x, y: 450 }, thickness: 0.7, color: COLORS.line });
+      page.drawLine({ start: { x, y: 405 }, end: { x, y: 432 }, thickness: 0.7, color: COLORS.line });
     }
     page.drawText(`${total}/${route.stops.length}`, {
       x: x + 10,
-      y: 430,
+      y: 418,
       size: 13,
       font: fonts.bold,
       color: total > 0 ? COLORS.green : COLORS.slate,
     });
     page.drawText(truncateToWidth(label.toUpperCase(), fonts.bold, 6.2, width - 20), {
       x: x + 10,
-      y: 417,
+      y: 405,
       size: 6.2,
       font: fonts.bold,
       color: COLORS.muted,
@@ -503,7 +517,8 @@ function drawStatusCard(
   y: number,
   width: number,
   label: string,
-  active: boolean
+  active: boolean,
+  value = active ? 'SIM' : 'NÃO'
 ): void {
   page.drawRectangle({
     x,
@@ -544,7 +559,7 @@ function drawStatusCard(
     font: fonts.bold,
     color: COLORS.muted,
   });
-  page.drawText(active ? 'SIM' : 'NÃO', {
+  page.drawText(truncateToWidth(value, fonts.bold, 7.3, width - 29), {
     x: x + 23,
     y: y + 6.5,
     size: 7.3,
@@ -582,27 +597,154 @@ function drawStoreMetric(
   });
 }
 
+interface GridColumn {
+  start: number;
+  width: number;
+}
+
+interface ProductGridCellTexts {
+  prevQty: string;
+  prevVlr: string;
+  curQty: string;
+  curVlr: string;
+  difQty: string;
+  difVlr: string;
+  active: boolean;
+}
+
+function drawCenteredText(
+  page: PDFPage,
+  text: string,
+  baseX: number,
+  column: GridColumn,
+  baselineY: number,
+  size: number,
+  font: PDFFont,
+  textColor: RGB
+): void {
+  const textWidth = font.widthOfTextAtSize(text, size);
+  page.drawText(text, {
+    x: baseX + column.start + Math.max(0, (column.width - textWidth) / 2),
+    y: baselineY,
+    size,
+    font,
+    color: textColor,
+  });
+}
+
+function maxMeasuredWidth(texts: string[], font: PDFFont, size: number): number {
+  let max = 0;
+  for (const text of texts) {
+    max = Math.max(max, font.widthOfTextAtSize(text, size));
+  }
+  return max;
+}
+
+function buildProductCellTexts(row: ProductComparisonRow): ProductGridCellTexts {
+  return {
+    prevQty: dashWhenZero(formatQuantity(row.previousQuantity), row.previousQuantity),
+    prevVlr: row.previousValue && row.previousValue > 0 ? formatCurrencyCompact(row.previousValue) : '-',
+    curQty: dashWhenZero(formatQuantity(row.currentQuantity), row.currentQuantity),
+    curVlr: row.currentValue && row.currentValue > 0 ? formatCurrencyCompact(row.currentValue) : '-',
+    difQty: formatSignedQuantity(row.quantityDelta),
+    difVlr: formatSignedCurrency(row.valueDelta),
+    active: row.currentQuantity > 0,
+  };
+}
+
 function drawProductGrid(
   page: PDFPage,
   fonts: PdfFonts,
-  products: BusinessProduct[],
+  rows: ProductComparisonRow[],
   x: number,
   y: number,
-  width: number
+  width: number,
+  previousLabel: string,
+  currentLabel: string
 ): void {
   const gap = 7;
   const cellWidth = (width - gap) / 2;
-  products.forEach((product, index) => {
-    const active = clampNumber(product.quantity) > 0;
-    const column = index % 2;
-    const row = Math.floor(index / 2);
+  const padding = 7;
+  // Só padding à esquerda: o bloco numérico termina na borda direita da metade,
+  // alinhado com Fat. Cielo / Proposta de valor / Observação.
+  const usable = cellWidth - padding;
+  const valueSize = 5.2;
+  const headerSize = 4.6;
+  const groupTitleSize = 4.8;
+  const colGap = 2;
+  const cellPad = 3;
+  const minLabelWidth = 52;
+  const minQtyWidth = 16;
+  const minVlrWidth = 22;
+
+  const cells = rows.map(buildProductCellTexts);
+  const qtyHeaderWidth = fonts.bold.widthOfTextAtSize('QTD', headerSize);
+  const vlrHeaderWidth = fonts.bold.widthOfTextAtSize('VLR', headerSize);
+
+  let qtyWidth = Math.max(
+    minQtyWidth,
+    qtyHeaderWidth,
+    maxMeasuredWidth(cells.map((cell) => cell.prevQty), fonts.regular, valueSize),
+    maxMeasuredWidth(cells.map((cell) => cell.curQty), fonts.bold, valueSize),
+    maxMeasuredWidth(cells.map((cell) => cell.difQty), fonts.bold, valueSize)
+  ) + cellPad * 2;
+
+  let vlrWidth = Math.max(
+    minVlrWidth,
+    vlrHeaderWidth,
+    maxMeasuredWidth(cells.map((cell) => cell.prevVlr), fonts.regular, valueSize),
+    maxMeasuredWidth(cells.map((cell) => cell.curVlr), fonts.bold, valueSize),
+    maxMeasuredWidth(cells.map((cell) => cell.difVlr), fonts.bold, valueSize),
+    fonts.bold.widthOfTextAtSize(previousLabel, groupTitleSize) / 2,
+    fonts.bold.widthOfTextAtSize(currentLabel, groupTitleSize) / 2,
+    fonts.bold.widthOfTextAtSize('DIF.', groupTitleSize) / 2
+  ) + cellPad * 2;
+
+  const numbersBudget = Math.max(80, usable - minLabelWidth);
+  const groupsNeeded = (qtyWidth + colGap + vlrWidth) * 3;
+  if (groupsNeeded > numbersBudget) {
+    const fixedQty = qtyWidth * 3;
+    const flexible = Math.max(minVlrWidth * 3, numbersBudget - fixedQty - colGap * 3);
+    vlrWidth = Math.max(minVlrWidth, flexible / 3);
+    const stillOver = (qtyWidth + colGap + vlrWidth) * 3 - numbersBudget;
+    if (stillOver > 0) {
+      qtyWidth = Math.max(minQtyWidth, qtyWidth - stillOver / 3);
+    }
+  }
+
+  const groupInner = qtyWidth + colGap + vlrWidth;
+  const difVlr: GridColumn = { start: usable - vlrWidth, width: vlrWidth };
+  const difQty: GridColumn = { start: difVlr.start - colGap - qtyWidth, width: qtyWidth };
+  const curVlr: GridColumn = { start: difQty.start - vlrWidth, width: vlrWidth };
+  const curQty: GridColumn = { start: curVlr.start - colGap - qtyWidth, width: qtyWidth };
+  const prevVlr: GridColumn = { start: curQty.start - vlrWidth, width: vlrWidth };
+  const prevQty: GridColumn = { start: prevVlr.start - colGap - qtyWidth, width: qtyWidth };
+  const prevGroup: GridColumn = { start: prevQty.start, width: groupInner };
+  const curGroup: GridColumn = { start: curQty.start, width: groupInner };
+  const difGroup: GridColumn = { start: difQty.start, width: groupInner };
+  const labelMaxWidth = Math.max(24, prevQty.start - 6);
+  const productBandWidth = cellWidth;
+
+  const headerHeight = 17;
+  const rowHeight = 13;
+  const rowCount = Math.ceil(rows.length / 2);
+  const gridBottom = y - headerHeight - rowCount * rowHeight;
+
+  const positionOf = (index: number) => ({
+    column: Math.floor(index / rowCount),
+    rowIndex: index % rowCount,
+  });
+
+  rows.forEach((row, index) => {
+    const active = cells[index].active;
+    const { column, rowIndex } = positionOf(index);
     const cellX = x + column * (cellWidth + gap);
-    const cellY = y - row * 16 - 15;
+    const cellY = y - headerHeight - (rowIndex + 1) * rowHeight;
     page.drawRectangle({
       x: cellX,
       y: cellY,
-      width: cellWidth,
-      height: 15,
+      width: productBandWidth,
+      height: rowHeight,
       color: active ? COLORS.surfaceBlue : COLORS.surfaceSoft,
       borderColor: active ? color('#CDE1EF') : COLORS.line,
       borderWidth: 0.35,
@@ -611,29 +753,119 @@ function drawProductGrid(
       x: cellX,
       y: cellY,
       width: 2,
-      height: 15,
+      height: rowHeight,
       color: active ? COLORS.blue : COLORS.line,
     });
-    const detail = product.value && product.value > 0
-      ? `${formatQuantity(product.quantity)} | ${formatCurrencyCompact(product.value)}`
-      : `QTD ${formatQuantity(product.quantity)}`;
-    const detailFont = active ? fonts.bold : fonts.regular;
-    const detailSize = 5.8;
-    const detailWidth = detailFont.widthOfTextAtSize(detail, detailSize);
-    page.drawText(truncateToWidth(product.label, active ? fonts.bold : fonts.regular, 5.9, cellWidth - detailWidth - 20), {
-      x: cellX + 7,
-      y: cellY + 5.2,
-      size: 5.9,
-      font: active ? fonts.bold : fonts.regular,
-      color: active ? COLORS.ink : COLORS.muted,
+  });
+
+  for (let column = 0; column < 2; column += 1) {
+    const cellX = x + column * (cellWidth + gap);
+    const baseX = cellX + padding;
+    const bandHeight = y - gridBottom;
+
+    page.drawRectangle({
+      x: baseX + prevGroup.start,
+      y: gridBottom,
+      width: prevGroup.width,
+      height: bandHeight,
+      borderColor: COLORS.line,
+      borderWidth: 0.35,
     });
-    page.drawText(detail, {
-      x: cellX + cellWidth - detailWidth - 7,
-      y: cellY + 5.2,
-      size: detailSize,
-      font: detailFont,
-      color: active ? COLORS.blueDark : COLORS.inactiveIcon,
+    page.drawRectangle({
+      x: baseX + curGroup.start,
+      y: gridBottom,
+      width: curGroup.width,
+      height: bandHeight,
+      color: COLORS.surfaceBlue,
+      opacity: 0.55,
+      borderColor: color('#CDE1EF'),
+      borderWidth: 0.35,
     });
+    page.drawRectangle({
+      x: baseX + difGroup.start,
+      y: gridBottom,
+      width: difGroup.width,
+      height: bandHeight,
+      borderColor: COLORS.line,
+      borderWidth: 0.35,
+    });
+
+    drawCenteredText(page, previousLabel, baseX, prevGroup, y - 7.5, groupTitleSize, fonts.bold, COLORS.muted);
+    drawCenteredText(page, currentLabel, baseX, curGroup, y - 7.5, groupTitleSize, fonts.bold, COLORS.blueDark);
+    drawCenteredText(page, 'DIF.', baseX, difGroup, y - 7.5, groupTitleSize, fonts.bold, COLORS.muted);
+    drawCenteredText(page, 'QTD', baseX, prevQty, y - 14, headerSize, fonts.bold, COLORS.muted);
+    drawCenteredText(page, 'VLR', baseX, prevVlr, y - 14, headerSize, fonts.bold, COLORS.muted);
+    drawCenteredText(page, 'QTD', baseX, curQty, y - 14, headerSize, fonts.bold, COLORS.blueDark);
+    drawCenteredText(page, 'VLR', baseX, curVlr, y - 14, headerSize, fonts.bold, COLORS.blueDark);
+    drawCenteredText(page, 'QTD', baseX, difQty, y - 14, headerSize, fonts.bold, COLORS.muted);
+    drawCenteredText(page, 'VLR', baseX, difVlr, y - 14, headerSize, fonts.bold, COLORS.muted);
+  }
+
+  rows.forEach((row, index) => {
+    const cell = cells[index];
+    const { column, rowIndex } = positionOf(index);
+    const cellX = x + column * (cellWidth + gap);
+    const baseX = cellX + padding;
+    const cellY = y - headerHeight - (rowIndex + 1) * rowHeight;
+    const baseline = cellY + 4.6;
+    const labelFont = cell.active ? fonts.bold : fonts.regular;
+
+    page.drawText(truncateToWidth(row.label, labelFont, 5.6, labelMaxWidth), {
+      x: baseX,
+      y: baseline,
+      size: 5.6,
+      font: labelFont,
+      color: cell.active ? COLORS.ink : COLORS.muted,
+    });
+
+    drawCenteredText(page, cell.prevQty, baseX, prevQty, baseline, valueSize, fonts.regular, COLORS.slate);
+    drawCenteredText(
+      page,
+      truncateToWidth(cell.prevVlr, fonts.regular, valueSize, prevVlr.width - 2),
+      baseX,
+      prevVlr,
+      baseline,
+      valueSize,
+      fonts.regular,
+      COLORS.slate
+    );
+
+    const curFont = cell.active ? fonts.bold : fonts.regular;
+    const curColor = cell.active ? COLORS.blueDark : COLORS.inactiveIcon;
+    drawCenteredText(page, cell.curQty, baseX, curQty, baseline, valueSize, curFont, curColor);
+    drawCenteredText(
+      page,
+      truncateToWidth(cell.curVlr, curFont, valueSize, curVlr.width - 2),
+      baseX,
+      curVlr,
+      baseline,
+      valueSize,
+      curFont,
+      curColor
+    );
+
+    const qtyDifColor = row.quantityDelta > 0
+      ? COLORS.green
+      : row.quantityDelta < 0
+        ? COLORS.negative
+        : COLORS.muted;
+    drawCenteredText(page, cell.difQty, baseX, difQty, baseline, valueSize, fonts.bold, qtyDifColor);
+
+    const vlrDifColor = (row.valueDelta ?? 0) > 0
+      ? COLORS.green
+      : (row.valueDelta ?? 0) < 0
+        ? COLORS.negative
+        : COLORS.muted;
+    drawCenteredText(
+      page,
+      truncateToWidth(cell.difVlr, fonts.bold, valueSize, difVlr.width - 2),
+      baseX,
+      difVlr,
+      baseline,
+      valueSize,
+      fonts.bold,
+      vlrDifColor
+    );
   });
 }
 
@@ -641,87 +873,134 @@ function drawStoreCard(
   page: PDFPage,
   fonts: PdfFonts,
   stop: VisitStop,
-  production: StoreProductionPoint | null,
+  productionPair: RoutePdfStoreProduction | null,
   top: number
 ): void {
+  const production = productionPair?.current ?? null;
   const x = MARGIN;
   const width = A4_WIDTH - MARGIN * 2;
   const height = 322;
   const bottom = top - height;
   page.drawRectangle({ x, y: bottom, width, height, color: COLORS.white, borderColor: COLORS.line, borderWidth: 0.8 });
-  page.drawRectangle({ x: x + 0.8, y: top - 66, width: width - 1.6, height: 65.2, color: COLORS.surfaceSoft });
-  page.drawRectangle({ x: x + 0.8, y: top - 66, width: 3.2, height: 65.2, color: COLORS.brand });
+  page.drawRectangle({ x: x + 0.8, y: top - 72, width: width - 1.6, height: 71.2, color: COLORS.surfaceSoft });
+  page.drawRectangle({ x: x + 0.8, y: top - 72, width: 3.2, height: 71.2, color: COLORS.brand });
 
-  page.drawCircle({ x: x + 24, y: top - 29, size: 14, color: COLORS.brand });
+  page.drawCircle({ x: x + 24, y: top - 26, size: 14, color: COLORS.brand });
   const order = String(stop.ordem);
   page.drawText(order, {
     x: x + 24 - fonts.bold.widthOfTextAtSize(order, 9) / 2,
-    y: top - 32,
+    y: top - 29,
     size: 9,
     font: fonts.bold,
     color: COLORS.white,
   });
   page.drawText(truncateToWidth(stop.nome, fonts.bold, 12, 330), {
     x: x + 48,
-    y: top - 25,
+    y: top - 22,
     size: 12,
     font: fonts.bold,
     color: COLORS.ink,
   });
-  const storeIdentity = [
-    stop.chaveLoja ? `Loja ${stop.chaveLoja}` : null,
-    stop.codAg ? `AG ${stop.codAg}` : null,
-    stop.horario,
-  ].filter(Boolean).join(' | ');
-  page.drawText(truncateToWidth(storeIdentity, fonts.regular, 7.5, 330), {
+
+  const locationLabel = [stop.municipio, stop.uf].filter(Boolean).join('/');
+  const metaPrimary = [
+    stop.chaveLoja ? `Chave ${stop.chaveLoja}` : null,
+    stop.horario ? `Horário ${stop.horario}` : null,
+    locationLabel || null,
+  ].filter(Boolean).join('   ·   ');
+  page.drawText(truncateToWidth(metaPrimary || 'Dados da loja não informados', fonts.regular, 7.5, 360), {
     x: x + 48,
-    y: top - 40,
+    y: top - 36,
     size: 7.5,
     font: fonts.regular,
     color: COLORS.slate,
   });
+
+  const agencyLabel = stop.codAg
+    ? (stop.nomeAg ? `${stop.codAg} - ${stop.nomeAg}` : String(stop.codAg))
+    : null;
+  if (agencyLabel) {
+    page.drawText(truncateToWidth(`Agência ${agencyLabel}`, fonts.regular, 7.2, 360), {
+      x: x + 48,
+      y: top - 48,
+      size: 7.2,
+      font: fonts.regular,
+      color: COLORS.slate,
+    });
+  }
+  if (stop.statusTablet) {
+    page.drawText(truncateToWidth(`Tablet ${stop.statusTablet}`, fonts.regular, 7.2, 360), {
+      x: x + 48,
+      y: top - 59,
+      size: 7.2,
+      font: fonts.regular,
+      color: COLORS.slate,
+    });
+  }
+
   page.drawText(formatPeriod(production?.periodo), {
     x: x + width - 74,
-    y: top - 29,
+    y: top - 26,
     size: 8,
     font: fonts.bold,
     color: COLORS.brand,
   });
   page.drawText('REFERÊNCIA', {
     x: x + width - 74,
-    y: top - 41,
+    y: top - 38,
     size: 5.5,
     font: fonts.bold,
     color: COLORS.muted,
   });
 
-  page.drawText(truncateToWidth(stop.endereco || stop.cep || 'Endereço não informado', fonts.regular, 7.2, width - 32), {
-    x: x + 16,
-    y: top - 61,
-    size: 7.2,
-    font: fonts.regular,
-    color: COLORS.slate,
-  });
+  const rawAddress = pdfText(stop.endereco || stop.cep || '', '');
+  const normalizedLocation = pdfText(locationLabel, '').toUpperCase();
+  const addressLooksLikeLocationOnly = Boolean(
+    normalizedLocation
+    && rawAddress
+    && pdfText(rawAddress, '').toUpperCase() === normalizedLocation
+  );
+  const addressLabel = addressLooksLikeLocationOnly
+    ? ''
+    : rawAddress;
+  if (addressLabel) {
+    page.drawText(truncateToWidth(addressLabel, fonts.regular, 7.2, width - 48), {
+      x: x + 48,
+      y: top - 70,
+      size: 7.2,
+      font: fonts.regular,
+      color: COLORS.slate,
+    });
+  }
 
   const metricY = top - 111;
   const metricGap = 7;
   const metricWidth = (width - 32 - metricGap * 3) / 4;
   drawStoreMetric(page, fonts, x + 16, metricY, metricWidth, 'QTD TRX contábil', formatQuantity(production?.qtdTrxContabil), true);
   drawStoreMetric(page, fonts, x + 16 + (metricWidth + metricGap), metricY, metricWidth, 'QTD TRX negócio', formatQuantity(production?.qtdTrxNegocio), true);
-  drawStoreMetric(page, fonts, x + 16 + (metricWidth + metricGap) * 2, metricY, metricWidth, 'Crédito M0', formatQuantity(production?.qtdCred));
+  drawStoreMetric(page, fonts, x + 16 + (metricWidth + metricGap) * 2, metricY, metricWidth, 'Crédito', formatCurrency(production?.vlrCred));
   drawStoreMetric(page, fonts, x + 16 + (metricWidth + metricGap) * 3, metricY, metricWidth, 'Fat. Cielo', formatCurrency(production?.vlrFatCielo));
 
   const opportunities = stop.oportunidades;
+  const checklistDone = stop.checklist === 'OK';
+  const checklistValue = stop.checklist === 'OK'
+    ? 'SIM'
+    : stop.checklist === 'VENCIDO'
+      ? 'VENCIDO'
+      : stop.checklist === 'NÃO APTO'
+        ? 'NÃO APTO'
+        : 'NÃO';
   const statuses = [
-    ['Cielo', opportunities?.oportunidadeCielo === true],
-    ['Crédito', opportunities?.oportunidadeCredito === true],
-    ['Negócio', opportunities?.oportunidadeNegocio === true],
-    ['Ativo PADE', opportunities?.oportunidadeAtivoPade === true],
-    ['Proposta de valor', opportunities?.oportunidadePropostaValor === true],
+    ['Checklist', checklistDone, checklistValue],
+    ['Tem Cielo?', opportunities?.oportunidadeCielo === true, undefined],
+    ['Fez Crédito?', opportunities?.oportunidadeCredito === true, undefined],
+    ['Fez Negócio?', opportunities?.oportunidadeNegocio === true, undefined],
+    ['Ativo PADE?', opportunities?.oportunidadeAtivoPade === true, undefined],
+    ['Tem Proposta de Valor?', opportunities?.oportunidadePropostaValor === true, undefined],
   ] as const;
   const statusGap = 5;
   const statusWidth = (width - 32 - statusGap * (statuses.length - 1)) / statuses.length;
-  statuses.forEach(([label, active], index) => {
+  statuses.forEach(([label, active, value], index) => {
     drawStatusCard(
       page,
       fonts,
@@ -729,49 +1008,106 @@ function drawStoreCard(
       top - 149,
       statusWidth,
       label,
-      active
+      active,
+      value
     );
   });
 
   page.drawText('COMPOSIÇÃO DAS TRANSAÇÕES DE NEGÓCIO', {
     x: x + 16,
-    y: top - 164,
+    y: top - 161,
     size: 6.1,
     font: fonts.bold,
     color: COLORS.ink,
   });
-  const productionCaption = 'produção do período | Vida/Micro: 3 = 1';
+  const productionCaption = 'Vida/Micro: 3 = 1';
   page.drawText(productionCaption.toUpperCase(), {
     x: x + width - 16 - fonts.regular.widthOfTextAtSize(productionCaption.toUpperCase(), 5.4),
-    y: top - 164,
+    y: top - 161,
     size: 5.4,
     font: fonts.regular,
     color: COLORS.muted,
   });
-  drawProductGrid(page, fonts, businessProducts(production), x + 16, top - 171, width - 32);
+  drawProductGrid(
+    page,
+    fonts,
+    buildProductComparisonRows(productionPair),
+    x + 16,
+    top - 168,
+    width - 32,
+    formatPeriodShort(productionPair?.previous?.periodo),
+    formatPeriodShort(productionPair?.current?.periodo, 'ATUAL')
+  );
+
+  const contentWidth = width - 32;
+  const sectionGap = 7;
+  const halfWidth = (contentWidth - sectionGap) / 2;
+  const leftX = x + 16;
+  const rightX = leftX + halfWidth + sectionGap;
 
   page.drawLine({
-    start: { x: x + 16, y: bottom + 31 },
-    end: { x: x + width - 16, y: bottom + 31 },
+    start: { x: leftX, y: bottom + 40 },
+    end: { x: x + width - 16, y: bottom + 40 },
     thickness: 0.6,
     color: COLORS.line,
   });
-  page.drawText('FOCO COMERCIAL', { x: x + 16, y: bottom + 18, size: 5.8, font: fonts.bold, color: COLORS.muted });
-  page.drawText(truncateToWidth(stop.produtoFoco || 'Relacionamento', fonts.bold, 8, 195), {
-    x: x + 16,
-    y: bottom + 5,
-    size: 8,
+
+  const noteBottom = bottom + 5;
+  const noteHeight = 30;
+
+  page.drawText('FOCO COMERCIAL', {
+    x: leftX,
+    y: bottom + 32,
+    size: 5.5,
+    font: fonts.bold,
+    color: COLORS.muted,
+  });
+  page.drawText(truncateToWidth(stop.produtoFoco || 'Relacionamento', fonts.bold, 7.5, halfWidth), {
+    x: leftX,
+    y: bottom + 22,
+    size: 7.5,
     font: fonts.bold,
     color: COLORS.brand,
   });
-  page.drawText('PRÓXIMA AÇÃO', { x: x + 250, y: bottom + 18, size: 5.8, font: fonts.bold, color: COLORS.muted });
-  page.drawText(truncateToWidth(stop.proximaAcao || 'Conduzir visita comercial', fonts.regular, 7.5, width - 266), {
-    x: x + 250,
-    y: bottom + 5,
-    size: 7.5,
+  page.drawText('PRÓXIMA AÇÃO', {
+    x: leftX,
+    y: bottom + 13,
+    size: 5.5,
+    font: fonts.bold,
+    color: COLORS.muted,
+  });
+  page.drawText(truncateToWidth(stop.proximaAcao || 'Conduzir visita comercial', fonts.regular, 7, halfWidth), {
+    x: leftX,
+    y: bottom + 4,
+    size: 7,
     font: fonts.regular,
     color: COLORS.ink,
   });
+
+  page.drawRectangle({
+    x: rightX,
+    y: noteBottom,
+    width: halfWidth,
+    height: noteHeight,
+    color: COLORS.surfaceSoft,
+    borderColor: COLORS.line,
+    borderWidth: 0.6,
+  });
+  page.drawText('OBSERVAÇÃO', {
+    x: rightX + 6,
+    y: noteBottom + noteHeight - 9,
+    size: 5.5,
+    font: fonts.bold,
+    color: COLORS.muted,
+  });
+  for (const lineOffset of [12, 21]) {
+    page.drawLine({
+      start: { x: rightX + 6, y: noteBottom + noteHeight - lineOffset },
+      end: { x: rightX + halfWidth - 6, y: noteBottom + noteHeight - lineOffset },
+      thickness: 0.4,
+      color: COLORS.line,
+    });
+  }
 }
 
 export async function buildRoutePdf(
@@ -805,7 +1141,7 @@ export async function buildRoutePdf(
     const stops = orderedStops.slice(index, index + 2);
     drawDetailHeader(page, fonts, route, index + 1, index + stops.length);
     stops.forEach((stop, cardIndex) => {
-      drawStoreCard(page, fonts, stop, currentProduction(stop, productionByStore), cardIndex === 0 ? 724 : 386);
+      drawStoreCard(page, fonts, stop, storeProduction(stop, productionByStore), cardIndex === 0 ? 724 : 386);
     });
     drawPageChrome(page, fonts, route, 2 + Math.floor(index / 2), totalPages, generatedAt);
   }

@@ -105,7 +105,9 @@ const ROUTE_PLANNER_HERO_EDGE_FADE: React.CSSProperties = {
 };
 
 const RoutePlanningJourney: React.FC<Props> = ({ agencies, originId, destination, initialScreen = 0, initialPriority = 'inteligente', initialOriginStore = null, initialOriginLocation = null, initialDestinationLocation = null, onClose, onComplete, onOriginAgencySelect, onOriginStoreSelect, onOriginLocationSelect, onDestinationAgencySelect, onDestinationLocationSelect, onDestinationClear, onTerritoryRadiusSelect, headerDragProps }) => {
-  const initialDestinationAgencyId = agencies.find((agency) => agency.nome === destination)?.id ?? '';
+  const initialDestinationAgencyId = agencies.find((agency) =>
+    agency.nome === destination || agencyLabel(agency) === destination
+  )?.id ?? '';
   const initialTerritoryRadius = /^Território em um raio de (\d+(?:[.,]\d+)?) km$/i.exec(destination)?.[1];
   const parsedInitialTerritoryRadius = initialTerritoryRadius
     ? Number(initialTerritoryRadius.replace(',', '.'))
@@ -165,11 +167,11 @@ const RoutePlanningJourney: React.FC<Props> = ({ agencies, originId, destination
   }, [agencies, destinationAgencyId, destinationType, onDestinationAgencySelect, screen]);
 
   const finish = () => {
-    const agencyDestination = agencies.find((agency) => agency.id === destinationAgencyId)?.nome;
+    const agencyDestination = agencyLabel(agencies.find((agency) => agency.id === destinationAgencyId));
     onComplete({
       intention,
       originId: originType === 'agencia' ? selectedOriginId : '',
-      destination: destinationType === 'agencia' ? agencyDestination ?? selectedDestination : selectedDestination,
+      destination: destinationType === 'agencia' ? agencyDestination || selectedDestination : selectedDestination,
       territoryRadiusKm,
       priority,
     });

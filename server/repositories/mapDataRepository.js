@@ -680,6 +680,89 @@ export async function fetchProductionHeatmapRows({ metricId, period, user }) {
   };
 }
 
+/**
+ * Lojas do mapa de produção por município ou UF.
+ * Base = todas as lojas do escopo (não só as com produção no período).
+ */
+export async function fetchProductionHeatmapStores({
+  metricId,
+  period,
+  municipalityCode = null,
+  uf = null,
+  user,
+}) {
+  const metricExpression = productionMetricSql(metricId, 'A', 'E');
+  if (!metricExpression) throw new Error('Indicador de mapa de produção inválido.');
+
+  const code = String(municipalityCode ?? '').trim();
+  const ufCode = String(uf ?? '').trim().toUpperCase();
+  if (!code && !ufCode) {
+    throw new Error('Informe municipalityCode ou uf para lojas do mapa de produção.');
+  }
+
+  const request = pool.request();
+  request.input('period', period);
+  if (code) request.input('municipalityCode', code);
+  if (ufCode) request.input('uf', ufCode);
+  const accessSql = applyAccessScope(request, user, 'esc', 'heatmapStoresAuthCodFunc');
+
+  const scopeFilter = code
+    ? `AND RIGHT(
+        REPLICATE('0', 7) + LTRIM(RTRIM(STR(ROUND(CONVERT(float, store.CD_MUNIC), 0), 20, 0))),
+        7
+      ) = @municipalityCode`
+    : `AND UPPER(LTRIM(RTRIM(CONVERT(varchar(2), store.UF)))) = @uf`;
+
+  const result = await request.query(`
+    SELECT
+      LTRIM(RTRIM(CONVERT(nvarchar(100), store.CHAVE_LOJA))) AS chaveLoja,
+      LTRIM(RTRIM(CONVERT(nvarchar(255), store.NOME_LOJA))) AS nome,
+      LTRIM(RTRIM(CONVERT(nvarchar(50), store.COD_AG_LOJA))) AS codAg,
+      LTRIM(RTRIM(CONVERT(nvarchar(200), store.NOME_AG))) AS nomeAg,
+      CASE
+        WHEN store.CD_MUNIC IS NULL THEN NULL
+        ELSE RIGHT(
+          REPLICATE('0', 7) + LTRIM(RTRIM(STR(ROUND(CONVERT(float, store.CD_MUNIC), 0), 20, 0))),
+          7
+        )
+      END AS municipalityCode,
+      LTRIM(RTRIM(CONVERT(nvarchar(200), store.MUNICIPIO))) AS municipalityName,
+      UPPER(LTRIM(RTRIM(CONVERT(varchar(2), store.UF)))) AS uf,
+      CAST(ISNULL(${metricExpression}, 0) AS float) AS value,
+      CAST(
+        ISNULL(A.QTD_CONTAS_TABLET_POS, 0) + ISNULL(A.QTD_CONTA_SALARIO, 0)
+        AS float
+      ) AS qtdContas,
+      CAST(coord.LONGITUDE AS float) AS lon,
+      CAST(coord.LATITUDE AS float) AS lat
+    FROM DATALAKE..DL_BRADESCO_EXPRESSO AS store
+    INNER JOIN MESU..CONS_DISTRIBUICAO_ENTIDADES AS esc
+      ON TRY_CONVERT(bigint, esc.COD_AG) = TRY_CONVERT(bigint, store.COD_AG_LOJA)
+    LEFT JOIN DATAWAREHOUSE..TB_INDICADORES_BE AS A
+      ON A.CHAVE_LOJA = store.CHAVE_LOJA
+      AND TRY_CONVERT(int, A.PERIODO) = @period
+    LEFT JOIN TESTE..TB_COORD_BE_IGOR AS coord
+      ON coord.CHAVE_LOJA = store.CHAVE_LOJA
+    LEFT JOIN (
+      SELECT
+        ANO_MES,
+        CHAVE_LOJA,
+        SUM(REALIZADO) AS REALIZADO
+      FROM PADE..REALIZADO_CREDITO_CONCEDIDO
+      WHERE INDICADOR = 'CONSORCIO'
+      GROUP BY ANO_MES, CHAVE_LOJA
+    ) AS E
+      ON TRY_CONVERT(int, E.ANO_MES) = @period
+      AND E.CHAVE_LOJA = store.CHAVE_LOJA
+    WHERE store.CD_MUNIC IS NOT NULL
+      ${scopeFilter}
+      ${accessSql}
+    ORDER BY value DESC, nome ASC
+  `);
+
+  return result.recordset ?? [];
+}
+
 export async function fetchStoreProductionHistory(chaveLoja) {
   const request = pool.request();
   request.input('chaveLoja', String(chaveLoja ?? '').trim());

@@ -142,6 +142,7 @@ const Index = () => {
   const [heatmapData, setHeatmapData] = useState<ProductionHeatmapData | null>(null);
   const [heatmapUf, setHeatmapUf] = useState<string | null>(null);
   const [heatmapStateLabel, setHeatmapStateLabel] = useState<string | null>(null);
+  const [heatmapStoresPanelExpanded, setHeatmapStoresPanelExpanded] = useState(false);
   const [heatmapOptionsLoading, setHeatmapOptionsLoading] = useState(false);
   const [heatmapDataLoading, setHeatmapDataLoading] = useState(false);
   const [heatmapOptionsError, setHeatmapOptionsError] = useState<string | null>(null);
@@ -528,6 +529,8 @@ const Index = () => {
       setHeatmapDataError(null);
       setHeatmapUf(null);
       setHeatmapStateLabel(null);
+      setHeatmapViewByMunicipality(false);
+      setHeatmapStoresPanelExpanded(false);
     }
     if (section !== 'planejar') {
       setPlannerTerritory(null);
@@ -786,6 +789,7 @@ const Index = () => {
           }}
           onBack={() => handleSelectSection(null)}
           onClose={() => handleSelectSection(null)}
+          sidePanelExpanded={heatmapStoresPanelExpanded}
         />
       )}
 
@@ -919,6 +923,7 @@ const Index = () => {
               setHeatmapStateLabel(scope.label);
             }
           }}
+          onProductionStoresPanelExpandedChange={setHeatmapStoresPanelExpanded}
           visitRoute={activeRoute ?? distanceAnalysisRoute ?? plannerPreviewRoute}
           selectedVisitStopId={selectedStopId}
           onVisitStopSelect={setSelectedStopId}

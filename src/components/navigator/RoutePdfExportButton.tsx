@@ -6,18 +6,19 @@ import {
   fetchStoreProductionHistory,
   type StoreProductionPoint,
 } from '@/lib/mapDataApi';
-import type { RoutePdfProductionByStore } from '@/lib/routePdfExport';
+import type {
+  RoutePdfProductionByStore,
+  RoutePdfStoreProduction,
+} from '@/lib/routePdfExport';
 import { fetchSavedRouteExportData } from '@/lib/visitRoutesApi';
 
 interface Props {
   route: VisitRoute;
 }
 
-function latestProduction(history: StoreProductionPoint[]): StoreProductionPoint | null {
-  return history.reduce<StoreProductionPoint | null>(
-    (latest, item) => !latest || item.periodo > latest.periodo ? item : latest,
-    null
-  );
+function recentProduction(history: StoreProductionPoint[]): RoutePdfStoreProduction {
+  const sorted = [...history].sort((a, b) => b.periodo - a.periodo);
+  return { current: sorted[0] ?? null, previous: sorted[1] ?? null };
 }
 
 async function fetchWithConcurrency<T, R>(
@@ -41,7 +42,10 @@ async function fetchWithConcurrency<T, R>(
 async function loadProduction(route: VisitRoute): Promise<RoutePdfProductionByStore> {
   if (route.saved) {
     const stores = await fetchSavedRouteExportData(route.id);
-    return Object.fromEntries(stores.map((item) => [String(item.chaveLoja), item.production]));
+    return Object.fromEntries(stores.map((item) => [
+      String(item.chaveLoja),
+      { current: item.production ?? null, previous: item.previousProduction ?? null },
+    ]));
   }
 
   const storeKeys = [...new Set(
@@ -51,7 +55,7 @@ async function loadProduction(route: VisitRoute): Promise<RoutePdfProductionBySt
   )];
   const stores = await fetchWithConcurrency(storeKeys, 5, async (chaveLoja) => {
     const overview = await fetchStoreProductionHistory(chaveLoja);
-    return [chaveLoja, latestProduction(overview.history)] as const;
+    return [chaveLoja, recentProduction(overview.history)] as const;
   });
   return Object.fromEntries(stores);
 }

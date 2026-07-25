@@ -34,6 +34,12 @@ function text(value, maxLength, required = false) {
   return normalized ? normalized.slice(0, maxLength) : null;
 }
 
+function normalizeChecklistStatus(value) {
+  const normalized = String(value ?? '').trim().toUpperCase();
+  if (normalized === 'OK' || normalized === 'VENCIDO' || normalized === 'NÃO APTO') return normalized;
+  return null;
+}
+
 function integer(value, { min = 0, max = Number.MAX_SAFE_INTEGER } = {}) {
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed < min || parsed > max) {
@@ -340,6 +346,11 @@ export async function getVisitRoute(id, user) {
       oportunidades: parseJson(stop.OPORTUNIDADES_JSON, {}),
       chaveLoja: String(stop.CHAVE_LOJA),
       codAg: String(stop.COD_AG ?? ''),
+      nomeAg: String(stop.NOME_AG ?? '').trim() || null,
+      statusTablet: String(stop.STATUS_TABLET ?? '').trim() || null,
+      checklist: normalizeChecklistStatus(stop.STATUS_CHECKLIST),
+      municipio: String(stop.MUNICIPIO ?? '').trim() || null,
+      uf: String(stop.UF ?? '').trim().toUpperCase() || null,
       ultimaVisita: String(stop.ULTIMA_VISITA ?? ''),
       proximaAcao: String(stop.PROXIMA_ACAO ?? ''),
       lat: Number(stop.LAT),
@@ -370,11 +381,12 @@ export async function getVisitRouteExportData(id, user) {
       cursor += 1;
       const chaveLoja = storeKeys[index];
       const rows = normalizeStoreProductionRows(await fetchStoreProductionHistory(chaveLoja));
-      const latest = rows.reduce(
-        (current, item) => !current || item.periodo > current.periodo ? item : current,
-        null
-      );
-      stores[index] = { chaveLoja, production: latest };
+      const sorted = rows.slice().sort((a, b) => b.periodo - a.periodo);
+      stores[index] = {
+        chaveLoja,
+        production: sorted[0] ?? null,
+        previousProduction: sorted[1] ?? null,
+      };
     }
   }
 

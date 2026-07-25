@@ -124,6 +124,47 @@ export interface ProductionHeatmapData {
   };
 }
 
+export interface ProductionHeatmapStoreRow {
+  chaveLoja: string;
+  nome: string;
+  codAg: string | null;
+  nomeAg: string | null;
+  municipalityCode: string;
+  municipalityName: string;
+  uf: string;
+  value: number;
+  qtdContas: number;
+  /** True quando a loja realizou contas no período. */
+  hasContas: boolean;
+  /** True quando a loja produziu o indicador selecionado no período. */
+  hasProduction: boolean;
+  lng: number | null;
+  lat: number | null;
+}
+
+export interface ProductionHeatmapStoresData {
+  metric: ProductionHeatmapMetric;
+  period: number;
+  municipalityCode: string | null;
+  municipalityName: string;
+  uf: string;
+  scope?: 'municipality' | 'uf';
+  summary: {
+    value: number;
+    producingStores: number;
+    storeCount: number;
+    storesWithContas?: number;
+    storesWithoutContas?: number;
+    storesWithProduction?: number;
+    storesWithoutProduction?: number;
+  };
+  stores: ProductionHeatmapStoreRow[];
+}
+
+export type ProductionHeatmapStoresScope =
+  | { municipalityCode: string; uf?: never }
+  | { uf: string; municipalityCode?: never };
+
 export interface CommercialSeatDetail {
   commercialLevel: CommercialSeatLevel;
   chaveEntidade: number;
@@ -428,4 +469,76 @@ export function fetchProductionHeatmap(
     `/api/map/production-heatmap?${query.toString()}`,
     signal
   );
+}
+
+function normalizeHeatmapStoreCoords(
+  lng: unknown,
+  lat: unknown
+): { lng: number | null; lat: number | null } {
+  if (lng == null || lat == null) return { lng: null, lat: null };
+  if (typeof lng === 'string' && lng.trim() === '') return { lng: null, lat: null };
+  if (typeof lat === 'string' && lat.trim() === '') return { lng: null, lat: null };
+  const lonN = Number(lng);
+  const latN = Number(lat);
+  if (!Number.isFinite(lonN) || !Number.isFinite(latN)) return { lng: null, lat: null };
+  if (lonN < -180 || lonN > 180 || latN < -90 || latN > 90) return { lng: null, lat: null };
+  if (lonN === 0 && latN === 0) return { lng: null, lat: null };
+  return { lng: lonN, lat: latN };
+}
+
+export async function fetchProductionHeatmapStores(
+  metricId: string,
+  period: number,
+  scope: ProductionHeatmapStoresScope,
+  signal?: AbortSignal
+): Promise<ProductionHeatmapStoresData> {
+  const query = new URLSearchParams({
+    metricId,
+    period: String(period),
+  });
+  if ('municipalityCode' in scope && scope.municipalityCode) {
+    query.set('municipalityCode', scope.municipalityCode);
+  } else if ('uf' in scope && scope.uf) {
+    query.set('uf', scope.uf.toUpperCase());
+  } else {
+    throw new Error('Informe municipalityCode ou uf para carregar as lojas.');
+  }
+  const data = await fetchProductionHeatmapJson<ProductionHeatmapStoresData>(
+    `/api/map/production-heatmap/stores?${query.toString()}`,
+    signal
+  );
+  const stores = (Array.isArray(data.stores) ? data.stores : []).map((store) => {
+    const coords = normalizeHeatmapStoreCoords(store?.lng, store?.lat);
+    const value = Number(store?.value) || 0;
+    const hasProduction =
+      typeof store?.hasProduction === 'boolean' ? store.hasProduction : value !== 0;
+    return {
+      ...store,
+      chaveLoja: String(store?.chaveLoja ?? '').trim(),
+      nome: String(store?.nome ?? 'Loja').trim() || 'Loja',
+      municipalityCode: String(store?.municipalityCode ?? '').trim(),
+      municipalityName: String(store?.municipalityName ?? '').trim(),
+      uf: String(store?.uf ?? '').trim().toUpperCase(),
+      value,
+      qtdContas: Number(store?.qtdContas) || 0,
+      hasContas: Boolean(store?.hasContas),
+      hasProduction,
+      lng: coords.lng,
+      lat: coords.lat,
+    };
+  }).filter((store) => store.chaveLoja);
+  return {
+    ...data,
+    municipalityCode: data.municipalityCode ?? null,
+    stores,
+    summary: {
+      value: Number(data.summary?.value) || 0,
+      producingStores: Math.max(0, Number(data.summary?.producingStores) || 0),
+      storeCount: Math.max(stores.length, Number(data.summary?.storeCount) || 0),
+      storesWithContas: Number(data.summary?.storesWithContas) || undefined,
+      storesWithoutContas: Number(data.summary?.storesWithoutContas) || undefined,
+      storesWithProduction: Number(data.summary?.storesWithProduction) || undefined,
+      storesWithoutProduction: Number(data.summary?.storesWithoutProduction) || undefined,
+    },
+  };
 }

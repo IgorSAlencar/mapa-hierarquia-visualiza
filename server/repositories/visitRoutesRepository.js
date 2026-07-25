@@ -318,9 +318,41 @@ export async function fetchVisitRouteById(id, user) {
   const stopsRequest = pool.request();
   stopsRequest.input('routeId', sql.UniqueIdentifier, id);
   const stops = await stopsRequest.query(`
-    SELECT * FROM TESTE..ROTEIRO_PARADAS_MAPA
-    WHERE ROTEIRO_ID = @routeId
-    ORDER BY ORDEM
+    SELECT
+      p.*,
+      (
+        SELECT TOP (1) LTRIM(RTRIM(CAST(ent.NOME_AG AS NVARCHAR(255))))
+        FROM MESU..CONS_DISTRIBUICAO_ENTIDADES AS ent
+        WHERE TRY_CAST(ent.COD_AG AS BIGINT) = TRY_CAST(p.COD_AG AS BIGINT)
+          AND ent.NOME_AG IS NOT NULL
+      ) AS NOME_AG,
+      LTRIM(RTRIM(CAST(be.STATUS_TABLET AS NVARCHAR(50)))) AS STATUS_TABLET,
+      LTRIM(RTRIM(CAST(be.MUNICIPIO AS NVARCHAR(120)))) AS MUNICIPIO,
+      LTRIM(RTRIM(CAST(be.UF AS NVARCHAR(5)))) AS UF,
+      CASE
+        WHEN LTRIM(RTRIM(be.TIPO_POSTO)) IN (
+          N'Gerenciada',
+          N'Casas Bahia',
+          N'Mesa de Negócios',
+          N'Exclusivo'
+        ) THEN N'NÃO APTO'
+        WHEN checklist.DT_VENCIMENTO_CHECKLIST > GETDATE() THEN N'OK'
+        ELSE N'VENCIDO'
+      END AS STATUS_CHECKLIST
+    FROM TESTE..ROTEIRO_PARADAS_MAPA AS p
+    LEFT JOIN DATALAKE..DL_BRADESCO_EXPRESSO AS be
+      ON be.CHAVE_LOJA = p.CHAVE_LOJA
+    LEFT JOIN (
+      SELECT
+        DATEADD(YEAR, 1, MAX(DT_CADASTRO)) AS DT_VENCIMENTO_CHECKLIST,
+        CHAVE_LOJA
+      FROM PAA.DBO.TB_ANALISE_CHECKLIST_AG WITH (NOLOCK)
+      WHERE ID_STATUS_CHECKLIST_AG = 1
+      GROUP BY CHAVE_LOJA
+    ) AS checklist
+      ON checklist.CHAVE_LOJA = p.CHAVE_LOJA
+    WHERE p.ROTEIRO_ID = @routeId
+    ORDER BY p.ORDEM
   `);
   return { header: header.recordset[0], stops: stops.recordset };
 }

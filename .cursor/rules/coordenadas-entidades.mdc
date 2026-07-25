@@ -7,7 +7,7 @@ globs:
 * "**/*.js"
 * "**/*.ts"
 * "**/*.tsx"
-  alwaysApply: true
+  alwaysApply: False
 ---
 
 # Agências-sede das entidades

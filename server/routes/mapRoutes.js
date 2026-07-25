@@ -6,6 +6,7 @@ import {
   getCommercialSeatMapPoints,
   getProductionHeatmap,
   getProductionHeatmapOptions,
+  getProductionHeatmapStores,
   ProductionHeatmapError,
   getStoreMapPoints,
   getStoreProductionHistory,
@@ -281,6 +282,31 @@ router.get('/production-heatmap', async (req, res) => {
     }
     console.error('Erro ao carregar mapa de produção:', error);
     res.status(500).json({ message: 'Erro ao carregar mapa de produção.' });
+  }
+});
+
+router.get('/production-heatmap/stores', async (req, res) => {
+  try {
+    const metricId = String(req.query.metricId ?? '').trim();
+    const period = Number(req.query.period);
+    const municipalityCode = String(req.query.municipalityCode ?? '').trim();
+    const uf = String(req.query.uf ?? '').trim();
+    const data = await getProductionHeatmapStores({
+      metricId,
+      period,
+      municipalityCode: municipalityCode || null,
+      uf: uf || null,
+      user: req.user,
+    });
+    res.set('Cache-Control', 'private, max-age=120');
+    res.json(data);
+  } catch (error) {
+    if (error instanceof ProductionHeatmapError) {
+      res.status(error.status).json({ message: error.message });
+      return;
+    }
+    console.error('Erro ao carregar lojas do mapa de produção:', error);
+    res.status(500).json({ message: 'Erro ao carregar lojas do mapa de produção.' });
   }
 });
 

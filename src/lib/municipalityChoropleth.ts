@@ -176,6 +176,84 @@ export function productionQuantileClass(value: number, thresholds: number[]): nu
   return Math.min(PRODUCTION_HEATMAP_COLORS.length - 1, bucket);
 }
 
+/** Cor da faixa de calor (ou fallback se a classe for inválida). */
+export function productionHeatmapColorForClass(
+  heatClass: number,
+  fallback = '#64748b'
+): string {
+  if (!Number.isInteger(heatClass) || heatClass < 0 || heatClass >= PRODUCTION_HEATMAP_COLORS.length) {
+    return fallback;
+  }
+  return PRODUCTION_HEATMAP_COLORS[heatClass];
+}
+
+function productionHeatmapClassColorMatch(fallback: string): unknown[] {
+  return [
+    'match',
+    ['get', 'heatClass'],
+    0,
+    PRODUCTION_HEATMAP_COLORS[0],
+    1,
+    PRODUCTION_HEATMAP_COLORS[1],
+    2,
+    PRODUCTION_HEATMAP_COLORS[2],
+    3,
+    PRODUCTION_HEATMAP_COLORS[3],
+    4,
+    PRODUCTION_HEATMAP_COLORS[4],
+    fallback,
+  ];
+}
+
+/** Expressão Mapbox de fill-color do calor; `selectedClasses` vazio/null = todas as faixas. */
+export function buildProductionHeatmapFillColorExpression(
+  selectedClasses: readonly number[] | null | undefined,
+  options?: { hideZero?: boolean }
+): unknown[] {
+  const transparent = 'rgba(0, 0, 0, 0)';
+  const classColors = productionHeatmapClassColorMatch(transparent);
+  const expression: unknown[] = ['case', ['==', ['get', 'heatMissing'], 1], transparent];
+  if (options?.hideZero) {
+    expression.push(['==', ['get', 'heatZero'], 1], transparent);
+  }
+  if (selectedClasses && selectedClasses.length > 0) {
+    expression.push(
+      ['!', ['in', ['get', 'heatClass'], ['literal', [...selectedClasses]]]],
+      transparent
+    );
+  }
+  expression.push(classColors);
+  return expression;
+}
+
+/**
+ * Expressão Mapbox de line-color do calor (contorno sem preenchimento).
+ * Útil no drill-down municipal: centro limpo + borda na cor da faixa.
+ */
+export function buildProductionHeatmapLineColorExpression(
+  selectedClasses: readonly number[] | null | undefined,
+  options?: { missingColor?: string; mutedColor?: string }
+): unknown[] {
+  const missingColor = options?.missingColor ?? '#94a3b8';
+  const mutedColor = options?.mutedColor ?? '#cbd5e1';
+  const classColors = productionHeatmapClassColorMatch(missingColor);
+  const expression: unknown[] = [
+    'case',
+    ['==', ['get', 'heatMissing'], 1],
+    missingColor,
+    ['==', ['get', 'heatZero'], 1],
+    mutedColor,
+  ];
+  if (selectedClasses && selectedClasses.length > 0) {
+    expression.push(
+      ['!', ['in', ['get', 'heatClass'], ['literal', [...selectedClasses]]]],
+      mutedColor
+    );
+  }
+  expression.push(classColors);
+  return expression;
+}
+
 export function mergeProductionHeatmapIntoFeatureCollection(
   fc: GeoJSON.FeatureCollection,
   rows: ProductionHeatmapRow[],
