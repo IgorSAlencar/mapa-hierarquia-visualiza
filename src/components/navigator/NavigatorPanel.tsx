@@ -5,14 +5,11 @@ import {
   Building2,
   ChevronRight,
   ClipboardList,
-  CreditCard,
-  HandCoins,
   Layers,
   Map,
   Minus,
   Route,
   Ruler,
-  Shield,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { PanelHeaderDragProps } from '@/hooks/usePanelDrag';
@@ -46,9 +43,6 @@ const ProductionMapIcon: React.FC<React.HTMLAttributes<HTMLSpanElement>> = ({
 const PRODUCTS: ProductItem[] = [
   { id: 'corbans-ativos', label: 'CorBans Ativos', icon: Building2, accent: 'text-blue-600 bg-blue-50/90 border-blue-100' },
   { id: 'pade-adm', label: 'PADE ADM', icon: ClipboardList, accent: 'text-teal-600 bg-teal-50/90 border-teal-100' },
-  { id: 'ab-contas', label: 'Ab. de Contas', icon: CreditCard, accent: 'text-indigo-600 bg-indigo-50/90 border-indigo-100' },
-  { id: 'emprestimos', label: 'Empréstimos e Crédito', icon: HandCoins, accent: 'text-emerald-600 bg-emerald-50/90 border-emerald-100' },
-  { id: 'seguros', label: 'Seguros', icon: Shield, accent: 'text-violet-600 bg-violet-50/90 border-violet-100' },
   { id: 'heatmap', label: 'Mapa de produção', icon: ProductionMapIcon, accent: 'text-sky-700 bg-sky-50/90 border-sky-200', section: 'heatmap' },
 ];
 

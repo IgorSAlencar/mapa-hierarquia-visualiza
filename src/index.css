@@ -1049,3 +1049,90 @@
     margin-top: 0;
   }
 }
+/* Resumo final do roteiro: uma linha fluida, sem rolagem horizontal. */
+.route-summary-dock {
+  container-type: inline-size;
+}
+
+.route-summary-date {
+  flex: 1.2 1 170px;
+}
+
+.route-summary-selected {
+  flex: 0.7 1 112px;
+}
+
+.route-summary-metrics {
+  flex: 2 1 260px;
+}
+
+.route-summary-action {
+  flex: 1 1 160px;
+}
+
+@container (max-width: 680px) {
+  .route-summary-dock {
+    gap: 0.375rem;
+    padding: 0.5rem;
+  }
+
+  .route-summary-date,
+  .route-summary-selected,
+  .route-summary-action {
+    min-height: 2.5rem;
+  }
+
+  .route-summary-selected,
+  .route-summary-action {
+    gap: 0.25rem;
+    padding-inline: 0.5rem;
+  }
+
+  .route-summary-metrics {
+    gap: 0.25rem;
+  }
+
+  .route-summary-metric {
+    padding: 0.5rem 0.25rem;
+  }
+
+  .route-summary-action {
+    font-size: 0.625rem;
+  }
+}
+
+@container (max-width: 520px) {
+  .route-summary-dock {
+    gap: 0.25rem;
+    padding: 0.375rem;
+  }
+
+  .route-summary-date {
+    flex-basis: 140px;
+    padding-inline: 0.375rem;
+  }
+
+  .route-summary-date > span:first-child,
+  .route-summary-selected > span:first-child,
+  .route-summary-action > svg {
+    display: none;
+  }
+
+  .route-summary-selected {
+    flex-basis: 76px;
+  }
+
+  .route-summary-metrics {
+    flex-basis: 190px;
+  }
+
+  .route-summary-action {
+    flex-basis: 105px;
+    padding-inline: 0.375rem;
+  }
+
+  .route-summary-metric {
+    border-radius: 0.5rem;
+    padding: 0.45rem 0.125rem;
+  }
+}

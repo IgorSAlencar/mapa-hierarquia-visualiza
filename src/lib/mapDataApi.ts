@@ -241,6 +241,8 @@ export interface FetchPointsOptions {
   codAg?: string | null;
   /** Busca lojas por CHAVE_LOJA ou nome. Consultas com menos de 2 caracteres retornam vazio. */
   search?: string | null;
+  /** Retorna somente os campos necessarios para desenhar rapidamente as lojas no mapa. */
+  mapOnly?: boolean;
 }
 
 function pointsCacheTtlMs(path: string, options: FetchPointsOptions): number {
@@ -282,6 +284,7 @@ function buildQueryParams(options: FetchPointsOptions = {}) {
   const codAg =
     codAgRaw && Number.isFinite(codAgNum) ? String(Math.trunc(codAgNum)) : codAgRaw;
   if (codAg) params.set('codAg', codAg);
+  if (options.mapOnly) params.set('mapOnly', '1');
   // Evita que filtros de hierarquia (codAg da escada) sobrescrevam o codAg de lojas.
   if (options.hierarchy) {
     const entries: Array<[keyof SqlHierarchyFilter, string]> = [
@@ -332,6 +335,7 @@ async function fetchPoints(path: string, options: FetchPointsOptions = {}): Prom
   const cached = pointsResponseCache.get(url);
   const cachedShapeIsCurrent =
     path !== '/api/map/lojas' ||
+    options.mapOnly ||
     cached?.points.every(
       (point) =>
         point.kind !== 'loja' ||

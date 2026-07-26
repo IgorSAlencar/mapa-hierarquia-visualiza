@@ -18,6 +18,7 @@ import {
   X,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import RouteDateTimePicker from './RouteDateTimePicker';
 import CieloIcon from '@/components/CieloIcon';
 import { OPPORTUNITY_DEFINITIONS, type OpportunityKey, type OpportunitySnapshot } from '@/data/opportunities';
 
@@ -28,6 +29,7 @@ export interface RouteOpportunityPanelItem extends OpportunitySnapshot {
   id: string;
   nome: string;
   codAg: string;
+  nomeAg: string;
   endereco: string;
   municipio: string;
   uf: string;
@@ -79,6 +81,7 @@ interface Props {
   onlyWithoutVisit: boolean;
   onlyOnPath: boolean;
   date: string;
+  startTime: string;
   routeMetrics: RouteMetrics;
   onQueryChange: (value: string) => void;
   onToggleFilters: () => void;
@@ -93,6 +96,7 @@ interface Props {
   onToggleStore: (store: RouteOpportunityPanelItem) => void;
   onStoreHover?: (id: string | null) => void;
   onDateChange: (value: string) => void;
+  onStartTimeChange: (value: string) => void;
   onOptimize: () => void;
   onMinimize: () => void;
   onRestore: () => void;
@@ -132,6 +136,7 @@ const RouteOpportunitiesSidePanel: React.FC<Props> = ({
   onlyWithoutVisit,
   onlyOnPath,
   date,
+  startTime,
   routeMetrics,
   onQueryChange,
   onToggleFilters,
@@ -146,6 +151,7 @@ const RouteOpportunitiesSidePanel: React.FC<Props> = ({
   onToggleStore,
   onStoreHover,
   onDateChange,
+  onStartTimeChange,
   onOptimize,
   onMinimize,
   onRestore,
@@ -346,13 +352,13 @@ const RouteOpportunitiesSidePanel: React.FC<Props> = ({
 
         {showRouteSummaryFooter && <footer className="shrink-0 border-t border-slate-200 bg-white/95 px-4 py-3 shadow-[0_-10px_30px_-24px_rgba(15,23,42,0.55)]">
           <div className="flex items-center gap-2.5">
-            <label className="flex min-w-0 flex-1 items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
-              <CalendarDays className="h-4 w-4 shrink-0 text-violet-600" />
-              <span className="min-w-0 flex-1">
-                <span className="block text-[8px] font-semibold uppercase tracking-wide text-slate-500">Data do roteiro</span>
-                <input type="date" value={date} onChange={(event) => onDateChange(event.target.value)} className="mt-0.5 w-full bg-transparent text-[11px] font-bold text-slate-800 outline-none" />
-              </span>
-            </label>
+            <RouteDateTimePicker
+              date={date}
+              startTime={startTime}
+              onDateChange={onDateChange}
+              onStartTimeChange={onStartTimeChange}
+              className="min-w-0 flex-1"
+            />
             <div className="flex min-w-[116px] items-center gap-2 rounded-xl border border-violet-100 bg-violet-50 px-3 py-2">
               <Check className="h-4 w-4 shrink-0 text-violet-600" />
               <span>
@@ -444,7 +450,14 @@ function OpportunityCard({ store, priority, selected, onToggle, onHover }: { sto
                 <span className="truncate">{[store.municipio, store.uf].filter(Boolean).join('/')}</span>
               </p>
               <div className="mt-1.5 flex flex-wrap items-center gap-1 text-[8px] font-semibold uppercase tracking-wide text-slate-500">
-                {store.codAg && <span className="rounded-md bg-slate-100 px-1.5 py-1">Ag. {store.codAg}</span>}
+                {store.codAg && (
+                  <span
+                    className="max-w-full truncate rounded-md bg-slate-100 px-1.5 py-1"
+                    title={[store.codAg, store.nomeAg].filter(Boolean).join(' - ')}
+                  >
+                    {[store.codAg, store.nomeAg].filter(Boolean).join(' - ')}
+                  </span>
+                )}
                 {store.routeRole && <span className="rounded-md bg-blue-50 px-1.5 py-1 text-blue-700">{routeRoleLabel[store.routeRole]}</span>}
                 <span className="rounded-md bg-slate-50 px-1.5 py-1 text-slate-500">{priorityLabel[priority]}</span>
               </div>

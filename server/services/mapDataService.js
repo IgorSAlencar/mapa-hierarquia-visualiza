@@ -164,7 +164,7 @@ export async function getAgencyDetail(codAg, user) {
   };
 }
 
-export async function getStoreMapPoints({ bbox = null, limit = null, codAg = null, hierarchy = null, sortByCenter = false, search = null, user = null } = {}) {
+export async function getStoreMapPoints({ bbox = null, limit = null, codAg = null, hierarchy = null, sortByCenter = false, search = null, mapOnly = false, user = null } = {}) {
   const targetCodAg = normalizeCodAg(codAg);
   const rows = await fetchStoreCoordinates({
     bbox: targetCodAg ? null : bbox,
@@ -173,6 +173,7 @@ export async function getStoreMapPoints({ bbox = null, limit = null, codAg = nul
     hierarchy,
     sortByCenter,
     search,
+    mapOnly,
     user,
   });
 
@@ -186,24 +187,28 @@ export async function getStoreMapPoints({ bbox = null, limit = null, codAg = nul
       if (!lngLat) return null;
       const rowCodAg = normalizeCodAg(row.COD_AG);
       const chaveLoja = normalizeText(row.CHAVE_LOJA);
-      return {
+      const basePoint = {
         id: `sql-loja-${chaveLoja ?? `${rowCodAg ?? 'x'}-${index}`}`,
         nome: normalizeText(row.NOME_LOJA) ?? 'Loja',
         kind: 'loja',
         lngLat,
         codAg: rowCodAg,
         nomeAg: normalizeText(row.NOME_AG),
-        descSupervisao: normalizeText(row.DESC_SUPERVISAO),
-        gerenteComercial: normalizeText(row.NOME_GERENTE_COMERCIAL),
-        orgaoPagador: normalizeBinaryFlag(row.ORGAO_PAGADOR),
         chaveLoja,
         municipio: normalizeText(row.MUNICIPIO),
         uf: normalizeText(row.UF)?.toUpperCase() ?? null,
+        tipoPosto: normalizeText(row.TIPO_POSTO),
+        segmento: normalizeText(row.DESC_SEGTO),
+      };
+      if (mapOnly) return basePoint;
+      return {
+        ...basePoint,
+        descSupervisao: normalizeText(row.DESC_SUPERVISAO),
+        gerenteComercial: normalizeText(row.NOME_GERENTE_COMERCIAL),
+        orgaoPagador: normalizeBinaryFlag(row.ORGAO_PAGADOR),
         statusTablet: normalizeText(row.STATUS_TABLET),
         dataBloqueio: normalizeDate(row.DT_BLOQUEIO),
         motivoBloqueio: normalizeText(row.MOTIVO_BLOQUEIO),
-        tipoPosto: normalizeText(row.TIPO_POSTO),
-        segmento: normalizeText(row.DESC_SEGTO),
         dataUltimaTransacao: normalizeDate(row.DT_ULT_TRX),
         cieloM0: normalizeBinaryFlag(row.CIELO_M0),
         cieloFaturamentoM0: normalizeNumber(row.VLR_FAT_CIELO_M0),

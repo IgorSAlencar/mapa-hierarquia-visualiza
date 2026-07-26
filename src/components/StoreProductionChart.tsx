@@ -164,15 +164,27 @@ const SELECTABLE_METRIC_GROUPS = METRIC_GROUPS.map((group) => ({
   ),
 }));
 const DEFAULT_METRIC: SelectedStoreProductionMetricKey = '';
+const PERIOD_MONTH_LABELS = [
+  'jan',
+  'fev',
+  'mar',
+  'abr',
+  'mai',
+  'jun',
+  'jul',
+  'ago',
+  'set',
+  'out',
+  'nov',
+  'dez',
+] as const;
 
 function formatPeriod(periodo: number): string {
   const raw = String(Math.trunc(Number(periodo))).padStart(6, '0');
   const year = Number(raw.slice(0, 4));
   const month = Number(raw.slice(4, 6));
   if (!Number.isFinite(year) || month < 1 || month > 12) return raw;
-  return new Intl.DateTimeFormat('pt-BR', { month: 'short', year: '2-digit' })
-    .format(new Date(year, month - 1, 1))
-    .replace('.', '');
+  return `${PERIOD_MONTH_LABELS[month - 1]}'${String(year).slice(-2)}`;
 }
 
 function formatValue(value: number, unit: MetricMeta['unit']): string {
@@ -212,7 +224,8 @@ function BusinessProductionHeatmap({ data }: { data: StoreBusinessDailyPoint[] }
     maxValue = Math.max(maxValue, qtdNeg);
   }
 
-  const periods = Array.from(periodValues.entries()).sort(([left], [right]) => left - right);
+  // Linhas: mês atual, mês passado e mês retrasado.
+  const periods = Array.from(periodValues.entries()).sort(([left], [right]) => right - left);
   const businessDays = Array.from({ length: maxBusinessDay }, (_, index) => index + 1);
 
   return (
@@ -238,7 +251,7 @@ function BusinessProductionHeatmap({ data }: { data: StoreBusinessDailyPoint[] }
         <>
           <div className="mt-3" role="img" aria-label="Mapa de calor da produção de negócios por mês e dia útil">
             <div className="flex items-end gap-1.5">
-              <span className="w-9 shrink-0 pb-0.5 text-[8px] font-medium text-slate-400">Mês</span>
+              <span className="w-11 shrink-0 pb-0.5 text-[9px] font-medium text-slate-500">Mês</span>
               <div
                 className="grid min-w-0 flex-1 gap-[2px]"
                 style={{ gridTemplateColumns: `repeat(${maxBusinessDay}, minmax(0, 1fr))` }}
@@ -257,7 +270,9 @@ function BusinessProductionHeatmap({ data }: { data: StoreBusinessDailyPoint[] }
                 const month = formatPeriod(periodo);
                 return (
                   <div key={periodo} className="flex items-center gap-1.5">
-                    <span className="w-9 shrink-0 text-[8px] font-medium text-slate-500">{month}</span>
+                    <span className="w-11 shrink-0 text-[10px] font-semibold text-slate-600">
+                      {month}
+                    </span>
                     <div
                       className="grid min-w-0 flex-1 gap-[2px]"
                       style={{ gridTemplateColumns: `repeat(${maxBusinessDay}, minmax(0, 1fr))` }}
@@ -402,7 +417,7 @@ function QuickFactCard({
           <strong className="text-[10px] font-semibold text-slate-900">
             {fact.tooltipTitle ?? `Produtos de ${fact.label.toLowerCase()}`}
           </strong>
-          <span className="text-[9px] font-normal text-slate-400">{periodLabel}</span>
+          <span className="text-[10px] font-medium text-slate-500">{periodLabel}</span>
         </span>
         {fact.showQuantityValueColumns ? (
           <span className="mt-1.5 flex items-center justify-between gap-2 px-1.5 text-[8px] font-semibold uppercase tracking-wide text-slate-400">
@@ -851,7 +866,7 @@ const StoreProductionChart: React.FC<StoreProductionChartProps> = ({
                     axisLine={false}
                     tickLine={false}
                     minTickGap={18}
-                    tick={{ fontSize: 8, fill: '#64748b' }}
+                    tick={{ fontSize: 9, fill: '#64748b' }}
                   />
                   <YAxis
                     axisLine={false}
@@ -918,7 +933,7 @@ const StoreProductionChart: React.FC<StoreProductionChartProps> = ({
             Indicadores principais
           </p>
           <div className="flex items-center gap-1.5">
-            <span className="text-[8px] text-slate-400">
+            <span className="text-[9px] font-medium text-slate-500">
               {latestHistory ? formatPeriod(latestHistory.periodo) : '—'}
             </span>
             <span
@@ -979,7 +994,7 @@ const StoreProductionChart: React.FC<StoreProductionChartProps> = ({
           <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
             Informações rápidas
           </p>
-          <p className="text-[9px] text-slate-400">
+          <p className="text-[10px] font-medium text-slate-500">
             {latestHistory ? formatPeriod(latestHistory.periodo) : '—'}
           </p>
         </div>

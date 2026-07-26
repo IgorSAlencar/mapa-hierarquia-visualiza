@@ -35,6 +35,7 @@ import type { DeviceLocation } from '@/lib/deviceGeolocation';
 import RouteOpportunitiesSidePanel from './RouteOpportunitiesSidePanel';
 import { fetchDrivingRoute } from '@/lib/mapboxDirections';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import RouteDateTimePicker from './RouteDateTimePicker';
 import {
   OPPORTUNITY_DEFINITIONS,
   opportunitySnapshotFromStoreFlags,
@@ -93,7 +94,7 @@ type OpportunityFilterKey = OpportunityKey;
 type DrivingMetricStatus = 'idle' | 'loading' | 'actual' | 'approximate';
 
 const VISIT_DURATION_MINUTES = 40;
-const ROUTE_START_MINUTES = 8 * 60;
+const DEFAULT_ROUTE_START_TIME = '08:00';
 
 const OPPORTUNITY_FILTER_OPTIONS = OPPORTUNITY_DEFINITIONS;
 
@@ -269,6 +270,12 @@ function formatClockMinutes(totalMinutes: number): string {
   return dayOffset > 0 ? `+${dayOffset}d ${clock}` : clock;
 }
 
+function timeToMinutes(value: string): number {
+  const [hours, minutes] = value.split(':').map(Number);
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return 8 * 60;
+  return Math.min(23 * 60 + 59, Math.max(0, hours * 60 + minutes));
+}
+
 function drivingRouteCacheKey(date: string, coordinates: [number, number][]): string {
   let hash = 2166136261;
   const signature = `${date}|${coordinates.map(([lng, lat]) => `${lng.toFixed(5)},${lat.toFixed(5)}`).join(';')}`;
@@ -281,6 +288,7 @@ function drivingRouteCacheKey(date: string, coordinates: [number, number][]): st
 
 function enrichRouteWithDrivingData(
   route: VisitRoute,
+  startMinutes: number,
   distanceMeters: number,
   durationSeconds: number,
   legDurationsSeconds: number[],
@@ -289,7 +297,7 @@ function enrichRouteWithDrivingData(
   let elapsedMinutes = 0;
   const stops = route.stops.map((stop, index) => {
     elapsedMinutes += Math.ceil((legDurationsSeconds[index] ?? 0) / 60);
-    const horario = formatClockMinutes(ROUTE_START_MINUTES + elapsedMinutes);
+    const horario = formatClockMinutes(startMinutes + elapsedMinutes);
     elapsedMinutes += VISIT_DURATION_MINUTES;
     return { ...stop, horario };
   });
@@ -313,6 +321,7 @@ function enrichRouteWithDrivingData(
 
 function createSqlSuggestedRoute({
   date,
+  startMinutes,
   originName,
   originCoordinates,
   destinationName,
@@ -320,6 +329,7 @@ function createSqlSuggestedRoute({
   stores,
 }: {
   date: string;
+  startMinutes: number;
   originName: string;
   originCoordinates: [number, number];
   destinationName: string;
@@ -339,7 +349,7 @@ function createSqlSuggestedRoute({
   let elapsedMinutes = 0;
   const stops = ordered.map((store, index) => {
     elapsedMinutes += fallbackLegMinutes[index] ?? 0;
-    const horario = formatClockMinutes(ROUTE_START_MINUTES + elapsedMinutes);
+    const horario = formatClockMinutes(startMinutes + elapsedMinutes);
     elapsedMinutes += VISIT_DURATION_MINUTES;
     const opportunities: OpportunitySnapshot = {
       oportunidadeCielo: store.oportunidadeCielo,
@@ -429,7 +439,13 @@ const RoutePlannerPanel: React.FC<Props> = ({
   shellStyle,
   headerDragProps,
 }) => {
-  const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
+  const [date, setDate] = useState(() => {
+    const today = new Date();
+    const month = String(today.getMonth() + 1).padStart(2, '0');
+    const day = String(today.getDate()).padStart(2, '0');
+    return `${today.getFullYear()}-${month}-${day}`;
+  });
+  const [startTime, setStartTime] = useState(DEFAULT_ROUTE_START_TIME);
   const [agencies, setAgencies] = useState<RegionMapPoint[]>([]);
   const [journeyComplete, setJourneyComplete] = useState(false);
   const [journeyStartScreen, setJourneyStartScreen] = useState<RoutePlanningScreen>(0);
@@ -771,7 +787,8 @@ const RoutePlannerPanel: React.FC<Props> = ({
   const routeKm = drivingMetrics.distanceKm;
   const travelMinutes = drivingMetrics.travelMinutes;
   const visitMinutes = selected.length * VISIT_DURATION_MINUTES;
-  const finish = formatClockMinutes(ROUTE_START_MINUTES + travelMinutes + visitMinutes);
+  const startMinutes = timeToMinutes(startTime);
+  const finish = formatClockMinutes(startMinutes + travelMinutes + visitMinutes);
   const routeMetricsLoading = drivingMetrics.status === 'loading';
   const routeMetricsApproximate = drivingMetrics.status === 'approximate';
   const routeDistanceValue = routeMetricsLoading ? '…' : `${routeMetricsApproximate ? '≈ ' : ''}${routeKm} km`;
@@ -816,6 +833,7 @@ const RoutePlannerPanel: React.FC<Props> = ({
     if (!originCoordinates) return;
     const route = createSqlSuggestedRoute({
       date,
+      startMinutes,
       originName: originStore?.nome ?? originLocation?.label ?? (originAgencyLabel || 'Origem selecionada'),
       originCoordinates,
       destinationName: destination,
@@ -852,6 +870,7 @@ const RoutePlannerPanel: React.FC<Props> = ({
         ) return;
         onRouteChange(enrichRouteWithDrivingData(
           initialRoute,
+          startMinutes,
           drivingRoute.distanceMeters,
           drivingRoute.durationSeconds,
           drivingRoute.legDurationsSeconds,
@@ -1095,39 +1114,33 @@ const RoutePlannerPanel: React.FC<Props> = ({
       <section
         data-route-planner-summary-dock
         aria-label="Resumo do roteiro selecionado"
-        className="pointer-events-auto flex w-full flex-wrap items-center justify-center gap-2 rounded-2xl border border-white/70 bg-white/90 p-2.5 font-sans text-slate-700 shadow-2xl shadow-slate-900/20 backdrop-blur-xl"
+        className="route-summary-dock pointer-events-auto flex w-full flex-nowrap items-center justify-start gap-2 overflow-hidden rounded-2xl border border-white/70 bg-white/90 p-2.5 font-sans text-slate-700 shadow-2xl shadow-slate-900/20 backdrop-blur-xl"
       >
-        <label className="flex min-h-11 min-w-[142px] flex-1 items-center gap-2 rounded-xl border border-slate-200/90 bg-slate-50/85 px-3 sm:flex-none">
-          <CalendarDays className="h-4 w-4 shrink-0 text-violet-600" />
-          <span className="min-w-0 flex-1">
-            <span className="block text-[8px] font-semibold uppercase tracking-wide text-slate-500">Data do roteiro</span>
-            <input
-              type="date"
-              aria-label="Data do roteiro"
-              value={date}
-              onChange={(event) => setDate(event.target.value)}
-              className="mt-0.5 w-full bg-transparent text-[11px] font-bold text-slate-800 outline-none"
-            />
-          </span>
-        </label>
-        <div className="flex min-h-11 min-w-[112px] items-center gap-2 rounded-xl border border-violet-100 bg-violet-50/90 px-3">
+        <RouteDateTimePicker
+          date={date}
+          startTime={startTime}
+          onDateChange={setDate}
+          onStartTimeChange={setStartTime}
+          className="route-summary-date !min-w-0"
+        />
+        <div className="route-summary-selected flex min-h-11 min-w-0 items-center gap-2 rounded-xl border border-violet-100 bg-violet-50/90 px-3">
           <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-violet-600 text-white shadow-sm shadow-violet-300">
             <Check className="h-3.5 w-3.5" />
           </span>
-          <div>
+          <div className="min-w-0 overflow-hidden">
             <p className="text-sm font-bold leading-none text-slate-900">{selected.length}</p>
-            <p className="mt-1 text-[8px] font-semibold uppercase tracking-wide text-slate-500">Selecionadas</p>
+            <p className="mt-1 block truncate text-[8px] font-semibold uppercase tracking-wide text-slate-500">Selecionadas</p>
           </div>
         </div>
-        <div className="grid min-w-[260px] flex-1 grid-cols-2 gap-1.5 sm:grid-cols-4">
+        <div className="route-summary-metrics grid min-w-0 grid-cols-4 gap-1.5">
           <Metric label="Distância pela rota" value={routeDistanceValue} title={routeMetricsApproximate ? 'Aproximação temporária: não foi possível consultar a malha viária.' : 'Distância calculada pela malha viária.'} />
           <Metric label="Deslocamento" value={routeTravelValue} title={routeMetricsApproximate ? 'Tempo aproximado enquanto a rota viária está indisponível.' : 'Tempo de direção calculado pela rota.'} />
           <Metric label="Visitas estim." value={formatDurationMinutes(visitMinutes)} title={`Estimativa operacional de ${VISIT_DURATION_MINUTES} minutos por loja selecionada.`} />
           <Metric label="Término" value={routeMetricsLoading ? '…' : finish} />
         </div>
-        <button type="button" disabled={!selected.length || optimizing || routeMetricsLoading} onClick={optimize} className="flex min-h-11 flex-1 items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-violet-600 to-blue-600 px-4 text-xs font-bold text-white shadow-md shadow-violet-300/45 transition hover:from-violet-700 hover:to-blue-700 disabled:cursor-not-allowed disabled:opacity-45 sm:flex-none">
+        <button type="button" disabled={!selected.length || optimizing || routeMetricsLoading} onClick={optimize} className="route-summary-action flex min-h-11 min-w-0 items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-violet-600 to-blue-600 px-4 text-xs font-bold text-white shadow-md shadow-violet-300/45 transition hover:from-violet-700 hover:to-blue-700 disabled:cursor-not-allowed disabled:opacity-45">
           <Sparkles className="h-4 w-4" />
-          {optimizing ? 'Traçando rota...' : routeMetricsLoading ? 'Calculando trajeto...' : 'Sugerir melhor rota'}
+          <span className="route-summary-action-label truncate">{optimizing ? 'Traçando rota...' : routeMetricsLoading ? 'Calculando trajeto...' : 'Sugerir melhor rota'}</span>
         </button>
       </section>
     </div>
@@ -1236,6 +1249,7 @@ const RoutePlannerPanel: React.FC<Props> = ({
       onlyWithoutVisit={onlyWithoutVisit}
       onlyOnPath={onlyOnPath}
       date={date}
+      startTime={startTime}
       routeMetrics={{ distanceKm: routeKm, travelMinutes, visitMinutes, finish }}
       onQueryChange={setQuery}
       onToggleFilters={() => setOpportunityFiltersOpen((current) => !current)}
@@ -1256,6 +1270,7 @@ const RoutePlannerPanel: React.FC<Props> = ({
       }}
       onStoreHover={onOpportunityHover}
       onDateChange={setDate}
+      onStartTimeChange={setStartTime}
       onOptimize={optimize}
       onMinimize={() => setResultsMinimized(true)}
       onRestore={() => setResultsMinimized(false)}
@@ -1424,7 +1439,7 @@ function HeaderRouteSummaryItem({
 }
 
 function Metric({ label, value, title }: { label: string; value: string; title?: string }) {
-  return <div className="min-w-0 rounded-xl border border-slate-100 bg-slate-50/85 px-2.5 py-2 text-center" title={title}><p className="truncate text-xs font-bold leading-none text-slate-900">{value}</p><p className="mt-1 truncate text-[8px] font-semibold uppercase tracking-wide text-slate-500">{label}</p></div>;
+  return <div className="route-summary-metric min-w-0 rounded-xl border border-slate-100 bg-slate-50/85 px-2.5 py-2 text-center" title={title}><p className="truncate text-xs font-bold leading-none text-slate-900">{value}</p><p className="mt-1 truncate text-[8px] font-semibold uppercase tracking-wide text-slate-500">{label}</p></div>;
 }
 
 function SortableTableHeader({

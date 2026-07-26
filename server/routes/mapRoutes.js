@@ -48,7 +48,7 @@ function roundedBbox(bbox) {
   );
 }
 
-function storePointsCacheKey({ bbox, limit, codAg, hierarchy, sortByCenter, search, accessKey }) {
+function storePointsCacheKey({ bbox, limit, codAg, hierarchy, sortByCenter, search, mapOnly, accessKey }) {
   return JSON.stringify({
     bbox: roundedBbox(bbox),
     limit,
@@ -56,6 +56,7 @@ function storePointsCacheKey({ bbox, limit, codAg, hierarchy, sortByCenter, sear
     hierarchy,
     sortByCenter,
     search,
+    mapOnly,
     accessKey,
   });
 }
@@ -221,6 +222,7 @@ router.get('/lojas', async (req, res) => {
     const requestedLimit = readLimitFromQuery(req.query, search ? 20 : null, 300000);
     const limit = search ? Math.min(requestedLimit ?? 20, 50) : requestedLimit;
     const codAg = readCodAgFromQuery(req.query);
+    const mapOnly = String(req.query.mapOnly ?? '').trim() === '1';
     const sortByCenter = String(req.query.sortByCenter ?? '').trim() === '1';
     const hierarchy = readHierarchyFromQuery(req.query);
     const options = {
@@ -230,6 +232,7 @@ router.get('/lojas', async (req, res) => {
       hierarchy,
       sortByCenter,
       search,
+      mapOnly,
       user: req.user,
       accessKey: authCacheKey(req.user),
     };

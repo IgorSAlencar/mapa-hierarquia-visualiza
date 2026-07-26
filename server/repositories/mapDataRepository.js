@@ -161,7 +161,7 @@ export async function fetchAgencyDetail({ codAg, user = null }) {
   return result.recordset[0] ?? null;
 }
 
-export async function fetchStoreCoordinates({ bbox = null, limit = null, codAg = null, hierarchy = null, sortByCenter = false, search = null, user = null } = {}) {
+export async function fetchStoreCoordinates({ bbox = null, limit = null, codAg = null, hierarchy = null, sortByCenter = false, search = null, mapOnly = false, user = null } = {}) {
   const request = pool.request();
   const hasLimit = Number.isFinite(limit) && Number(limit) > 0;
   if (hasLimit) request.input('limit', Math.round(limit));
@@ -247,6 +247,41 @@ export async function fetchStoreCoordinates({ bbox = null, limit = null, codAg =
     : '';
   const creditQuantitySql = storeCreditQuantitySql('ind');
   const businessQuantitySql = storeBusinessQuantitySql('ind', 'consortium');
+
+  // O mapa precisa primeiro apenas dos pontos que serao desenhados.
+  // Os indicadores completos continuam sendo buscados sob demanda ao abrir a loja.
+  if (mapOnly) {
+    const result = await request.query(`
+      SELECT ${topSql}
+        l.CHAVE_LOJA,
+        be.COD_AG_LOJA AS COD_AG,
+        be.NOME_AG,
+        CAST(l.LONGITUDE AS float) AS lon,
+        CAST(l.LATITUDE AS float) AS lat,
+        be.NOME_LOJA,
+        be.MUNICIPIO,
+        be.UF,
+        CASE
+          WHEN LTRIM(RTRIM(be.TIPO_POSTO)) IN (N'Tradicional', N'Ilha') THEN N'Varejo'
+          WHEN LTRIM(RTRIM(be.TIPO_POSTO)) = N'Gerenciada' THEN N'Grandes Redes'
+          WHEN LTRIM(RTRIM(be.TIPO_POSTO)) = N'Exclusivo' THEN N'Exclusivo'
+          WHEN LTRIM(RTRIM(be.TIPO_POSTO)) = N'Mesa de Negócios' THEN N'Casas Bahia'
+          ELSE be.TIPO_POSTO
+        END AS TIPO_POSTO,
+        be.DESC_SEGTO
+      FROM TESTE..TB_COORD_BE_IGOR AS l
+      INNER JOIN DATALAKE..DL_BRADESCO_EXPRESSO AS be
+        ON be.CHAVE_LOJA = l.CHAVE_LOJA
+      WHERE l.LONGITUDE IS NOT NULL
+        AND l.LATITUDE IS NOT NULL
+        ${codAgSql}
+        ${hierarchyFilterSql}
+        ${bboxSql}
+        ${searchFilterSql}
+      ${orderBySql}
+    `);
+    return result.recordset;
+  }
 
   const query = `
     SELECT ${topSql}

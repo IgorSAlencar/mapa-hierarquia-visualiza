@@ -305,17 +305,29 @@ function applyStreetGeometry(m: mapboxgl.Map, route: VisitRoute): void {
 export function removeVisitRouteFromMap(m: mapboxgl.Map): void {
   activeRouteIds.delete(m);
   renderedDataKeys.delete(m);
+
+  // Esvazia primeiro: isso remove linha e marcadores no mesmo frame, mesmo se
+  // o Mapbox estiver trocando de estilo e ainda não aceitar remover camadas.
+  try {
+    const source = m.getSource(SOURCE_ID) as mapboxgl.GeoJSONSource | undefined;
+    source?.setData({ type: 'FeatureCollection', features: [] });
+  } catch {
+    /* fonte recarregando; a segunda tentativa ocorrerá após as camadas */
+  }
+
   for (const layerId of [...ROUTE_LAYER_IDS].reverse()) {
     try {
-      if (!m.getLayer(layerId)) continue;
-      // Esconde primeiro para a rota sumir imediatamente, mesmo se a remocao
-      // definitiva precisar aguardar a troca de estilo terminar.
-      m.setLayoutProperty(layerId, 'visibility', 'none');
-      m.removeLayer(layerId);
+      if (m.getLayer(layerId)) m.setLayoutProperty(layerId, 'visibility', 'none');
     } catch {
-      /* camada recarregando; as demais ainda devem ser limpas */
+      /* camada recarregando; ainda tentamos removê-la separadamente */
+    }
+    try {
+      if (m.getLayer(layerId)) m.removeLayer(layerId);
+    } catch {
+      /* as demais camadas ainda devem ser limpas */
     }
   }
+
   try {
     const source = m.getSource(SOURCE_ID) as mapboxgl.GeoJSONSource | undefined;
     source?.setData({ type: 'FeatureCollection', features: [] });
