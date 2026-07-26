@@ -42,6 +42,11 @@ type MetricMeta = {
   label: string;
   shortLabel: string;
   unit: 'quantity' | 'currency';
+  /** Agrupa variantes R$/QTD do mesmo produto. */
+  productKey?: string;
+  /** Variante exibida no seletor e escolhida por padrão. */
+  defaultForProduct?: boolean;
+  productLabel?: string;
   referenceValue?: number;
   referenceLabel?: string;
 };
@@ -66,17 +71,75 @@ const METRIC_GROUPS: Array<{ label: string; metrics: MetricMeta[] }> = [
   {
     label: 'Crédito',
     metrics: [
-      { key: 'qtdCred', label: 'Crédito (QTD)', shortLabel: 'Crédito em QTD', unit: 'quantity' },
-      { key: 'vlrCred', label: 'Crédito (R$)', shortLabel: 'Crédito em R$', unit: 'currency' },
-      { key: 'qtdConsig', label: 'Consignado', shortLabel: 'Consignado', unit: 'quantity' },
-      { key: 'qtdLime', label: 'LIME', shortLabel: 'LIME', unit: 'quantity' },
+      {
+        key: 'vlrCred',
+        label: 'Crédito (R$)',
+        shortLabel: 'Crédito em R$',
+        unit: 'currency',
+        productKey: 'credito',
+        defaultForProduct: true,
+        productLabel: 'Crédito',
+      },
+      {
+        key: 'qtdCred',
+        label: 'Crédito (QTD)',
+        shortLabel: 'Crédito em QTD',
+        unit: 'quantity',
+        productKey: 'credito',
+        productLabel: 'Crédito',
+      },
+      {
+        key: 'vlrConsig',
+        label: 'Consignado (R$)',
+        shortLabel: 'Consignado em R$',
+        unit: 'currency',
+        productKey: 'consignado',
+        defaultForProduct: true,
+        productLabel: 'Consignado',
+      },
+      {
+        key: 'qtdConsig',
+        label: 'Consignado (QTD)',
+        shortLabel: 'Consignado em QTD',
+        unit: 'quantity',
+        productKey: 'consignado',
+        productLabel: 'Consignado',
+      },
+      {
+        key: 'vlrLime',
+        label: 'LIME (R$)',
+        shortLabel: 'LIME em R$',
+        unit: 'currency',
+        productKey: 'lime',
+        defaultForProduct: true,
+        productLabel: 'LIME',
+      },
+      {
+        key: 'qtdLime',
+        label: 'LIME (QTD)',
+        shortLabel: 'LIME em QTD',
+        unit: 'quantity',
+        productKey: 'lime',
+        productLabel: 'LIME',
+      },
+      {
+        key: 'vlrCreditoParcelado',
+        label: 'Crédito parcelado (R$)',
+        shortLabel: 'Crédito parcelado em R$',
+        unit: 'currency',
+        productKey: 'credito-parcelado',
+        defaultForProduct: true,
+        productLabel: 'Crédito parcelado',
+      },
       {
         key: 'qtdCreditoParcelado',
-        label: 'Crédito parcelado',
-        shortLabel: 'Crédito parcelado',
+        label: 'Crédito parcelado (QTD)',
+        shortLabel: 'Crédito parcelado em QTD',
         unit: 'quantity',
+        productKey: 'credito-parcelado',
+        productLabel: 'Crédito parcelado',
       },
-      { key: 'qtdFgts', label: 'FGTS', shortLabel: 'FGTS', unit: 'quantity' },
+      { key: 'qtdFgts', label: 'FGTS (QTD)', shortLabel: 'FGTS em QTD', unit: 'quantity' },
     ],
   },
   {
@@ -94,6 +157,12 @@ const METRIC_GROUPS: Array<{ label: string; metrics: MetricMeta[] }> = [
 ];
 
 const METRICS = METRIC_GROUPS.flatMap((group) => group.metrics);
+const SELECTABLE_METRIC_GROUPS = METRIC_GROUPS.map((group) => ({
+  ...group,
+  metrics: group.metrics.filter(
+    (metric) => !metric.productKey || metric.defaultForProduct
+  ),
+}));
 const DEFAULT_METRIC: SelectedStoreProductionMetricKey = '';
 
 function formatPeriod(periodo: number): string {
@@ -450,6 +519,20 @@ const StoreProductionChart: React.FC<StoreProductionChartProps> = ({
     () => METRICS.find((item) => item.key === metricKey) ?? null,
     [metricKey]
   );
+  const selectedProductVariants = metric?.productKey
+    ? METRICS.filter((item) => item.productKey === metric.productKey)
+    : [];
+  const selectedCurrencyMetric =
+    selectedProductVariants.find((item) => item.unit === 'currency') ?? null;
+  const selectedQuantityMetric =
+    selectedProductVariants.find((item) => item.unit === 'quantity') ?? null;
+  const metricSelectValue =
+    metric?.productKey && selectedCurrencyMetric
+      ? selectedCurrencyMetric.key
+      : metricKey;
+  const showMeasureToggle = Boolean(
+    selectedCurrencyMetric && selectedQuantityMetric
+  );
 
   const chartData = useMemo(
     () => {
@@ -514,6 +597,9 @@ const StoreProductionChart: React.FC<StoreProductionChartProps> = ({
   const cieloHadPreviousProduction = history.some(
     (row) => row.periodo < currentPeriod && Number(row.vlrFatCielo) > 0
   );
+  const effectiveCieloM0 =
+    cieloM0 ??
+    (latestHistory ? Number(latestHistory.vlrFatCielo) > 0 : null);
   const accountingBreakEven = accountingTransactions >= ACCOUNTING_BREAK_EVEN_TARGET;
   const businessBreakEven = businessTransactions >= BUSINESS_BREAK_EVEN_TARGET;
   const breakEvenReached = accountingBreakEven || businessBreakEven;
@@ -579,12 +665,20 @@ const StoreProductionChart: React.FC<StoreProductionChartProps> = ({
     },
     {
       label: 'Cielo',
-      value: cieloM0 == null ? 'Sem dado' : cieloM0 ? 'Tem' : 'Não tem',
-      active: cieloM0,
+      value:
+        effectiveCieloM0 == null
+          ? 'Sem dado'
+          : effectiveCieloM0
+            ? 'Tem'
+            : 'Não tem',
+      active: effectiveCieloM0,
       icon: CieloIcon,
       products: cieloHistory,
       tooltipTitle: 'Faturamento Cielo',
-      historyNote: cieloM0 === false && cieloHadPreviousProduction ? 'Teve antes' : undefined,
+      historyNote:
+        effectiveCieloM0 === false && cieloHadPreviousProduction
+          ? 'Teve antes'
+          : undefined,
     },
     {
       label: 'Seguros',
@@ -622,7 +716,7 @@ const StoreProductionChart: React.FC<StoreProductionChartProps> = ({
               {metric ? `${metric.shortLabel} · últimos 12 períodos` : 'Escolha um indicador'}
             </p>
           </div>
-          <div className="w-[172px] shrink-0">
+          <div className="relative w-[172px] shrink-0">
             <label
               className="mb-1 block text-[8px] font-semibold uppercase tracking-wide text-slate-500"
               htmlFor={`store-production-metric-${chaveLoja}`}
@@ -631,7 +725,7 @@ const StoreProductionChart: React.FC<StoreProductionChartProps> = ({
             </label>
             <select
               id={`store-production-metric-${chaveLoja}`}
-              value={metricKey}
+              value={metricSelectValue}
               onChange={(event) =>
                 setMetricKey(event.target.value as SelectedStoreProductionMetricKey)
               }
@@ -639,22 +733,69 @@ const StoreProductionChart: React.FC<StoreProductionChartProps> = ({
               aria-label="Produto exibido no gráfico"
             >
               <option value="">Selecione</option>
-              {METRIC_GROUPS.map((group) => (
+              {SELECTABLE_METRIC_GROUPS.map((group) => (
                 <optgroup key={group.label} label={group.label}>
                   {group.metrics.map((item) => (
                     <option key={item.key} value={item.key}>
-                      {item.label}
+                      {item.productLabel || item.label}
                     </option>
                   ))}
                 </optgroup>
               ))}
             </select>
+
+            {showMeasureToggle ? (
+              <div
+                className="absolute right-0 top-full mt-1 flex items-center gap-1.5"
+                aria-label="Medida da produção mensal"
+              >
+                <span className="text-[8px] font-semibold uppercase tracking-wide text-slate-500">
+                  Medida
+                </span>
+                <span className="grid h-7 w-[72px] grid-cols-2 overflow-hidden rounded-lg border border-slate-200 bg-white p-0.5 shadow-sm">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      selectedCurrencyMetric &&
+                      setMetricKey(selectedCurrencyMetric.key)
+                    }
+                    aria-pressed={metric?.unit === 'currency'}
+                    className={`rounded-md px-1 text-[9px] font-bold transition-colors ${
+                      metric?.unit === 'currency'
+                        ? 'bg-teal-600 text-white shadow-sm'
+                        : 'text-slate-500 hover:bg-slate-100'
+                    }`}
+                  >
+                    R$
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      selectedQuantityMetric &&
+                      setMetricKey(selectedQuantityMetric.key)
+                    }
+                    aria-pressed={metric?.unit === 'quantity'}
+                    className={`rounded-md px-1 text-[9px] font-bold transition-colors ${
+                      metric?.unit === 'quantity'
+                        ? 'bg-teal-600 text-white shadow-sm'
+                        : 'text-slate-500 hover:bg-slate-100'
+                    }`}
+                  >
+                    QTD
+                  </button>
+                </span>
+              </div>
+            ) : null}
           </div>
         </div>
 
         {metric ? (
           <>
-            <div className="mt-3 grid grid-cols-3 divide-x divide-slate-100 rounded-lg border border-slate-100 bg-slate-50/60 py-2.5">
+            <div
+              className={`grid grid-cols-3 divide-x divide-slate-100 rounded-lg border border-slate-100 bg-slate-50/60 py-2.5 ${
+                showMeasureToggle ? 'mt-11' : 'mt-3'
+              }`}
+            >
               <div className="min-w-0 px-2 text-center">
                 <p className="text-[8px] font-semibold uppercase tracking-wide text-slate-500">Mês atual</p>
                 <p

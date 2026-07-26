@@ -72,7 +72,6 @@ import {
   productionQuantileClass,
   buildProductionQuantileScale,
   buildProductionHeatmapFillColorExpression,
-  buildProductionHeatmapLineColorExpression,
   productionHeatmapColorForClass,
   municipalityCodeFromProperties,
   type ProductionQuantileScale,
@@ -1309,6 +1308,40 @@ const SELECTED_OVERLAY_LOJA_CIRCLE_RADIUS: mapboxgl.ExpressionSpecification = [
 const SELECTED_OVERLAY_LOJA_COLOR = '#f59e0b';
 const SELECTED_OVERLAY_LOJA_STROKE = '#fffbeb';
 
+function storePopupInfoFromPoint(point: SqlMapPoint): StorePopupInfo {
+  return {
+    kind: 'loja',
+    nome: String(point.nome ?? '').trim() || 'Loja',
+    chaveLoja: String(point.chaveLoja ?? '').trim(),
+    codAg: String(point.codAg ?? '').trim(),
+    nomeAg: String(point.nomeAg ?? '').trim(),
+    descSupervisao: String(point.descSupervisao ?? '').trim(),
+    gerenteComercial: String(point.gerenteComercial ?? '').trim(),
+    orgaoPagador: point.orgaoPagador ?? null,
+    statusTablet: String(point.statusTablet ?? '').trim(),
+    dataBloqueio: String(point.dataBloqueio ?? '').trim(),
+    motivoBloqueio: String(point.motivoBloqueio ?? '').trim(),
+    tipoPosto: String(point.tipoPosto ?? '').trim(),
+    segmento: String(point.segmento ?? '').trim(),
+    dataUltimaTransacao: String(point.dataUltimaTransacao ?? '').trim(),
+    cieloM0: point.cieloM0 ?? null,
+    cieloFaturamentoM0: point.cieloFaturamentoM0 ?? null,
+    propostaValor: point.propostaValor ?? null,
+    checklist: point.checklist ?? null,
+  };
+}
+
+function storePopupInfoIsComplete(info: StorePopupInfo): boolean {
+  return info.cieloM0 != null && info.propostaValor != null;
+}
+
+async function fetchCompleteStorePoint(chaveLoja: string): Promise<SqlMapPoint | null> {
+  const key = String(chaveLoja ?? '').trim();
+  if (!key) return null;
+  const points = await fetchStorePoints({ search: key, limit: 8, hierarchy: null });
+  return points.find((point) => String(point.chaveLoja ?? '').trim() === key) ?? null;
+}
+
 /** interpolate no topo; case só nos valores de cada stop (Mapbox não aceita zoom dentro de case). */
 function overlayLojaCircleRadiusForRouteRole(): mapboxgl.ExpressionSpecification {
   const isCorridor: mapboxgl.ExpressionSpecification = [
@@ -2280,6 +2313,8 @@ const MapComponent: React.FC<MapComponentProps> = ({
   /** Município aberto no painel: markers + sem calor. */
   const [productionMunicipalityDetail, setProductionMunicipalityDetail] =
     useState<ProductionMunicipalityDetail | null>(null);
+  /** Loja apontada no ranking lateral: destaque roxo somente no mapa. */
+  const [productionHoveredStoreKey, setProductionHoveredStoreKey] = useState<string | null>(null);
   /** Pedido de seleção de município a partir do popup do mapa. */
   const [productionMunicipalitySelectRequest, setProductionMunicipalitySelectRequest] = useState<{
     row: ProductionHeatmapRow;
@@ -2457,6 +2492,46 @@ const MapComponent: React.FC<MapComponentProps> = ({
   const [selectedStoreHighlightPoint, setSelectedStoreHighlightPoint] = useState<SqlMapPoint | null>(
     null
   );
+  const storeSelectionHydrationGenerationRef = useRef(0);
+  const selectStorePointRef = useRef<
+    (point: SqlMapPoint, initialInfo?: StorePopupInfo | null) => void
+  >(() => undefined);
+  selectStorePointRef.current = (point, initialInfo = null) => {
+    const info = initialInfo ?? storePopupInfoFromPoint(point);
+    const chaveLoja = String(point.chaveLoja ?? info.chaveLoja ?? '').trim();
+    const generation = ++storeSelectionHydrationGenerationRef.current;
+
+    setSelectedStoreHighlightPoint(point);
+
+    if (!chaveLoja || storePopupInfoIsComplete(info)) {
+      setOverlayMarkerSelection(info);
+      return;
+    }
+    setOverlayMarkerSelection(null);
+    void fetchCompleteStorePoint(chaveLoja)
+      .then((completePoint) => {
+        if (
+          !completePoint ||
+          generation !== storeSelectionHydrationGenerationRef.current
+        ) {
+          return;
+        }
+        setSelectedStoreHighlightPoint(completePoint);
+        setOverlayMarkerSelection(storePopupInfoFromPoint(completePoint));
+      })
+      .catch(() => {
+        if (generation === storeSelectionHydrationGenerationRef.current) {
+          // Fallback: histórico continua acessível mesmo sem detalhe complementar.
+          setOverlayMarkerSelection(info);
+        }
+      });
+  };
+  useEffect(() => {
+    if (productionHeatmapActive) return;
+    storeSelectionHydrationGenerationRef.current += 1;
+    setProductionHoveredStoreKey(null);
+    setSelectedStoreHighlightPoint(null);
+  }, [productionHeatmapActive]);
   const storeFilterCodAgRef = useRef<string | null>(null);
   const overlaySeatHierarchyRef = useRef<SqlHierarchyFilter | null>(null);
   const hierarchyFilterRef = useRef<SqlHierarchyFilter | null | undefined>(hierarchyFilter);
@@ -3899,13 +3974,24 @@ const MapComponent: React.FC<MapComponentProps> = ({
     if (!productionHeatmapClassFilter || productionHeatmapClassFilter.length === 0) {
       return productionHeatmapSummary;
     }
+    const producingStores = productionStoresPanelRows.reduce(
+      (sum, row) => sum + (Number(row.producingStores) || 0),
+      0
+    );
+    const municipalitiesWithData = productionStoresPanelRows.filter(
+      (row) => (Number(row.producingStores) || 0) > 0 || (Number(row.value) || 0) !== 0
+    ).length;
+    const storeCount = Math.max(
+      producingStores,
+      productionStoresPanelRows.reduce((sum, row) => sum + (Number(row.storeCount) || 0), 0)
+    );
+    const municipalityCount = Math.max(municipalitiesWithData, productionStoresPanelRows.length);
     return {
       value: productionStoresPanelRows.reduce((sum, row) => sum + (Number(row.value) || 0), 0),
-      producingStores: productionStoresPanelRows.reduce(
-        (sum, row) => sum + (Number(row.producingStores) || 0),
-        0
-      ),
-      municipalitiesWithData: productionStoresPanelRows.length,
+      producingStores,
+      municipalitiesWithData,
+      storeCount,
+      municipalityCount,
       excludedStoresWithoutMunicipality: 0,
     };
   }, [productionHeatmapClassFilter, productionHeatmapSummary, productionStoresPanelRows]);
@@ -3957,6 +4043,14 @@ const MapComponent: React.FC<MapComponentProps> = ({
     }
     return points;
   }, [productionMunicipalityDetail]);
+
+  const hoveredProductionStore = useMemo(
+    () =>
+      productionFocusStorePoints.find(
+        (point) => String(point.chaveLoja ?? '').trim() === productionHoveredStoreKey
+      ) ?? null,
+    [productionFocusStorePoints, productionHoveredStoreKey]
+  );
 
   const productionFocusClassifications = useMemo((): Record<string, PlannerPriorityBand> => {
     const out: Record<string, PlannerPriorityBand> = {};
@@ -4044,45 +4138,117 @@ const MapComponent: React.FC<MapComponentProps> = ({
         : metric
           ? 0.68
           : 0.18;
-    const lineColor: mapboxgl.ExpressionSpecification | string = heatHidden
-      ? (buildProductionHeatmapLineColorExpression(classFilter) as mapboxgl.ExpressionSpecification)
+    const boundaryColor = [
+      'case',
+      ...(heatHidden && focusMunicipalityCode
+        ? [
+            ['==', ['get', 'heatMunicipalityCode'], focusMunicipalityCode],
+            '#0f766e',
+          ]
+        : []),
+      ['==', ['get', 'heatMissing'], 1],
+      '#64748b',
+      ['==', ['get', 'heatZero'], 1],
+      '#64748b',
+      ['in', ['get', 'heatClass'], ['literal', [3, 4]]],
+      '#f1f5f9',
+      '#334155',
+    ] as unknown as mapboxgl.ExpressionSpecification;
+    const lineColor: mapboxgl.ExpressionSpecification | string = metric
+      ? ([
+          'step',
+          ['zoom'],
+          '#475569',
+          6.5,
+          boundaryColor,
+        ] as unknown as mapboxgl.ExpressionSpecification)
       : '#0369a1';
-    const lineOpacity: mapboxgl.ExpressionSpecification | number =
+    const detailedLineOpacity: mapboxgl.ExpressionSpecification | number =
       heatHidden && focusMunicipalityCode
         ? ([
             'case',
             ['==', ['get', 'heatMunicipalityCode'], focusMunicipalityCode],
-            0.95,
-            0.28,
+            1,
+            0.62,
           ] as unknown as mapboxgl.ExpressionSpecification)
         : metric
           ? ([
               'case',
               ['==', ['get', 'heatMissing'], 1],
-              0.18,
+              0.5,
               ['==', ['get', 'heatZero'], 1],
-              0.18,
+              0.5,
               ...(classFilter && classFilter.length > 0
                 ? ([
                     [
                       '!',
                       ['in', ['get', 'heatClass'], ['literal', [...classFilter]]],
                     ],
-                    0.18,
+                    0.42,
                   ] as const)
                 : []),
-              0.38,
+              0.72,
             ] as unknown as mapboxgl.ExpressionSpecification)
           : 0.32;
-    const lineWidth: mapboxgl.ExpressionSpecification | number =
+    const lineOpacity: mapboxgl.ExpressionSpecification | number = metric
+      ? ([
+          'step',
+          ['zoom'],
+          0.16,
+          6.5,
+          detailedLineOpacity,
+        ] as unknown as mapboxgl.ExpressionSpecification)
+      : detailedLineOpacity;
+    const lineWidth: mapboxgl.ExpressionSpecification =
       heatHidden && focusMunicipalityCode
         ? ([
-            'case',
-            ['==', ['get', 'heatMunicipalityCode'], focusMunicipalityCode],
-            2.8,
-            0.55,
+            'interpolate',
+            ['linear'],
+            ['zoom'],
+            4,
+            [
+              'case',
+              ['==', ['get', 'heatMunicipalityCode'], focusMunicipalityCode],
+              0.65,
+              0.25,
+            ],
+            6.4,
+            [
+              'case',
+              ['==', ['get', 'heatMunicipalityCode'], focusMunicipalityCode],
+              1,
+              0.45,
+            ],
+            7,
+            [
+              'case',
+              ['==', ['get', 'heatMunicipalityCode'], focusMunicipalityCode],
+              2.6,
+              0.85,
+            ],
+            12,
+            [
+              'case',
+              ['==', ['get', 'heatMunicipalityCode'], focusMunicipalityCode],
+              3.8,
+              1.55,
+            ],
           ] as unknown as mapboxgl.ExpressionSpecification)
-        : 0.65;
+        : ([
+            'interpolate',
+            ['linear'],
+            ['zoom'],
+            4,
+            0.25,
+            6.4,
+            0.45,
+            7,
+            0.85,
+            10,
+            1.25,
+            13,
+            1.65,
+          ] as unknown as mapboxgl.ExpressionSpecification);
 
     try {
       m.setPaintProperty('municipalities-context-fill', 'fill-color', fillColor);
@@ -4212,6 +4378,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
       void clearSupervisorOverlayFilter();
       return;
     }
+    storeSelectionHydrationGenerationRef.current += 1;
     setOverlayMarkerSelection(null);
     setSearchFocusedPoint(null);
     setSelectedStoreHighlightPoint(null);
@@ -4717,14 +4884,13 @@ const MapComponent: React.FC<MapComponentProps> = ({
           const agencyInfo = readAgencyPopupInfoFromProperties(feature.properties);
           if (agencyInfo.kind === 'loja') {
             const storeInfo = readStorePopupInfoFromProperties(feature.properties);
-            setOverlayMarkerSelection(storeInfo);
             const coords =
               getPointCoordinates(feature) ??
               (feature.geometry?.type === 'Point'
                 ? (feature.geometry.coordinates as [number, number])
                 : null);
             if (coords) {
-              setSelectedStoreHighlightPoint({
+              selectStorePointRef.current({
                 id: String(feature.properties?.id ?? `map-loja-${storeInfo.chaveLoja || coords.join('-')}`),
                 nome: storeInfo.nome || 'Loja',
                 kind: 'loja',
@@ -4732,12 +4898,28 @@ const MapComponent: React.FC<MapComponentProps> = ({
                 chaveLoja: storeInfo.chaveLoja || undefined,
                 codAg: storeInfo.codAg || undefined,
                 nomeAg: storeInfo.nomeAg || undefined,
-              });
+                descSupervisao: storeInfo.descSupervisao || undefined,
+                gerenteComercial: storeInfo.gerenteComercial || undefined,
+                orgaoPagador: storeInfo.orgaoPagador,
+                statusTablet: storeInfo.statusTablet || undefined,
+                dataBloqueio: storeInfo.dataBloqueio || undefined,
+                motivoBloqueio: storeInfo.motivoBloqueio || undefined,
+                tipoPosto: storeInfo.tipoPosto || undefined,
+                segmento: storeInfo.segmento || undefined,
+                dataUltimaTransacao: storeInfo.dataUltimaTransacao || undefined,
+                cieloM0: storeInfo.cieloM0,
+                cieloFaturamentoM0: storeInfo.cieloFaturamentoM0,
+                propostaValor: storeInfo.propostaValor,
+                checklist: storeInfo.checklist,
+              }, storeInfo);
             } else {
+              storeSelectionHydrationGenerationRef.current += 1;
+              setOverlayMarkerSelection(storeInfo);
               setSelectedStoreHighlightPoint(null);
             }
             return;
           }
+          storeSelectionHydrationGenerationRef.current += 1;
           setOverlayMarkerSelection(agencyInfo);
           setSelectedStoreHighlightPoint(null);
         };
@@ -6212,31 +6394,66 @@ const MapComponent: React.FC<MapComponentProps> = ({
 
         const hoverPopup = new mapboxgl.Popup(agencyMapPopupHoverOptions);
         agencyHoverPopupRef.current = hoverPopup;
+        let storeHoverRequestGeneration = 0;
 
         const onOverlayMarkerHoverEnter = (e: mapboxgl.MapLayerMouseEvent) => {
           const f = e.features?.[0];
           if (!f?.properties || !map.current || !f.geometry || f.geometry.type !== 'Point') return;
           const coordinates = [...(f.geometry.coordinates as [number, number])] as [number, number];
           const info = readAgencyPopupInfoFromProperties(f.properties);
-          const popupHtml =
+          const storeInfo =
             info.kind === 'loja'
-              ? buildStorePopupHtml(readStorePopupInfoFromProperties(f.properties))
-              : buildAgencyPopupHtml(info, { compact: true });
+              ? readStorePopupInfoFromProperties(f.properties)
+              : null;
+          const requestGeneration = ++storeHoverRequestGeneration;
+          const openHoverPopup = (popupHtml: string) => {
+            const mapInstance = map.current;
+            if (!mapInstance || requestGeneration !== storeHoverRequestGeneration) {
+              return;
+            }
+            hoverPopup
+              .setLngLat(coordinates)
+              .setHTML(popupHtml)
+              .addTo(mapInstance);
+          };
 
           map.current.getCanvas().style.cursor = 'pointer';
-          hoverPopup
-            .setLngLat(coordinates)
-            .setHTML(popupHtml)
-            .addTo(map.current);
+          if (
+            storeInfo &&
+            storeInfo.chaveLoja &&
+            !storePopupInfoIsComplete(storeInfo)
+          ) {
+            void fetchCompleteStorePoint(storeInfo.chaveLoja)
+              .then((completePoint) => {
+                openHoverPopup(
+                  buildStorePopupHtml(
+                    completePoint
+                      ? storePopupInfoFromPoint(completePoint)
+                      : storeInfo
+                  )
+                );
+              })
+              .catch(() => {
+                openHoverPopup(buildStorePopupHtml(storeInfo));
+              });
+            return;
+          }
+          openHoverPopup(
+            storeInfo
+              ? buildStorePopupHtml(storeInfo)
+              : buildAgencyPopupHtml(info, { compact: true })
+          );
         };
 
         const onOverlayMarkerHoverLeave = () => {
           if (!map.current) return;
+          storeHoverRequestGeneration += 1;
           map.current.getCanvas().style.cursor = '';
           hoverPopup.remove();
         };
 
         const onOverlayMarkerPointerDown = () => {
+          storeHoverRequestGeneration += 1;
           hoverPopup.remove();
         };
 
@@ -6774,8 +6991,13 @@ const MapComponent: React.FC<MapComponentProps> = ({
   useEffect(() => {
     const m = map.current;
     if (!m) return;
-    const hoveredStores = hoveredPlannerStore ? [hoveredPlannerStore] : [];
-    const visible = plannerMode && hoveredStores.length > 0;
+    const hoveredStore = productionStoresOverlayActive
+      ? hoveredProductionStore
+      : plannerMode
+        ? hoveredPlannerStore
+        : null;
+    const hoveredStores = hoveredStore ? [hoveredStore] : [];
+    const visible = hoveredStores.length > 0;
     return runWhenMapStyleReady(m, () => {
       syncOverlayGeoJsonSource(
         'planner-hovered-loja',
@@ -6791,7 +7013,14 @@ const MapComponent: React.FC<MapComponentProps> = ({
         }
       }
     });
-  }, [hoveredPlannerStore, mapReadyVersion, plannerMode, syncOverlayGeoJsonSource]);
+  }, [
+    hoveredPlannerStore,
+    hoveredProductionStore,
+    mapReadyVersion,
+    plannerMode,
+    productionStoresOverlayActive,
+    syncOverlayGeoJsonSource,
+  ]);
 
   useEffect(() => {
     const m = map.current;
@@ -7099,6 +7328,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
     const m = map.current;
     if (!m) return;
     let cancelled = false;
+    let cancelDeferredMunicipalityPaint: (() => void) | null = null;
 
     // isStyleLoaded() fica false transitoriamente durante carregamento de tiles;
     // se os dados do calor chegarem nesse momento, reagenda a pintura para o
@@ -7229,31 +7459,41 @@ const MapComponent: React.FC<MapComponentProps> = ({
 
     void loadAllMunicipalitiesRef.current()
       .then((allMunicipalities) => {
-        if (cancelled || !map.current?.isStyleLoaded() || allMunicipalities.features.length === 0) return;
-        municipalitiesRawFcRef.current = allMunicipalities;
-        const merged = productionHeatmapMetric
-          ? mergeProductionHeatmapIntoFeatureCollection(
-              allMunicipalities,
-              productionHeatmapRows,
-              productionHeatmapScale
-            )
-          : allMunicipalities;
-        municipalitiesFcRef.current = merged;
-        const source = map.current.getSource('municipalities-context') as mapboxgl.GeoJSONSource | undefined;
-        source?.setData(merged);
-        for (const layerId of [
-          'municipalities-context-fill',
-          'municipalities-context-line',
-        ] as const) {
-          if (!map.current.getLayer(layerId)) continue;
-          try {
-            map.current.setLayoutProperty(layerId, 'visibility', 'visible');
-          } catch {
-            /* estilo recarregando */
-          }
-        }
+        if (cancelled || allMunicipalities.features.length === 0) return;
+        const mapInstance = map.current;
+        if (!mapInstance) return;
 
-        applyProductionFocusChromePaint();
+        // setData/tiles podem deixar isStyleLoaded() falso logo após a carga nacional.
+        // Não perde a troca Brasil -> Municípios: força pintura no próximo estado pronto.
+        cancelDeferredMunicipalityPaint = runWhenMapStyleReady(mapInstance, () => {
+          if (cancelled) return;
+          municipalitiesRawFcRef.current = allMunicipalities;
+          const merged = productionHeatmapMetric
+            ? mergeProductionHeatmapIntoFeatureCollection(
+                allMunicipalities,
+                productionHeatmapRows,
+                productionHeatmapScale
+              )
+            : allMunicipalities;
+          municipalitiesFcRef.current = merged;
+          const source = mapInstance.getSource(
+            'municipalities-context'
+          ) as mapboxgl.GeoJSONSource | undefined;
+          source?.setData(merged);
+          for (const layerId of [
+            'municipalities-context-fill',
+            'municipalities-context-line',
+          ] as const) {
+            if (!mapInstance.getLayer(layerId)) continue;
+            try {
+              mapInstance.setLayoutProperty(layerId, 'visibility', 'visible');
+            } catch {
+              /* estilo recarregando */
+            }
+          }
+
+          applyProductionFocusChromePaint();
+        });
       })
       .catch((error) => {
         if (!cancelled) console.warn('Malha municipal nacional não carregada:', error);
@@ -7263,6 +7503,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
     applyProductionHeatmapPaint();
     return () => {
       cancelled = true;
+      cancelDeferredMunicipalityPaint?.();
     };
   }, [
     productionHeatmapActive,
@@ -7816,15 +8057,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
                   onMouseLeave={scheduleLayoutHoverEnd}
                   title="Estilo do mapa — menu à esquerda deste botão; passe o mouse ou clique para fixar"
                   aria-label="Estilo do mapa: abrir opções de layout"
-                  className={`h-10 w-10 rounded-full border shadow-sm hover:text-slate-900 ${
-                    mapStyleMode === 'standardWarm'
-                      ? 'border-amber-300/90 bg-amber-50 text-amber-950 hover:bg-amber-100/90'
-                      : mapStyleMode === 'standardCool'
-                        ? 'border-cyan-300/90 bg-cyan-50 text-cyan-950 hover:bg-cyan-100/90'
-                        : mapStyleMode === 'satellite' || mapStyleMode === 'dark'
-                          ? 'border-slate-600 bg-slate-700 text-white shadow-slate-900/15 hover:bg-slate-600'
-                          : 'border-slate-200/90 bg-white text-slate-600 hover:bg-slate-50'
-                  }`}
+                  className="h-10 w-10 rounded-full border border-slate-200/90 bg-white text-slate-600 shadow-sm hover:bg-slate-50 hover:text-slate-900"
                 >
                   <Layers className="h-4 w-4" />
                 </Button>
@@ -8182,17 +8415,53 @@ const MapComponent: React.FC<MapComponentProps> = ({
           period={productionHeatmapPeriod}
           contextLabel={productionHeatmapUf ?? 'Brasil'}
           onClose={() => {
+            storeSelectionHydrationGenerationRef.current += 1;
             setProductionStoresPanelOpen(false);
             setProductionStoresPanelMinimized(false);
             setProductionMunicipalityDetail(null);
             setProductionMunicipalitySelectRequest(null);
+            setProductionHoveredStoreKey(null);
+            setSelectedStoreHighlightPoint(null);
+            setOverlayMarkerSelection(null);
           }}
           minimized={productionStoresPanelMinimized}
           onMinimize={() => setProductionStoresPanelMinimized(true)}
           onRestore={() => setProductionStoresPanelMinimized(false)}
           scopeUf={productionHeatmapUf}
           onSelectMunicipality={focusProductionMunicipality}
-          onMunicipalityDetailChange={setProductionMunicipalityDetail}
+          onHoverStore={(store) =>
+            setProductionHoveredStoreKey(String(store?.chaveLoja ?? '').trim() || null)
+          }
+          onSelectStore={(store) => {
+            if (!store) {
+              storeSelectionHydrationGenerationRef.current += 1;
+              setSelectedStoreHighlightPoint(null);
+              setOverlayMarkerSelection(null);
+              return;
+            }
+            const storeKey = String(store.chaveLoja ?? '').trim();
+            const point =
+              productionFocusStorePoints.find(
+                (candidate) => String(candidate.chaveLoja ?? '').trim() === storeKey
+              ) ?? null;
+            if (point) {
+              selectStorePointRef.current(point);
+            } else {
+              storeSelectionHydrationGenerationRef.current += 1;
+              setSelectedStoreHighlightPoint(null);
+              setOverlayMarkerSelection(null);
+            }
+          }}
+          selectedStoreKey={
+            String(selectedStoreHighlightPoint?.chaveLoja ?? '').trim() || null
+          }
+          onMunicipalityDetailChange={(detail) => {
+            storeSelectionHydrationGenerationRef.current += 1;
+            setProductionMunicipalityDetail(detail);
+            setProductionHoveredStoreKey(null);
+            setSelectedStoreHighlightPoint(null);
+            setOverlayMarkerSelection(null);
+          }}
           municipalitySelectRequest={productionMunicipalitySelectRequest}
         />
       ) : null}

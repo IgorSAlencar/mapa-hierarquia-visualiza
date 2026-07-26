@@ -1,12 +1,14 @@
 import React from 'react';
 import type { CSSProperties } from 'react';
 import {
+  BarChart3,
   Building2,
   ChevronRight,
   ClipboardList,
   CreditCard,
   HandCoins,
   Layers,
+  Map,
   Minus,
   Route,
   Ruler,
@@ -26,25 +28,18 @@ interface ProductItem {
   section?: NavigatorSection;
 }
 
-const BrazilHeatIcon: React.FC<{ className?: string }> = ({ className }) => (
-  <span className={cn('relative flex items-center justify-center', className)} aria-hidden>
-    <span className="absolute h-6 w-6 rounded-full bg-sky-400/30 blur-[5px]" />
-    <svg viewBox="0 0 32 32" className="relative h-full w-full drop-shadow-sm" fill="none">
-      <path
-        d="M11.2 3.1 17 4.5l2.4 2.2 4.2.8 2.2 3.4-1.5 3.7.4 3.2-3.1 2.5-1.2 4.4-3.1 4.2-2.1-2.7-2.4-1.2-1.1-3.9-3.5-2.2.8-4-2.1-3.3 2.4-2.2.2-3.5 2.9-1.3Z"
-        fill="url(#brazilHeatGradient)"
-        stroke="currentColor"
-        strokeWidth="1.25"
-        strokeLinejoin="round"
-      />
-      <defs>
-        <linearGradient id="brazilHeatGradient" x1="8" y1="4" x2="23" y2="27" gradientUnits="userSpaceOnUse">
-          <stop stopColor="#E0F2FE" />
-          <stop offset=".55" stopColor="#38BDF8" />
-          <stop offset="1" stopColor="#0C4A6E" />
-        </linearGradient>
-      </defs>
-    </svg>
+const ProductionMapIcon: React.FC<React.HTMLAttributes<HTMLSpanElement>> = ({
+  className,
+  ...props
+}) => (
+  <span
+    className={cn('relative inline-flex items-center justify-center', className)}
+    {...props}
+  >
+    <Map className="h-full w-full" strokeWidth={1.8} />
+    <span className="absolute -bottom-1 -right-1 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-sky-600 text-white ring-2 ring-sky-50">
+      <BarChart3 className="h-2 w-2" strokeWidth={2.4} />
+    </span>
   </span>
 );
 
@@ -54,7 +49,7 @@ const PRODUCTS: ProductItem[] = [
   { id: 'ab-contas', label: 'Ab. de Contas', icon: CreditCard, accent: 'text-indigo-600 bg-indigo-50/90 border-indigo-100' },
   { id: 'emprestimos', label: 'Empréstimos e Crédito', icon: HandCoins, accent: 'text-emerald-600 bg-emerald-50/90 border-emerald-100' },
   { id: 'seguros', label: 'Seguros', icon: Shield, accent: 'text-violet-600 bg-violet-50/90 border-violet-100' },
-  { id: 'heatmap', label: 'Mapa de produção', icon: BrazilHeatIcon, accent: 'text-sky-700 bg-sky-50/90 border-sky-200', section: 'heatmap' },
+  { id: 'heatmap', label: 'Mapa de produção', icon: ProductionMapIcon, accent: 'text-sky-700 bg-sky-50/90 border-sky-200', section: 'heatmap' },
 ];
 
 interface SubjectItem {
@@ -156,7 +151,10 @@ const NavigatorPanel: React.FC<NavigatorPanelProps> = ({
                   )}
                   title={isClickable ? product.label : `${product.label} (em breve)`}
                 >
-                  <product.icon className={cn('shrink-0', product.id === 'heatmap' ? 'h-7 w-7' : 'h-4 w-4')} aria-hidden />
+                  <product.icon
+                    className={cn('shrink-0', product.id === 'heatmap' ? 'h-5 w-5' : 'h-4 w-4')}
+                    aria-hidden
+                  />
                   <span className="line-clamp-2 min-h-[2em] w-full px-0.5 text-[9px] font-medium leading-snug text-slate-700">
                     {product.label}
                   </span>

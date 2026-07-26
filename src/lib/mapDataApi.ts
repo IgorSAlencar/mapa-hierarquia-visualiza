@@ -96,6 +96,10 @@ export interface ProductionHeatmapMetric {
   shortLabel: string;
   group: string;
   unit: ProductionHeatmapUnit;
+  /** Agrupa as variantes Valor/QTD do mesmo produto. */
+  productKey?: string;
+  /** Variante exibida no seletor e escolhida por padrão. */
+  defaultForProduct?: boolean;
 }
 
 export interface ProductionHeatmapOptions {
@@ -110,16 +114,30 @@ export interface ProductionHeatmapRow {
   uf: string;
   value: number;
   producingStores: number;
+  /** Total de lojas do município no território (com ou sem produção). */
+  storeCount: number;
+}
+
+export interface ProductionHeatmapUniverseByUf {
+  uf: string;
+  storeCount: number;
+  municipalityCount: number;
 }
 
 export interface ProductionHeatmapData {
   metric: ProductionHeatmapMetric;
   period: number;
   rows: ProductionHeatmapRow[];
+  /** Totais do território por UF (todas as lojas/municípios, não só com produção). */
+  universeByUf?: ProductionHeatmapUniverseByUf[];
   summary: {
     value: number;
     producingStores: number;
     municipalitiesWithData: number;
+    /** Total de lojas no território com município válido. */
+    storeCount: number;
+    /** Total oficial de municípios (ibge..IBGE_POP). */
+    municipalityCount: number;
     excludedStoresWithoutMunicipality: number;
   };
 }
@@ -468,7 +486,54 @@ export function fetchProductionHeatmap(
   return fetchProductionHeatmapJson<ProductionHeatmapData>(
     `/api/map/production-heatmap?${query.toString()}`,
     signal
-  );
+  ).then((data) => {
+    const rows = (Array.isArray(data.rows) ? data.rows : []).map((row) => {
+      const producingStores = Math.max(0, Number(row.producingStores) || 0);
+      return {
+        ...row,
+        municipalityCode: String(row.municipalityCode ?? '').trim(),
+        municipalityName: String(row.municipalityName ?? '').trim(),
+        uf: String(row.uf ?? '').trim().toUpperCase(),
+        value: Number(row.value) || 0,
+        producingStores,
+        storeCount: Math.max(producingStores, Number(row.storeCount) || 0),
+      };
+    });
+    const producingStores = Math.max(0, Number(data.summary?.producingStores) || 0);
+    const municipalitiesWithData = Math.max(
+      0,
+      Number(data.summary?.municipalitiesWithData) || 0
+    );
+    return {
+      ...data,
+      rows,
+      universeByUf: (Array.isArray(data.universeByUf) ? data.universeByUf : [])
+        .map((row) => ({
+          uf: String(row.uf ?? '').trim().toUpperCase(),
+          storeCount: Math.max(0, Number(row.storeCount) || 0),
+          municipalityCount: Math.max(0, Number(row.municipalityCount) || 0),
+        }))
+        .filter((row) => row.uf),
+      summary: {
+        value: Number(data.summary?.value) || 0,
+        producingStores,
+        municipalitiesWithData,
+        storeCount: Math.max(
+          producingStores,
+          Number(data.summary?.storeCount) || 0,
+          rows.reduce((sum, row) => sum + row.storeCount, 0)
+        ),
+        municipalityCount: Math.max(
+          municipalitiesWithData,
+          Number(data.summary?.municipalityCount) || 0
+        ),
+        excludedStoresWithoutMunicipality: Math.max(
+          0,
+          Number(data.summary?.excludedStoresWithoutMunicipality) || 0
+        ),
+      },
+    };
+  });
 }
 
 function normalizeHeatmapStoreCoords(

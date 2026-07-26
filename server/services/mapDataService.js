@@ -288,25 +288,45 @@ export async function getProductionHeatmap({ metricId, period, user, now = new D
     .map((row) => {
       const municipalityCode = normalizeMunicipalityCode(row.municipalityCode);
       if (!municipalityCode) return null;
+      const producingStores = Math.max(0, Number(row.producingStores) || 0);
+      const storeCount = Math.max(producingStores, Number(row.storeCount) || 0);
       return {
         municipalityCode,
         municipalityName: normalizeText(row.municipalityName) ?? '',
         uf: String(row.uf ?? '').trim().toUpperCase(),
         value: Number(row.value) || 0,
-        producingStores: Math.max(0, Number(row.producingStores) || 0),
+        producingStores,
+        storeCount,
       };
     })
     .filter(Boolean);
   const rawSummary = result.summary ?? {};
+  const universeByUf = (result.universeByUf ?? [])
+    .map((row) => ({
+      uf: String(row.uf ?? '').trim().toUpperCase(),
+      storeCount: Math.max(0, Number(row.storeCount) || 0),
+      municipalityCount: Math.max(0, Number(row.municipalityCount) || 0),
+    }))
+    .filter((row) => row.uf);
 
   return {
     metric: { ...metric },
     period: numericPeriod,
     rows,
+    universeByUf,
     summary: {
       value: Number(rawSummary.value) || 0,
       producingStores: Math.max(0, Number(rawSummary.producingStores) || 0),
       municipalitiesWithData: Math.max(0, Number(rawSummary.municipalitiesWithData) || 0),
+      storeCount: Math.max(
+        0,
+        Number(rawSummary.storeCount) || 0,
+        rows.reduce((sum, row) => sum + (Number(row.storeCount) || 0), 0)
+      ),
+      municipalityCount: Math.max(
+        0,
+        Number(rawSummary.municipalityCount) || 0
+      ),
       excludedStoresWithoutMunicipality: Math.max(
         0,
         Number(rawSummary.excludedStoresWithoutMunicipality) || 0

@@ -608,10 +608,38 @@ export async function fetchProductionHeatmapRows({ metricId, period, user }) {
   const accessSql = applyAccessScope(request, user, 'esc', 'heatmapAuthCodFunc');
 
   const result = await request.query(`
+    -- Universo de lojas/municípios do território (independente do período/métrica).
+    SELECT
+      CASE
+        WHEN store.CD_MUNIC IS NULL THEN NULL
+        ELSE RIGHT(
+          REPLICATE('0', 7) + LTRIM(RTRIM(STR(ROUND(CONVERT(float, store.CD_MUNIC), 0), 20, 0))),
+          7
+        )
+      END AS municipalityCode,
+      LTRIM(RTRIM(CONVERT(nvarchar(200), store.MUNICIPIO))) AS municipalityName,
+      UPPER(LTRIM(RTRIM(CONVERT(varchar(2), store.UF)))) AS uf,
+      LTRIM(RTRIM(CONVERT(nvarchar(100), store.CHAVE_LOJA))) AS chaveLoja
+    INTO #HeatmapStoreUniverse
+    FROM DATALAKE..DL_BRADESCO_EXPRESSO AS store
+    INNER JOIN MESU..CONS_DISTRIBUICAO_ENTIDADES AS esc
+      ON TRY_CONVERT(bigint, esc.COD_AG) = TRY_CONVERT(bigint, store.COD_AG_LOJA)
+    WHERE store.CD_MUNIC IS NOT NULL
+      ${accessSql};
+
+    SELECT
+      municipalityCode,
+      MAX(municipalityName) AS municipalityName,
+      MAX(uf) AS uf,
+      COUNT(DISTINCT chaveLoja) AS storeCount
+    INTO #HeatmapMunicipalityUniverse
+    FROM #HeatmapStoreUniverse
+    WHERE LEN(municipalityCode) = 7
+      AND municipalityCode NOT LIKE '%[^0-9]%'
+    GROUP BY municipalityCode;
+
     SELECT DISTINCT
       store.CHAVE_LOJA,
-      -- CD_MUNIC é float(53): CONVERT(varchar, float) vira notação científica
-      -- (ex.: 4.102321e+006). STR(..., 0) força o inteiro IBGE em texto.
       CASE
         WHEN store.CD_MUNIC IS NULL THEN NULL
         ELSE RIGHT(
@@ -643,16 +671,27 @@ export async function fetchProductionHeatmapRows({ metricId, period, user }) {
       ${accessSql};
 
     SELECT
-      municipalityCode,
-      MAX(municipalityName) AS municipalityName,
-      MAX(uf) AS uf,
-      SUM(metricValue) AS value,
-      COUNT(DISTINCT CASE WHEN metricValue <> 0 THEN CHAVE_LOJA END) AS producingStores
-    FROM #ProductionHeatmapBase
-    WHERE LEN(municipalityCode) = 7
-      AND municipalityCode NOT LIKE '%[^0-9]%'
-    GROUP BY municipalityCode
-    ORDER BY municipalityCode;
+      prod.municipalityCode,
+      MAX(prod.municipalityName) AS municipalityName,
+      MAX(prod.uf) AS uf,
+      SUM(prod.metricValue) AS value,
+      COUNT(DISTINCT CASE WHEN prod.metricValue <> 0 THEN prod.CHAVE_LOJA END) AS producingStores,
+      ISNULL(MAX(univ.storeCount), COUNT(DISTINCT prod.CHAVE_LOJA)) AS storeCount
+    FROM (
+      SELECT
+        municipalityCode,
+        municipalityName,
+        uf,
+        CHAVE_LOJA,
+        metricValue
+      FROM #ProductionHeatmapBase
+      WHERE LEN(municipalityCode) = 7
+        AND municipalityCode NOT LIKE '%[^0-9]%'
+    ) AS prod
+    LEFT JOIN #HeatmapMunicipalityUniverse AS univ
+      ON univ.municipalityCode = prod.municipalityCode
+    GROUP BY prod.municipalityCode
+    ORDER BY prod.municipalityCode;
 
     SELECT
       ISNULL(SUM(CASE
@@ -670,13 +709,45 @@ export async function fetchProductionHeatmapRows({ metricId, period, user }) {
         WHEN municipalityCode IS NULL
           OR LEN(municipalityCode) <> 7
           OR municipalityCode LIKE '%[^0-9]%'
-          THEN CHAVE_LOJA END) AS excludedStoresWithoutMunicipality
+          THEN CHAVE_LOJA END) AS excludedStoresWithoutMunicipality,
+      (SELECT ISNULL(SUM(storeCount), 0) FROM #HeatmapMunicipalityUniverse) AS storeCount,
+      -- Total oficial de municípios (IBGE), não só os que têm loja.
+      (
+        SELECT COUNT(*)
+        FROM ibge..IBGE_POP AS ibge
+        WHERE ibge.UF IS NOT NULL
+          AND LTRIM(RTRIM(CONVERT(varchar(2), ibge.UF))) <> ''
+      ) AS municipalityCount
     FROM #ProductionHeatmapBase;
+
+    SELECT
+      COALESCE(stores.uf, ibge.uf) AS uf,
+      ISNULL(stores.storeCount, 0) AS storeCount,
+      ISNULL(ibge.municipalityCount, 0) AS municipalityCount
+    FROM (
+      SELECT
+        uf,
+        SUM(storeCount) AS storeCount
+      FROM #HeatmapMunicipalityUniverse
+      GROUP BY uf
+    ) AS stores
+    FULL OUTER JOIN (
+      SELECT
+        UPPER(LTRIM(RTRIM(CONVERT(varchar(2), UF)))) AS uf,
+        COUNT(*) AS municipalityCount
+      FROM ibge..IBGE_POP
+      WHERE UF IS NOT NULL
+        AND LTRIM(RTRIM(CONVERT(varchar(2), UF))) <> ''
+      GROUP BY UPPER(LTRIM(RTRIM(CONVERT(varchar(2), UF))))
+    ) AS ibge
+      ON ibge.uf = stores.uf
+    ORDER BY COALESCE(stores.uf, ibge.uf);
   `);
 
   return {
     rows: result.recordsets?.[0] ?? [],
     summary: result.recordsets?.[1]?.[0] ?? null,
+    universeByUf: result.recordsets?.[2] ?? [],
   };
 }
 
@@ -714,7 +785,7 @@ export async function fetchProductionHeatmapStores({
     : `AND UPPER(LTRIM(RTRIM(CONVERT(varchar(2), store.UF)))) = @uf`;
 
   const result = await request.query(`
-    SELECT
+    SELECT DISTINCT
       LTRIM(RTRIM(CONVERT(nvarchar(100), store.CHAVE_LOJA))) AS chaveLoja,
       LTRIM(RTRIM(CONVERT(nvarchar(255), store.NOME_LOJA))) AS nome,
       LTRIM(RTRIM(CONVERT(nvarchar(50), store.COD_AG_LOJA))) AS codAg,
@@ -768,6 +839,8 @@ export async function fetchStoreProductionHistory(chaveLoja) {
   request.input('chaveLoja', String(chaveLoja ?? '').trim());
   const businessQuantitySql = storeBusinessQuantitySql('A', 'E');
   const creditQuantitySql = storeCreditQuantitySql('A');
+  const consigQuantitySql = productionMetricSql('qtdConsig', 'A', 'E') ?? '0';
+  const consigValueSql = productionMetricSql('vlrConsig', 'A', 'E') ?? '0';
 
   const result = await request.query(`
     SELECT
@@ -805,11 +878,9 @@ export async function fetchStoreProductionHistory(chaveLoja) {
         ISNULL(A.QTD_CONTAS_TABLET_POS, 0)
           + ISNULL(A.QTD_CONTA_SALARIO, 0) AS qtdContas,
 
-        ISNULL(A.QTD_CONSIG_AVERBADO, 0)
-          + ISNULL(A.QTD_CONSIG_AVERBADO_PLATAF, 0) AS qtdConsig,
+        ${consigQuantitySql} AS qtdConsig,
 
-        ISNULL(A.VLR_CONSIG_CONTRATO_AVERBADO, 0)
-          + ISNULL(A.VLR_CONSIG_CONTRATO_AVERBADO_PLATAF, 0) AS vlrConsig,
+        ${consigValueSql} AS vlrConsig,
 
         ISNULL(A.QTD_LIME_DTLHES, 0)
           + ISNULL(A.QTD_LIME_DTLHES_PLATAFORMA, 0) AS qtdLime,

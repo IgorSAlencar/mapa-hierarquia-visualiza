@@ -279,10 +279,29 @@ const Index = () => {
   const heatmapSummary = useMemo(() => {
     if (!heatmapData) return null;
     if (!heatmapUf) return heatmapData.summary;
+    const ufKey = heatmapUf.toUpperCase();
+    const ufUniverse = heatmapData.universeByUf?.find((row) => row.uf === ufKey);
+    const producingStores = heatmapRows.reduce(
+      (sum, row) => sum + (Number(row.producingStores) || 0),
+      0
+    );
+    const municipalitiesWithData = heatmapRows.filter(
+      (row) => (Number(row.producingStores) || 0) > 0 || (Number(row.value) || 0) !== 0
+    ).length;
     return {
       value: heatmapRows.reduce((sum, row) => sum + row.value, 0),
-      producingStores: heatmapRows.reduce((sum, row) => sum + row.producingStores, 0),
-      municipalitiesWithData: heatmapRows.length,
+      producingStores,
+      municipalitiesWithData:
+        municipalitiesWithData > 0 ? municipalitiesWithData : heatmapRows.length,
+      storeCount: Math.max(
+        producingStores,
+        ufUniverse?.storeCount ?? 0,
+        heatmapRows.reduce((sum, row) => sum + (Number(row.storeCount) || 0), 0)
+      ),
+      municipalityCount: Math.max(
+        municipalitiesWithData,
+        ufUniverse?.municipalityCount ?? 0
+      ),
       excludedStoresWithoutMunicipality: 0,
     };
   }, [heatmapData, heatmapRows, heatmapUf]);

@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertCircle,
   ArrowLeft,
+  BarChart3,
   CalendarDays,
   ChevronRight,
   Loader2,
@@ -22,6 +23,10 @@ export interface ProductionHeatmapPanelSummary {
   value: number;
   producingStores: number;
   municipalitiesWithData: number;
+  /** Total de lojas na região (com ou sem produção). */
+  storeCount: number;
+  /** Total oficial de municípios na região (ibge..IBGE_POP). */
+  municipalityCount: number;
   excludedStoresWithoutMunicipality: number;
 }
 
@@ -101,65 +106,127 @@ export function ProductionHeatmapTotalsCard({
   onOpenStoresPanel?: () => void;
 }) {
   const clickable = Boolean(onOpenStoresPanel);
+  const producingStoresPercentage =
+    summary.storeCount > 0
+      ? Math.min(100, Math.round((summary.producingStores / summary.storeCount) * 100))
+      : 0;
+  const producingMunicipalitiesPercentage =
+    summary.municipalityCount > 0
+      ? Math.min(
+          100,
+          Math.round(
+            (summary.municipalitiesWithData / summary.municipalityCount) * 100
+          )
+        )
+      : 0;
+
   return (
     <aside
       className="pointer-events-auto w-[min(260px,calc(100vw-7rem))] rounded-2xl border border-white/70 bg-white/90 p-2 font-sans text-slate-700 shadow-lg shadow-slate-900/15 backdrop-blur-xl"
       aria-label="Totais de produção"
     >
-      <div className="overflow-hidden rounded-xl border border-slate-200/90 bg-white">
-        <div className="relative border-b border-slate-100 px-3 py-2.5 text-center">
-          <p className="text-[8px] font-semibold uppercase tracking-wide text-slate-500">
-            {metric.shortLabel || 'Produção'}
-          </p>
-          <p className="mt-1 break-words text-base font-bold leading-tight tabular-nums text-slate-900">
-            {formatHeatmapValue(summary.value, metric.unit)}
-          </p>
-        </div>
-        <div className="flex items-stretch divide-x divide-slate-100">
-          <button
-            type="button"
-            onClick={onOpenStoresPanel}
-            disabled={!clickable}
-            aria-label="Ver lojas e produção por município"
-            title={clickable ? 'Ver detalhamento por município' : undefined}
-            className={`group min-w-0 flex-1 px-2 py-2 text-center transition-colors ${
-              clickable ? 'cursor-pointer hover:bg-slate-50' : 'cursor-default'
-            }`}
-          >
-            <span className="flex items-center justify-center gap-1">
-              <Store className="h-3 w-3 shrink-0 text-slate-600" aria-hidden />
-              <span className="truncate text-xs font-bold leading-none tabular-nums text-slate-900">
-                {summary.producingStores.toLocaleString('pt-BR')}
-              </span>
-              {clickable ? (
-                <ChevronRight
-                  className="h-3 w-3 shrink-0 text-slate-300 transition-transform group-hover:translate-x-0.5 group-hover:text-teal-600"
-                  aria-hidden
-                />
-              ) : null}
+      <div className="rounded-xl border border-teal-200/80 bg-teal-50 px-3 py-2.5 shadow-sm">
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex min-w-0 items-center gap-2">
+            <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-white text-teal-700 shadow-sm">
+              <BarChart3 className="h-3.5 w-3.5" aria-hidden />
             </span>
-            <span className="mt-1 block text-[8px] font-semibold uppercase tracking-wide text-slate-500">
+            <div className="min-w-0">
+              <p className="text-[8px] font-semibold uppercase tracking-wide text-teal-700">
+                Produto
+              </p>
+              <p className="truncate text-[11px] font-semibold text-slate-800">
+                {metric.shortLabel || metric.label || 'Produção'}
+              </p>
+            </div>
+          </div>
+          <div className="min-w-0 text-right">
+            <p className="text-[8px] font-semibold uppercase tracking-wide text-teal-700">
+              Produção
+            </p>
+            <p className="truncate text-sm font-bold tabular-nums text-slate-900">
+              {formatHeatmapValue(summary.value, metric.unit)}
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-1.5 grid grid-cols-2 gap-1.5">
+        <button
+          type="button"
+          onClick={onOpenStoresPanel}
+          disabled={!clickable}
+          aria-label={`${summary.storeCount} lojas no total, ${summary.producingStores} com produção. Ver detalhamento.`}
+          title={clickable ? 'Ver lojas do escopo' : undefined}
+          className={`min-w-0 rounded-xl border border-slate-200 bg-white p-2 text-left shadow-sm transition-colors ${
+            clickable
+              ? 'cursor-pointer hover:border-teal-300 hover:bg-teal-50/50'
+              : 'cursor-default'
+          }`}
+        >
+          <span className="flex items-center justify-between gap-1">
+            <span className="flex items-center gap-1 text-[9px] font-semibold uppercase tracking-wide text-slate-600">
+              <Store className="h-3 w-3 shrink-0" aria-hidden />
               Lojas
             </span>
-          </button>
-          <button
-            type="button"
-            onClick={onOpenStoresPanel}
-            disabled={!clickable}
-            aria-label="Ver municípios com produção"
-            title={clickable ? 'Ver detalhamento por município' : undefined}
-            className={`min-w-0 flex-1 px-2 py-2 text-center transition-colors ${
-              clickable ? 'cursor-pointer hover:bg-slate-50' : 'cursor-default'
-            }`}
-          >
-            <span className="block truncate text-xs font-bold leading-none tabular-nums text-slate-900">
-              {summary.municipalitiesWithData.toLocaleString('pt-BR')}
+            <span className="rounded bg-slate-100 px-1 py-0.5 text-[8px] font-semibold tabular-nums text-slate-600">
+              {producingStoresPercentage}%
             </span>
-            <span className="mt-1 block text-[8px] font-semibold uppercase tracking-wide text-slate-500">
+          </span>
+          <span className="mt-1.5 flex items-baseline gap-1">
+            <strong className="text-sm font-bold tabular-nums text-slate-900">
+              {summary.storeCount.toLocaleString('pt-BR')}
+            </strong>
+            <span className="text-[8px] uppercase text-slate-400">total</span>
+          </span>
+          <span className="mt-0.5 block truncate text-[9px] font-medium text-teal-700">
+            {summary.producingStores.toLocaleString('pt-BR')} com produção
+          </span>
+          <span className="mt-1.5 block h-1 overflow-hidden rounded-full bg-slate-100">
+            <span
+              className="block h-full rounded-full bg-teal-600"
+              style={{ width: `${producingStoresPercentage}%` }}
+            />
+          </span>
+        </button>
+
+        <button
+          type="button"
+          onClick={onOpenStoresPanel}
+          disabled={!clickable}
+          aria-label={`${summary.municipalityCount} municípios no total, ${summary.municipalitiesWithData} com produção. Ver detalhamento.`}
+          title={clickable ? 'Ver municípios do escopo' : undefined}
+          className={`min-w-0 rounded-xl border border-slate-200 bg-white p-2 text-left shadow-sm transition-colors ${
+            clickable
+              ? 'cursor-pointer hover:border-teal-300 hover:bg-teal-50/50'
+              : 'cursor-default'
+          }`}
+        >
+          <span className="flex items-center justify-between gap-1">
+            <span className="flex items-center gap-1 text-[9px] font-semibold uppercase tracking-wide text-slate-600">
+              <MapPinned className="h-3 w-3 shrink-0" aria-hidden />
               Municípios
             </span>
-          </button>
-        </div>
+            <span className="rounded bg-slate-100 px-1 py-0.5 text-[8px] font-semibold tabular-nums text-slate-600">
+              {producingMunicipalitiesPercentage}%
+            </span>
+          </span>
+          <span className="mt-1.5 flex items-baseline gap-1">
+            <strong className="text-sm font-bold tabular-nums text-slate-900">
+              {summary.municipalityCount.toLocaleString('pt-BR')}
+            </strong>
+            <span className="text-[8px] uppercase text-slate-400">total</span>
+          </span>
+          <span className="mt-0.5 block truncate text-[9px] font-medium text-teal-700">
+            {summary.municipalitiesWithData.toLocaleString('pt-BR')} com produção
+          </span>
+          <span className="mt-1.5 block h-1 overflow-hidden rounded-full bg-slate-100">
+            <span
+              className="block h-full rounded-full bg-teal-600"
+              style={{ width: `${producingMunicipalitiesPercentage}%` }}
+            />
+          </span>
+        </button>
       </div>
       {summary.excludedStoresWithoutMunicipality > 0 ? (
         <p className="mt-1.5 px-0.5 text-[8px] leading-snug text-slate-400">
@@ -286,10 +353,27 @@ const ProductionHeatmapPanel: React.FC<ProductionHeatmapPanelProps> = ({
   sidePanelExpanded = false,
 }) => {
   const periodIndex = Math.max(0, periods.indexOf(selectedPeriod ?? -1));
-  const groups = useMemo(
-    () => Array.from(new Set(metrics.map((item) => item.group))),
+  const selectableMetrics = useMemo(
+    () => metrics.filter((item) => !item.productKey || item.defaultForProduct),
     [metrics]
   );
+  const groups = useMemo(
+    () => Array.from(new Set(selectableMetrics.map((item) => item.group))),
+    [selectableMetrics]
+  );
+  const selectedMetric = metrics.find((item) => item.id === selectedMetricId) ?? null;
+  const selectedProductVariants = selectedMetric?.productKey
+    ? metrics.filter((item) => item.productKey === selectedMetric.productKey)
+    : [];
+  const selectedCurrencyMetric =
+    selectedProductVariants.find((item) => item.unit === 'currency') ?? null;
+  const selectedQuantityMetric =
+    selectedProductVariants.find((item) => item.unit === 'quantity') ?? null;
+  const metricSelectValue =
+    selectedMetric?.productKey && selectedCurrencyMetric
+      ? selectedCurrencyMetric.id
+      : selectedMetricId;
+  const showMeasureToggle = Boolean(selectedCurrencyMetric && selectedQuantityMetric);
 
   const [isPlaying, setIsPlaying] = useState(false);
   const periodIndexRef = useRef(periodIndex);
@@ -389,7 +473,7 @@ const ProductionHeatmapPanel: React.FC<ProductionHeatmapPanelProps> = ({
             </span>
             <select
               id="production-heatmap-metric"
-              value={selectedMetricId}
+              value={metricSelectValue}
               disabled={optionsLoading}
               onChange={(event) => onMetricChange(event.target.value)}
               className="mt-0.5 w-full truncate bg-transparent text-[11px] font-bold text-slate-800 outline-none disabled:opacity-60"
@@ -397,14 +481,57 @@ const ProductionHeatmapPanel: React.FC<ProductionHeatmapPanelProps> = ({
               <option value="">Selecione uma produção</option>
               {groups.map((group) => (
                 <optgroup key={group} label={group}>
-                  {metrics.filter((item) => item.group === group).map((item) => (
-                    <option key={item.id} value={item.id}>{item.label}</option>
-                  ))}
+                  {selectableMetrics
+                    .filter((item) => item.group === group)
+                    .map((item) => (
+                      <option key={item.id} value={item.id}>
+                        {item.label}
+                      </option>
+                    ))}
                 </optgroup>
               ))}
             </select>
           </span>
         </label>
+
+        {showMeasureToggle ? (
+          <div
+            className="flex h-11 w-[104px] shrink-0 flex-col justify-center rounded-xl border border-slate-200/90 bg-slate-50/85 px-2"
+            aria-label="Medida da produção"
+          >
+            <span className="mb-0.5 text-[8px] font-semibold uppercase tracking-wide text-slate-500">
+              Medida
+            </span>
+            <span className="grid grid-cols-2 overflow-hidden rounded-lg border border-slate-200 bg-white p-0.5">
+              <button
+                type="button"
+                onClick={() => selectedCurrencyMetric && onMetricChange(selectedCurrencyMetric.id)}
+                disabled={optionsLoading || !selectedCurrencyMetric}
+                aria-pressed={selectedMetric?.unit === 'currency'}
+                className={`rounded-md px-1.5 py-0.5 text-[10px] font-bold transition-colors ${
+                  selectedMetric?.unit === 'currency'
+                    ? 'bg-teal-600 text-white shadow-sm'
+                    : 'text-slate-500 hover:bg-slate-100'
+                }`}
+              >
+                R$
+              </button>
+              <button
+                type="button"
+                onClick={() => selectedQuantityMetric && onMetricChange(selectedQuantityMetric.id)}
+                disabled={optionsLoading || !selectedQuantityMetric}
+                aria-pressed={selectedMetric?.unit === 'quantity'}
+                className={`rounded-md px-1.5 py-0.5 text-[10px] font-bold transition-colors ${
+                  selectedMetric?.unit === 'quantity'
+                    ? 'bg-teal-600 text-white shadow-sm'
+                    : 'text-slate-500 hover:bg-slate-100'
+                }`}
+              >
+                QTD
+              </button>
+            </span>
+          </div>
+        ) : null}
 
         <div className="flex h-11 w-[240px] shrink-0 items-center gap-1.5 rounded-xl border border-slate-200/90 bg-slate-50/85 px-2.5 pt-1.5">
           <button
