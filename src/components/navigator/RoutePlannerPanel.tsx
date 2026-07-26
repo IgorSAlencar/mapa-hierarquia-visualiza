@@ -71,6 +71,7 @@ interface Props {
   routeReviewOpen: boolean;
   onRouteReviewOpenChange: (open: boolean) => void;
   plannerStores: SqlMapPoint[];
+  plannerStoresLoading: boolean;
   territory: string | null;
   shellStyle?: CSSProperties;
   headerDragProps?: PanelHeaderDragProps;
@@ -104,6 +105,7 @@ interface PlannerOpportunity extends OpportunitySnapshot {
   nome: string;
   codAg: string;
   nomeAg: string;
+  dataPending: boolean;
   statusTablet: string;
   checklist: ChecklistStatus | null;
   endereco: string;
@@ -183,6 +185,7 @@ function toPlannerOpportunity(
     nome: point.nome,
     codAg: String(point.codAg ?? '').trim(),
     nomeAg: String(point.nomeAg ?? '').trim(),
+    dataPending: point.plannerDataPending === true,
     statusTablet: String(point.statusTablet ?? '').trim(),
     checklist: point.checklist ?? null,
     endereco: String(point.enderecoFormatado ?? '').trim(),
@@ -435,6 +438,7 @@ const RoutePlannerPanel: React.FC<Props> = ({
   routeReviewOpen,
   onRouteReviewOpenChange,
   plannerStores,
+  plannerStoresLoading,
   territory,
   shellStyle,
   headerDragProps,
@@ -1178,7 +1182,7 @@ const RoutePlannerPanel: React.FC<Props> = ({
     : null;
 
   if (!journeyComplete) {
-    return <div style={shellStyle} className="max-w-[calc(100vw-32px)]"><RoutePlanningJourney agencies={agencies} originId={originId} destination={destination} initialScreen={journeyStartScreen} initialPriority={planningPriority} initialOriginStore={originStore} initialOriginLocation={originLocation} initialDestinationLocation={destinationLocation} onClose={onClose} onOriginAgencySelect={(agency) => {
+    return <div style={shellStyle} className="max-w-[calc(100vw-32px)]"><RoutePlanningJourney agencies={agencies} originId={originId} destination={destination} initialScreen={journeyStartScreen} initialPriority={planningPriority} initialOriginStore={originStore} initialOriginLocation={originLocation} initialDestinationLocation={destinationLocation} onBack={onBack} onClose={onClose} onOriginAgencySelect={(agency) => {
       setOriginStore(null);
       setOriginLocation(null);
       onAgencyFocus?.(agency);
@@ -1228,6 +1232,7 @@ const RoutePlannerPanel: React.FC<Props> = ({
     {!routeReviewOpen && <RouteOpportunitiesSidePanel
       minimized={resultsMinimized}
       stores={suggestions}
+      loading={plannerStoresLoading}
       selectedIds={selectedIds}
       priorityByStoreId={opportunityClassifications}
       summary={{

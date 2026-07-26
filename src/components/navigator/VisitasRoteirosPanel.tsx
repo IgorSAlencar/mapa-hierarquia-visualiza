@@ -169,12 +169,27 @@ const VisitasRoteirosPanel: React.FC<VisitasRoteirosPanelProps> = ({
     const coordinationKeys = new Set(coordenacoes.filter((item) => item.chaveGerenciaArea === chave).map((item) => item.chave));
     return supervisoes.filter((item) => item.chaveGerenciaArea === chave || (item.chaveCoordenacao && coordinationKeys.has(item.chaveCoordenacao)));
   };
+  const coordenacoesNoNivelAtual = user?.role === 'gerente_area'
+    ? coordenacoes
+    : gerenciaSel
+      ? coordenacoes.filter((item) => item.chaveGerenciaArea === gerenciaSel.chave)
+      : [];
+  const coordenacaoEfetiva = user?.role === 'gerente_area' && coordenacoesNoNivelAtual.length === 1
+    ? coordenacoesNoNivelAtual[0]
+    : coordenacaoSel;
+  const supervisoesNoNivelAtual = user?.role === 'coordenador'
+    ? supervisoes
+    : coordenacaoEfetiva
+      ? supervisoesDaCoordenacao(coordenacaoEfetiva.chave)
+      : [];
   const supervisoesEscopo = useMemo(() => {
-    if (coordenacaoSel) return supervisoesDaCoordenacao(coordenacaoSel.chave);
+    if (user?.role === 'coordenador') return supervisoes;
+    if (coordenacaoEfetiva) return supervisoesDaCoordenacao(coordenacaoEfetiva.chave);
+    if (user?.role === 'gerente_area') return supervisoes;
     if (gerenciaSel) return supervisoesDaGerencia(gerenciaSel.chave);
     return supervisoes;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [coordenacaoSel, coordenacoes, gerenciaSel, supervisoes]);
+  }, [coordenacaoEfetiva, coordenacoes, gerenciaSel, supervisoes, user?.role]);
 
   const groupedHistory = useMemo(() => {
     const groups = new Map<string, VisitRouteSummary[]>();
@@ -196,7 +211,7 @@ const VisitasRoteirosPanel: React.FC<VisitasRoteirosPanelProps> = ({
       destaqueAtivo: routeCount > 0,
     };
   });
-  const coordenacaoCards: LevelCardOption[] = (gerenciaSel ? coordenacoes.filter((item) => item.chaveGerenciaArea === gerenciaSel.chave) : []).map((item) => {
+  const coordenacaoCards: LevelCardOption[] = coordenacoesNoNivelAtual.map((item) => {
     const scope = supervisoesDaCoordenacao(item.chave);
     const routeCount = scope.reduce((total, supervision) => total + (summaryBySupervision.get(supervision.chave)?.routes ?? 0), 0);
     return {
@@ -208,13 +223,27 @@ const VisitasRoteirosPanel: React.FC<VisitasRoteirosPanelProps> = ({
     };
   });
 
-  const breadcrumbSteps: BreadcrumbStep[] = ownerSel
-    ? [{ label: user?.role === 'supervisor' ? 'Meus roteiros' : ownerSel.nome }]
-    : [
-        { label: 'Gerências', onClick: gerenciaSel ? () => { setGerenciaSel(null); setCoordenacaoSel(null); } : undefined },
-        ...(gerenciaSel ? [{ label: gerenciaSel.descricao, onClick: coordenacaoSel ? () => setCoordenacaoSel(null) : undefined }] : []),
-        ...(coordenacaoSel ? [{ label: coordenacaoSel.descricao }] : []),
-      ];
+  let breadcrumbSteps: BreadcrumbStep[];
+  if (ownerSel) {
+    breadcrumbSteps = [{ label: user?.role === 'supervisor' ? 'Meus roteiros' : ownerSel.nome }];
+  } else if (user?.role === 'coordenador') {
+    breadcrumbSteps = [{
+      label: coordenacoes.length === 1 ? coordenacoes[0].descricao : 'Meus gerentes comerciais',
+    }];
+  } else if (user?.role === 'gerente_area') {
+    breadcrumbSteps = coordenacaoEfetiva && coordenacoesNoNivelAtual.length > 1
+      ? [
+          { label: 'Gerentes Comerciais III', onClick: () => setCoordenacaoSel(null) },
+          { label: coordenacaoEfetiva.descricao },
+        ]
+      : [{ label: coordenacaoEfetiva?.descricao ?? 'Gerentes Comerciais III' }];
+  } else {
+    breadcrumbSteps = [
+      { label: 'Gerências', onClick: gerenciaSel ? () => { setGerenciaSel(null); setCoordenacaoSel(null); } : undefined },
+      ...(gerenciaSel ? [{ label: gerenciaSel.descricao, onClick: coordenacaoSel ? () => setCoordenacaoSel(null) : undefined }] : []),
+      ...(coordenacaoSel ? [{ label: coordenacaoSel.descricao }] : []),
+    ];
+  }
 
   const openRoute = async (summary: VisitRouteSummary) => {
     setLoadingRouteId(summary.id);
@@ -301,14 +330,13 @@ const VisitasRoteirosPanel: React.FC<VisitasRoteirosPanelProps> = ({
                       <div className="flex items-center gap-2 border-b border-slate-100 bg-slate-50 px-3 py-2">
                         <CalendarDays className="h-3.5 w-3.5 text-violet-600" />
                         <p className="flex-1 text-[11px] font-bold capitalize text-slate-800">{dateLabel(group.date)}</p>
-                        {group.versions.length > 1 && <button type="button" onClick={() => setExpandedDates((current) => expanded ? current.filter((date) => date !== group.date) : [...current, group.date])} className="flex items-center gap-1 text-[9px] font-semibold text-violet-700">{group.versions.length} versões <ChevronDown className={cn('h-3 w-3 transition', expanded && 'rotate-180')} /></button>}
+                        {group.versions.length > 1 && <button type="button" onClick={() => setExpandedDates((current) => expanded ? current.filter((date) => date !== group.date) : [...current, group.date])} className="flex items-center gap-1 text-[9px] font-semibold text-violet-700">{group.versions.length} salvos <ChevronDown className={cn('h-3 w-3 transition', expanded && 'rotate-180')} /></button>}
                       </div>
                       <div className="divide-y divide-slate-100">
                         {visibleVersions.map((route) => (
                           <div key={route.id} className={cn('px-3 py-2.5', activeRoute?.id === route.id && 'bg-blue-50/60')}>
                             <div className="flex items-start gap-2">
-                              <div className="min-w-0 flex-1"><p className="truncate text-xs font-bold text-slate-900">{route.nome}</p><p className="mt-1 text-[9px] text-slate-500">v{route.version} · salva em {savedAtLabel(route.savedAt)} por {route.createdBy.nome}</p></div>
-                              <span className="rounded-md bg-violet-50 px-1.5 py-0.5 text-[9px] font-bold text-violet-700">v{route.version}</span>
+                              <div className="min-w-0 flex-1"><p className="truncate text-xs font-bold text-slate-900">{route.nome}</p><p className="mt-1 text-[9px] text-slate-500">Salvo em {savedAtLabel(route.savedAt)} por {route.createdBy.nome}</p></div>
                             </div>
                             <div className="mt-2 flex items-center gap-2 text-[9px] font-semibold text-slate-600"><span>{route.stopCount} visitas</span><span>·</span><span>{Math.max(1, Math.round(route.distanceMeters / 1000))} km</span><span>·</span><span>{durationLabel(route.durationMinutes)}</span></div>
                             <div className="mt-2 flex gap-2">
@@ -345,11 +373,17 @@ const VisitasRoteirosPanel: React.FC<VisitasRoteirosPanelProps> = ({
         ) : (
           <>
             <div className="space-y-1.5"><p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Visão geral</p><RegionOverviewCards supervisoes={supervisoesEscopo} summaries={todaySummary} /></div>
-            {!gerenciaSel && <HierarchyLevelCards options={gerenciaCards} onSelect={(key) => setGerenciaSel(gerencias.find((item) => item.chave === key) ?? null)} emptyMessage="Nenhuma Gerência disponível." />}
-            {gerenciaSel && !coordenacaoSel && <HierarchyLevelCards options={coordenacaoCards} onSelect={(key) => setCoordenacaoSel(coordenacoes.find((item) => item.chave === key) ?? null)} emptyMessage="Nenhum Gerente Comercial III nesta gerência." />}
-            {coordenacaoSel && (
+            {user?.role === 'admin' && !gerenciaSel && <HierarchyLevelCards options={gerenciaCards} onSelect={(key) => setGerenciaSel(gerencias.find((item) => item.chave === key) ?? null)} emptyMessage="Nenhuma Gerência disponível." />}
+            {((user?.role === 'admin' && gerenciaSel && !coordenacaoEfetiva) || (user?.role === 'gerente_area' && !coordenacaoEfetiva)) && (
+              <HierarchyLevelCards
+                options={coordenacaoCards}
+                onSelect={(key) => setCoordenacaoSel(coordenacoes.find((item) => item.chave === key) ?? null)}
+                emptyMessage="Nenhum Gerente Comercial III disponível."
+              />
+            )}
+            {(user?.role === 'coordenador' || coordenacaoEfetiva) && (
               <div className="space-y-2">
-                {supervisoesDaCoordenacao(coordenacaoSel.chave).map((item) => {
+                {supervisoesNoNivelAtual.map((item) => {
                   const owner = ownersBySupervision.get(item.chave);
                   const today = summaryBySupervision.get(item.chave);
                   return (
@@ -359,6 +393,11 @@ const VisitasRoteirosPanel: React.FC<VisitasRoteirosPanelProps> = ({
                     </button>
                   );
                 })}
+                {supervisoesNoNivelAtual.length === 0 && (
+                  <p className="rounded-xl border border-dashed border-slate-200 p-3 text-xs text-slate-500">
+                    Nenhum Gerente Comercial disponível.
+                  </p>
+                )}
               </div>
             )}
           </>
@@ -371,7 +410,7 @@ const VisitasRoteirosPanel: React.FC<VisitasRoteirosPanelProps> = ({
             <AlertDialogTitle>Excluir roteiro salvo?</AlertDialogTitle>
             <AlertDialogDescription>
               {routePendingDelete
-                ? `O roteiro "${routePendingDelete.nome}" (v${routePendingDelete.version}) será removido permanentemente do histórico e do banco de dados.`
+                ? `O roteiro "${routePendingDelete.nome}" será removido permanentemente do histórico e do banco de dados.`
                 : 'O roteiro será removido permanentemente.'}
             </AlertDialogDescription>
           </AlertDialogHeader>

@@ -122,6 +122,7 @@ const Index = () => {
   const [plannerOriginAgency, setPlannerOriginAgency] = useState<PlannerRouteEndpoint | null>(null);
   const [plannerDestination, setPlannerDestination] = useState<PlannerRouteEndpoint | null>(null);
   const [plannerSqlStores, setPlannerSqlStores] = useState<SqlMapPoint[]>([]);
+  const [plannerStoresLoading, setPlannerStoresLoading] = useState(false);
   const [plannerSelectedStoreIds, setPlannerSelectedStoreIds] = useState<string[]>([]);
   const [plannerVisibleStoreIds, setPlannerVisibleStoreIds] = useState<string[] | null>(null);
   const [plannerOpportunityFocus, setPlannerOpportunityFocus] = useState<PlannerOpportunityFocus | null>(null);
@@ -558,6 +559,7 @@ const Index = () => {
       setPlannerOriginAgency(null);
       setPlannerDestination(null);
       setPlannerSqlStores([]);
+      setPlannerStoresLoading(false);
       setPlannerSelectedStoreIds([]);
       setPlannerVisibleStoreIds(null);
       setPlannerOpportunityFocus(null);
@@ -754,7 +756,11 @@ const Index = () => {
       {/* O planejador é irmão do painel Navegar: minimizar o menu não desmonta o roteiro. */}
       {activeSection === 'planejar' && (
         <RoutePlannerPanel
-          onBack={() => handleSelectSection(null)}
+          onBack={() => {
+            handleSelectSection(null);
+            navigatorDrag.setPosition(NAVIGATOR_PANEL_DOCK);
+            setNavigatorMinimized(false);
+          }}
           onClose={() => handleSelectSection(null)}
           onRouteChange={handleRouteChange}
           onAgencyFocus={handlePlannerOriginAgencyFocus}
@@ -774,6 +780,7 @@ const Index = () => {
           routeReviewOpen={plannerRouteReviewOpen}
           onRouteReviewOpenChange={setPlannerRouteReviewOpen}
           plannerStores={plannerSqlStores}
+          plannerStoresLoading={plannerStoresLoading}
           territory={plannerTerritory}
           shellStyle={plannerDrag.shellStyle}
           headerDragProps={plannerDrag.headerDragProps}
@@ -959,6 +966,7 @@ const Index = () => {
           plannerStoreClassifications={plannerStoreClassifications}
           plannerResultsPanelExpanded={plannerResultsPanelExpanded}
           onPlannerStoresChange={setPlannerSqlStores}
+          onPlannerStoresLoadingChange={setPlannerStoresLoading}
           distanceAnalysisMode={activeSection === 'distancia'}
           onDistanceAnalysisPointSelect={(point: DistanceAnalysisMapPoint) => {
             setDistanceMapSelection({ tick: Date.now(), point });

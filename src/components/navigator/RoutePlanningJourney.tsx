@@ -8,7 +8,6 @@ import {
   CheckCircle2,
   Clock3,
   ListChecks,
-  Map,
   MapPin,
   Navigation,
   Route,
@@ -58,6 +57,7 @@ interface Props {
   initialScreen?: RoutePlanningScreen;
   initialPriority?: PlanningPriority;
   initialDestinationLocation?: DeviceLocation | null;
+  onBack: () => void;
   onClose: () => void;
   onComplete: (result: JourneyResult) => void;
   initialOriginStore?: SqlMapPoint | null;
@@ -104,7 +104,7 @@ const ROUTE_PLANNER_HERO_EDGE_FADE: React.CSSProperties = {
   WebkitMaskComposite: 'source-in',
 };
 
-const RoutePlanningJourney: React.FC<Props> = ({ agencies, originId, destination, initialScreen = 0, initialPriority = 'inteligente', initialOriginStore = null, initialOriginLocation = null, initialDestinationLocation = null, onClose, onComplete, onOriginAgencySelect, onOriginStoreSelect, onOriginLocationSelect, onDestinationAgencySelect, onDestinationLocationSelect, onDestinationClear, onTerritoryRadiusSelect, headerDragProps }) => {
+const RoutePlanningJourney: React.FC<Props> = ({ agencies, originId, destination, initialScreen = 0, initialPriority = 'inteligente', initialOriginStore = null, initialOriginLocation = null, initialDestinationLocation = null, onBack, onClose, onComplete, onOriginAgencySelect, onOriginStoreSelect, onOriginLocationSelect, onDestinationAgencySelect, onDestinationLocationSelect, onDestinationClear, onTerritoryRadiusSelect, headerDragProps }) => {
   const initialDestinationAgencyId = agencies.find((agency) =>
     agency.nome === destination || agencyLabel(agency) === destination
   )?.id ?? '';
@@ -240,7 +240,7 @@ const RoutePlanningJourney: React.FC<Props> = ({ agencies, originId, destination
 
   if (screen === 0) {
     return (
-      <JourneyShell title="Montar meu roteiro" onClose={onClose} headerDragProps={headerDragProps}>
+      <JourneyShell title="Montar meu roteiro" onBack={onBack} onClose={onClose} headerDragProps={headerDragProps}>
         <div className="route-planning-welcome-body flex min-h-0 flex-col overflow-hidden px-3 pb-3 pt-1 sm:px-6 sm:pb-5 sm:pt-2">
           <div className="route-planning-stage min-h-0 overflow-hidden">
             <div className="route-planning-welcome-hero relative mx-auto w-full max-w-[400px] shrink-0 sm:max-w-[420px]">
@@ -300,7 +300,7 @@ const RoutePlanningJourney: React.FC<Props> = ({ agencies, originId, destination
   }
 
   return (
-    <JourneyShell title="Montar meu roteiro" step={screen} onClose={onClose} headerDragProps={headerDragProps}>
+    <JourneyShell title="Montar meu roteiro" step={screen} onBack={onBack} onClose={onClose} headerDragProps={headerDragProps}>
       <div className="route-planning-step-body flex min-h-0 flex-col overflow-hidden px-3 pb-3 pt-3 sm:px-7 sm:pb-5 sm:pt-5">
         <div className="route-planning-stage min-h-0 overflow-hidden">
           {screen === 1 && <>
@@ -361,9 +361,9 @@ const RoutePlanningJourney: React.FC<Props> = ({ agencies, originId, destination
   );
 };
 
-function JourneyShell({ title, step, onClose, children, headerDragProps }: { title: string; step?: number; onClose: () => void; children: React.ReactNode; headerDragProps?: PanelHeaderDragProps }) {
+function JourneyShell({ title, step, onBack, onClose, children, headerDragProps }: { title: string; step?: number; onBack: () => void; onClose: () => void; children: React.ReactNode; headerDragProps?: PanelHeaderDragProps }) {
   const header = mergeHeaderDrag('flex shrink-0 items-center gap-2 border-b border-slate-200 px-3 py-2', headerDragProps);
-  return <section className="route-planning-journey pointer-events-auto flex min-h-0 min-w-0 flex-col overflow-hidden rounded-xl border border-slate-200 bg-white font-sans text-slate-700 shadow-2xl shadow-slate-900/20"><header className={header.className} style={header.dragStyle} {...header.dragHandlers} title="Arraste para mover"><span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-blue-50 text-blue-700"><Map className="h-3.5 w-3.5" /></span><h1 className="min-w-0 flex-1 truncate text-xs font-bold uppercase tracking-wide text-slate-900">{title}</h1>{step ? <span className="shrink-0 text-[10px] font-medium text-slate-500">Passo {step} de 4</span> : null}<button type="button" data-panel-drag-ignore onClick={onClose} className="shrink-0 rounded-lg p-1.5 text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-700"><X className="h-4 w-4" /></button></header>{step ? <div className="route-planning-progress mx-3 mt-2 h-0.5 shrink-0 rounded-full bg-slate-100"><div className="h-full rounded-full bg-blue-700 transition-all" style={{ width: `${step * 25}%` }} /></div> : null}{children}</section>;
+  return <section className="route-planning-journey pointer-events-auto flex min-h-0 min-w-0 flex-col overflow-hidden rounded-xl border border-slate-200 bg-white font-sans text-slate-700 shadow-2xl shadow-slate-900/20"><header className={header.className} style={header.dragStyle} {...header.dragHandlers} title="Arraste para mover"><button type="button" data-panel-drag-ignore onClick={onBack} className="shrink-0 rounded-lg p-1.5 text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-700" aria-label="Voltar para o painel Navegar"><ArrowLeft className="h-4 w-4" /></button><h1 className="min-w-0 flex-1 truncate text-xs font-bold uppercase tracking-wide text-slate-900">{title}</h1>{step ? <span className="shrink-0 text-[10px] font-medium text-slate-500">Passo {step} de 4</span> : null}<button type="button" data-panel-drag-ignore onClick={onClose} className="shrink-0 rounded-lg p-1.5 text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-700" aria-label="Fechar montagem do roteiro"><X className="h-4 w-4" /></button></header>{step ? <div className="route-planning-progress mx-3 mt-2 h-0.5 shrink-0 rounded-full bg-slate-100"><div className="h-full rounded-full bg-blue-700 transition-all" style={{ width: `${step * 25}%` }} /></div> : null}{children}</section>;
 }
 
 function JourneyTitle({ title, subtitle }: { title: string; subtitle: string }) {

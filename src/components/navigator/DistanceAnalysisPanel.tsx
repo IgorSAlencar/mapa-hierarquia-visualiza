@@ -9,11 +9,13 @@ import {
   Building2,
   CarFront,
   Check,
+  ChevronUp,
   Clock3,
   ExternalLink,
   Footprints,
   Loader2,
   MapPin,
+  Minus,
   Navigation,
   RefreshCw,
   Route,
@@ -474,7 +476,9 @@ function EndpointField({
                 autoComplete="off"
               />
               {(loading || (kind === 'agencia' && agenciesLoading)) ? (
-                <Loader2 className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-blue-600" />
+                <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-blue-600">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                </span>
               ) : null}
             </div>
 
@@ -542,6 +546,7 @@ const DistanceAnalysisPanel: React.FC<DistanceAnalysisPanelProps> = ({
   const [destination, setDestination] = useState<DistanceEndpoint | null>(null);
   const [mode, setMode] = useState<TravelMode>('driving');
   const [modePopupOpen, setModePopupOpen] = useState(false);
+  const [minimized, setMinimized] = useState(false);
   const [result, setResult] = useState<DistanceResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -578,6 +583,7 @@ const DistanceAnalysisPanel: React.FC<DistanceAnalysisPanelProps> = ({
     setLoading(false);
     setError(null);
     setModePopupOpen(false);
+    setMinimized(false);
     onRouteChange(null);
 
     const endpoint: DistanceEndpoint = mapSelection.point;
@@ -621,6 +627,11 @@ const DistanceAnalysisPanel: React.FC<DistanceAnalysisPanelProps> = ({
     requestIdRef.current += 1;
     setLoading(false);
     setModePopupOpen(false);
+  };
+
+  const returnToAnalysisPanel = () => {
+    closeModePopup();
+    setMinimized(false);
   };
 
   const updateOrigin = (endpoint: DistanceEndpoint | null) => {
@@ -750,12 +761,38 @@ const DistanceAnalysisPanel: React.FC<DistanceAnalysisPanelProps> = ({
     'flex shrink-0 items-center gap-2 border-b border-slate-200/80 px-3 py-2.5',
     headerDragProps
   );
+  const minimizedHeader = mergeHeaderDrag(
+    'pointer-events-auto flex w-[300px] max-w-[calc(100vw-32px)] items-center gap-2 rounded-2xl border border-slate-200/90 bg-white/95 px-3 py-2.5 shadow-xl shadow-slate-900/10 backdrop-blur-md',
+    headerDragProps
+  );
 
   return (
     <>
-    <section
+    {minimized ? (
+      <div
+        style={{ ...shellStyle, ...minimizedHeader.dragStyle }}
+        className={minimizedHeader.className}
+        {...minimizedHeader.dragHandlers}
+        aria-label="Análise de distância minimizada"
+      >
+        <p className="min-w-0 flex-1 truncate text-xs font-bold uppercase tracking-wide text-slate-900">
+          Análise de Distância
+        </p>
+        <button
+          type="button"
+          data-panel-drag-ignore
+          onClick={() => setMinimized(false)}
+          className="rounded-lg p-1.5 text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-700"
+          aria-label="Restaurar análise de distância"
+          title="Restaurar"
+        >
+          <ChevronUp className="h-4 w-4" />
+        </button>
+      </div>
+    ) : (
+      <section
       style={{ ...shellStyle, maxHeight: 'calc(100vh - 250px)' }}
-      className="pointer-events-auto flex max-h-[calc(100vh-110px)] w-[430px] max-w-[calc(100vw-32px)] flex-col overflow-hidden rounded-2xl border border-slate-200/90 bg-white/95 shadow-2xl shadow-slate-900/15 backdrop-blur-md"
+      className="pointer-events-auto flex max-h-[calc(100vh-110px)] w-[400px] max-w-[calc(100vw-32px)] flex-col overflow-hidden rounded-2xl border border-slate-200/90 bg-white/95 shadow-2xl shadow-slate-900/15 backdrop-blur-md"
       aria-label="Análise de distância"
     >
       <header
@@ -773,15 +810,22 @@ const DistanceAnalysisPanel: React.FC<DistanceAnalysisPanelProps> = ({
         >
           <ArrowLeft className="h-4 w-4" />
         </button>
-        <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-sky-50 text-sky-700">
-          <Route className="h-3.5 w-3.5" />
-        </span>
         <div className="min-w-0 flex-1">
           <h2 className="truncate text-xs font-bold uppercase tracking-wide text-slate-900">
             Análise de Distância
           </h2>
           <p className="truncate text-[9px] text-slate-500">Compare o trajeto antes de sair</p>
         </div>
+        <button
+          type="button"
+          data-panel-drag-ignore
+          onClick={() => setMinimized(true)}
+          className="rounded-lg p-1.5 text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-700"
+          aria-label="Minimizar análise de distância"
+          title="Minimizar"
+        >
+          <Minus className="h-4 w-4" />
+        </button>
         <button
           type="button"
           data-panel-drag-ignore
@@ -845,6 +889,7 @@ const DistanceAnalysisPanel: React.FC<DistanceAnalysisPanelProps> = ({
             onClick={() => {
               setError(null);
               setModePopupOpen(true);
+              setMinimized(true);
             }}
             className="group flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-blue-700 to-sky-600 px-4 py-3 text-sm font-semibold text-white shadow-lg shadow-blue-200/80 transition-all hover:-translate-y-0.5 hover:shadow-xl disabled:cursor-not-allowed disabled:translate-y-0 disabled:opacity-45 disabled:shadow-none"
           >
@@ -853,7 +898,8 @@ const DistanceAnalysisPanel: React.FC<DistanceAnalysisPanelProps> = ({
           </button>
         </div>
       </div>
-    </section>
+      </section>
+    )}
 
     {modePopupOpen && origin && destination ? (
             <section
@@ -868,9 +914,18 @@ const DistanceAnalysisPanel: React.FC<DistanceAnalysisPanelProps> = ({
               className="pointer-events-auto flex w-[430px] max-w-[calc(100vw-32px)] animate-in flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl shadow-slate-950/20 fade-in slide-in-from-right-4 duration-300"
             >
               <header className="flex shrink-0 items-center gap-3 border-b border-slate-200 px-4 py-3">
-                <span className="flex h-8 w-8 items-center justify-center rounded-xl bg-blue-50 text-blue-700">
-                  {mode === 'driving' ? <CarFront className="h-4 w-4" /> : <Footprints className="h-4 w-4" />}
-                </span>
+                <button
+                  type="button"
+                  onClick={returnToAnalysisPanel}
+                  className="group relative flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-blue-50 text-blue-700 transition-colors hover:bg-blue-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-300"
+                  aria-label="Voltar para Análise de Distância"
+                  title="Voltar para Análise de Distância"
+                >
+                  <span className="transition-opacity group-hover:opacity-0 group-focus-visible:opacity-0">
+                    {mode === 'driving' ? <CarFront className="h-4 w-4" /> : <Footprints className="h-4 w-4" />}
+                  </span>
+                  <ArrowLeft className="absolute h-4 w-4 opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100" />
+                </button>
                 <div className="min-w-0 flex-1">
                   <h2 id="distance-mode-title" className="text-sm font-bold text-slate-900">Como você vai?</h2>
                   <p className="text-[10px] text-slate-500">Escolha o tipo de rota e gere sua jornada.</p>

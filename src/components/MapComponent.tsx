@@ -1803,7 +1803,9 @@ function resolveSeatPointsFetchHierarchy(
 /** Distância máxima das lojas cinzas até a rota: 20 km para cada lado. */
 const PLANNER_ROUTE_CORRIDOR_KM = 20;
 const PLANNER_ROUTE_PREFETCH_MARGIN_KM = 8;
-const PLANNER_ROUTE_FETCH_LIMIT = 800;
+const PLANNER_ROUTE_PREFETCH_LIMIT = 800;
+const PLANNER_ROUTE_DETAIL_LIMIT = 420;
+const PLANNER_ROUTE_ENDPOINT_LIMIT = 200;
 const PLANNER_ROUTE_MAX_VISIBLE_STORES = 300;
 const HIDDEN_OVERLAY_SOURCE_SIGNATURE = '__hidden__';
 const EMPTY_PLANNER_SELECTED_STORE_IDS: string[] = [];
@@ -1870,13 +1872,6 @@ function plannerCorridorBbox(
     maxLng: Math.max(...lngs) + lngPad,
     maxLat: Math.max(...lats) + latPad,
   };
-}
-
-function bboxContains(outer: BboxQuery, inner: BboxQuery): boolean {
-  return outer.minLng <= inner.minLng &&
-    outer.minLat <= inner.minLat &&
-    outer.maxLng >= inner.maxLng &&
-    outer.maxLat >= inner.maxLat;
 }
 
 function distanceToPlannerSegmentKm(
@@ -2058,6 +2053,7 @@ interface MapComponentProps {
   plannerStoreClassifications?: Record<string, 'alta' | 'media' | 'baixa'>;
   plannerResultsPanelExpanded?: boolean;
   onPlannerStoresChange?: (points: SqlMapPoint[]) => void;
+  onPlannerStoresLoadingChange?: (loading: boolean) => void;
   distanceAnalysisMode?: boolean;
   onDistanceAnalysisPointSelect?: (point: DistanceAnalysisMapPoint) => void;
   /** Painéis flutuantes do Navegar (abaixo da UI do mapa: busca, AG, lojas, equipe). */
@@ -2257,6 +2253,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
   plannerStoreClassifications = {},
   plannerResultsPanelExpanded = false,
   onPlannerStoresChange,
+  onPlannerStoresLoadingChange,
   distanceAnalysisMode = false,
   onDistanceAnalysisPointSelect,
   navigatorOverlays,
@@ -2457,6 +2454,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
   const [sqlStorePoints, setSqlStorePoints] = useState<SqlMapPoint[]>([]);
   /** Lojas temporárias do planejador; não altera os toggles/filtros globais do mapa. */
   const [plannerStorePoints, setPlannerStorePoints] = useState<SqlMapPoint[]>([]);
+  const [plannerStoresLoading, setPlannerStoresLoading] = useState(false);
   const plannerStorePointsRef = useRef<SqlMapPoint[]>([]);
   plannerStorePointsRef.current = plannerStorePoints;
   const visiblePlannerStorePoints = useMemo(() => {
@@ -3555,6 +3553,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
   useEffect(() => {
     if (!plannerMode || !plannerAgencyFocus || plannerRouteAgencies || plannerTerritoryFocus) return;
     const fetchGen = ++plannerStoreFetchGenRef.current;
+    setPlannerStoresLoading(true);
     const agencyKey = normalizeCodAgKey(plannerAgencyFocus.codAg);
     const cached = [...overlayStoreCacheRef.current.values()]
       .filter((point) => normalizeCodAgKey(point.codAg) === agencyKey)
@@ -3569,10 +3568,12 @@ const MapComponent: React.FC<MapComponentProps> = ({
         if (fetchGen !== plannerStoreFetchGenRef.current) return;
         const originStores = points.map((point) => ({ ...point, routeRole: 'origin' as const }));
         setPlannerStorePoints(originStores);
+        setPlannerStoresLoading(false);
       })
       .catch((error) => {
         if (fetchGen === plannerStoreFetchGenRef.current) {
           console.error('Falha ao carregar lojas da origem do roteiro:', error);
+          setPlannerStoresLoading(false);
         }
       });
   }, [plannerAgencyFocus, plannerMode, plannerRouteAgencies, plannerTerritoryFocus]);
@@ -3631,6 +3632,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
     if (!plannerMode || !plannerTerritoryFocus) return;
     let active = true;
     const fetchGen = ++plannerStoreFetchGenRef.current;
+    setPlannerStoresLoading(true);
     const { center, radiusKm } = plannerTerritoryFocus;
     const originKey = normalizeCodAgKey(plannerAgencyFocus?.codAg);
     const bbox = plannerCorridorBbox([center], radiusKm);
@@ -3656,10 +3658,12 @@ const MapComponent: React.FC<MapComponentProps> = ({
               : 'corridor' as const,
           }));
         setPlannerStorePoints(territoryStores);
+        setPlannerStoresLoading(false);
       })
       .catch((error) => {
         if (active && fetchGen === plannerStoreFetchGenRef.current) {
           console.error('Falha ao carregar lojas do território do roteiro:', error);
+          setPlannerStoresLoading(false);
         }
       });
 
@@ -3671,6 +3675,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
     let active = true;
     let emitTimer: number | null = null;
     const fetchGen = ++plannerStoreFetchGenRef.current;
+    setPlannerStoresLoading(true);
     const { origin, destination } = plannerRouteAgencies;
     const routeId = `planner-preview-${origin.id}-${destination.id}`;
     const originKey = normalizeCodAgKey(origin.codAg);
@@ -3695,7 +3700,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
         emitTimer = window.setTimeout(() => {
           emitTimer = null;
           if (isCurrent()) setPlannerStorePoints([...visible.values()]);
-        }, 80);
+        }, 32);
       };
       const replaceCorridorStores = (
         points: SqlMapPoint[],
@@ -3718,17 +3723,32 @@ const MapComponent: React.FC<MapComponentProps> = ({
       };
 
       const fallbackRouteCoordinates: [number, number][] = [origin.lngLat, destination.lngLat];
+      const cachedCorridorStores = [...overlayStoreCacheRef.current.values()]
+        .filter((point) =>
+          distanceToPlannerRouteKm(point.lngLat, fallbackRouteCoordinates) <= PLANNER_ROUTE_CORRIDOR_KM
+        );
+      replaceCorridorStores(cachedCorridorStores, fallbackRouteCoordinates);
+
       const preliminaryBbox = plannerCorridorBbox(
         fallbackRouteCoordinates,
         PLANNER_ROUTE_CORRIDOR_KM + PLANNER_ROUTE_PREFETCH_MARGIN_KM
       );
       const preliminaryStoresPromise = fetchStorePoints({
         bbox: preliminaryBbox,
-        limit: PLANNER_ROUTE_FETCH_LIMIT,
+        limit: PLANNER_ROUTE_PREFETCH_LIMIT,
         hierarchy: null,
+        mapOnly: true,
       }).catch((error) => {
         if (isCurrent()) console.error('Falha ao antecipar lojas do corredor:', error);
         return [] as SqlMapPoint[];
+      });
+      // Publica uma primeira seleção pelo corredor em linha reta enquanto a
+      // geometria viária é calculada. A lista aparece cedo e é refinada depois.
+      void preliminaryStoresPromise.then((points) => {
+        replaceCorridorStores(
+          points.map((point) => ({ ...point, plannerDataPending: true })),
+          fallbackRouteCoordinates
+        );
       });
 
       const routeCoordinatesPromise = fetchDrivingGeometry(routeId, [
@@ -3741,7 +3761,11 @@ const MapComponent: React.FC<MapComponentProps> = ({
       ): Promise<{ points: SqlMapPoint[]; routeRole: 'origin' | 'destination' }> => {
         if (!codAg) return { points: [], routeRole };
         try {
-          const points = await fetchStorePoints({ codAg, hierarchy: null });
+          const points = await fetchStorePoints({
+            codAg,
+            limit: PLANNER_ROUTE_ENDPOINT_LIMIT,
+            hierarchy: null,
+          });
           return { points, routeRole };
         } catch (error) {
           if (isCurrent()) console.error(`Falha ao carregar lojas de ${routeRole}:`, error);
@@ -3753,7 +3777,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
       if (originKey !== destinationKey) {
         endpointRequests.push(fetchEndpointStores(destination.codAg, 'destination'));
       }
-      void Promise.all(endpointRequests).then((groups) => {
+      const endpointStoresPromise = Promise.all(endpointRequests).then((groups) => {
         if (!isCurrent()) return;
         for (const { points, routeRole } of groups) {
           for (const point of points) {
@@ -3769,21 +3793,22 @@ const MapComponent: React.FC<MapComponentProps> = ({
       if (!active || fetchGen !== plannerStoreFetchGenRef.current) return;
 
       const corridorBbox = plannerCorridorBbox(routeCoordinates, PLANNER_ROUTE_CORRIDOR_KM);
-      const areaStores = bboxContains(preliminaryBbox, corridorBbox)
-        ? await preliminaryStoresPromise
-        : await fetchStorePoints({
-            bbox: corridorBbox,
-            limit: PLANNER_ROUTE_FETCH_LIMIT,
-            hierarchy: null,
-          });
+      // Segunda fase: busca os indicadores completos somente para a caixa
+      // refinada pela rota viária; a consulta leve acima não compete com ela.
+      const areaStores = await fetchStorePoints({
+        bbox: corridorBbox,
+        limit: PLANNER_ROUTE_DETAIL_LIMIT,
+        hierarchy: null,
+      });
       if (!isCurrent()) return;
 
-      // O pré-fetch continua paralelo, mas só publicamos o corredor depois da geometria
-      // viária definitiva. Assim nenhuma loja provisória aparece para depois desaparecer.
       replaceCorridorStores(areaStores, routeCoordinates);
+      await endpointStoresPromise;
+      if (isCurrent()) setPlannerStoresLoading(false);
     })().catch((error) => {
       if (active && fetchGen === plannerStoreFetchGenRef.current) {
         console.error('Falha ao carregar lojas do corredor do roteiro:', error);
+        setPlannerStoresLoading(false);
       }
     });
 
@@ -3797,6 +3822,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
     if (plannerMode && (plannerAgencyFocus || plannerRouteAgencies)) return;
     ++plannerStoreFetchGenRef.current;
     setPlannerStorePoints([]);
+    setPlannerStoresLoading(false);
   }, [plannerMode, plannerAgencyFocus, plannerRouteAgencies]);
 
   useEffect(() => {
@@ -3840,6 +3866,10 @@ const MapComponent: React.FC<MapComponentProps> = ({
   useEffect(() => {
     onPlannerStoresChange?.(plannerMode ? plannerStorePoints : []);
   }, [onPlannerStoresChange, plannerMode, plannerStorePoints]);
+
+  useEffect(() => {
+    onPlannerStoresLoadingChange?.(plannerMode && plannerStoresLoading);
+  }, [onPlannerStoresLoadingChange, plannerMode, plannerStoresLoading]);
 
   const clearSupervisorOverlayFilter = useCallback(async () => {
     const emptyFc: GeoJSON.FeatureCollection = { type: 'FeatureCollection', features: [] };

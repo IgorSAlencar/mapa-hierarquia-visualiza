@@ -5,6 +5,7 @@ import {
   ChevronLeft,
   Clock3,
   History,
+  LoaderCircle,
   MapPin,
   Minus,
   Navigation,
@@ -30,6 +31,7 @@ export interface RouteOpportunityPanelItem extends OpportunitySnapshot {
   nome: string;
   codAg: string;
   nomeAg: string;
+  dataPending: boolean;
   endereco: string;
   municipio: string;
   uf: string;
@@ -67,6 +69,7 @@ interface SummaryCounts {
 interface Props {
   minimized: boolean;
   stores: RouteOpportunityPanelItem[];
+  loading: boolean;
   selectedIds: string[];
   priorityByStoreId: Record<string, RouteOpportunityPriorityBand>;
   summary: SummaryCounts;
@@ -122,6 +125,7 @@ const OPPORTUNITY_PAGE_SIZE = 40;
 const RouteOpportunitiesSidePanel: React.FC<Props> = ({
   minimized,
   stores,
+  loading,
   selectedIds,
   priorityByStoreId,
   summary,
@@ -216,8 +220,13 @@ const RouteOpportunitiesSidePanel: React.FC<Props> = ({
             <div className="min-w-0 flex-1">
               <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-violet-600">Planejamento de visitas</p>
               <h2 id="route-opportunities-title" className="mt-0.5 truncate text-base font-bold text-slate-900">Oportunidades do roteiro</h2>
-              <p className="mt-0.5 text-[11px] text-slate-500">
-                {stores.length} exibida{stores.length === 1 ? '' : 's'} · {selectedCount} selecionada{selectedCount === 1 ? '' : 's'}
+              <p className="mt-0.5 flex items-center gap-1.5 text-[11px] text-slate-500">
+                {loading && <LoaderCircle className="h-3 w-3 animate-spin text-violet-600" />}
+                <span>
+                  {loading
+                    ? `${stores.length} encontrada${stores.length === 1 ? '' : 's'} · buscando mais oportunidades`
+                    : `${stores.length} exibida${stores.length === 1 ? '' : 's'} · ${selectedCount} selecionada${selectedCount === 1 ? '' : 's'}`}
+                </span>
               </p>
             </div>
             <div className="flex shrink-0 items-center gap-1">
@@ -321,7 +330,30 @@ const RouteOpportunitiesSidePanel: React.FC<Props> = ({
           </section>
 
           <section className="min-h-0 flex-1 space-y-2.5 overflow-y-auto overscroll-contain p-3 pb-40 lg:pb-3" aria-label="Lojas encontradas">
-            {stores.length === 0 ? (
+            {loading && (
+              <div className="sticky top-0 z-10 flex items-center gap-2 rounded-xl border border-violet-100 bg-violet-50/95 px-3 py-2 text-[10px] font-semibold text-violet-700 shadow-sm backdrop-blur-sm">
+                <LoaderCircle className="h-3.5 w-3.5 shrink-0 animate-spin" />
+                <span className="truncate">
+                  {stores.length > 0
+                    ? 'Refinando oportunidades pelo trajeto viário...'
+                    : 'Buscando oportunidades no caminho...'}
+                </span>
+              </div>
+            )}
+            {loading && stores.length === 0 ? (
+              <div className="space-y-2.5" aria-hidden="true">
+                {[0, 1, 2].map((item) => (
+                  <div key={item} className="animate-pulse rounded-2xl border border-slate-200 bg-white p-3">
+                    <div className="h-3 w-3/5 rounded bg-slate-200" />
+                    <div className="mt-2 h-2.5 w-2/5 rounded bg-slate-100" />
+                    <div className="mt-3 flex gap-2">
+                      <div className="h-6 w-20 rounded-lg bg-slate-100" />
+                      <div className="h-6 w-16 rounded-lg bg-slate-100" />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : stores.length === 0 ? (
               <div className="rounded-2xl border border-dashed border-slate-300 bg-white/70 px-6 py-10 text-center">
                 <ShoppingCart className="mx-auto h-8 w-8 text-slate-300" />
                 <p className="mt-3 text-xs font-bold text-slate-700">Nenhuma oportunidade encontrada</p>
@@ -440,7 +472,7 @@ function OpportunityCard({ store, priority, selected, onToggle, onHover }: { sto
     >
       {selected && <span className="absolute inset-y-0 left-0 w-1 bg-gradient-to-b from-violet-500 to-blue-500" />}
       <div className="flex items-start gap-3">
-        <PriorityBadge band={priority} />
+        <PriorityBadge band={priority} pending={store.dataPending} />
         <div className="min-w-0 flex-1">
           <div className="flex items-start gap-2">
             <div className="min-w-0 flex-1">
@@ -459,9 +491,16 @@ function OpportunityCard({ store, priority, selected, onToggle, onHover }: { sto
                   </span>
                 )}
                 {store.routeRole && <span className="rounded-md bg-blue-50 px-1.5 py-1 text-blue-700">{routeRoleLabel[store.routeRole]}</span>}
-                <span className="rounded-md bg-slate-50 px-1.5 py-1 text-slate-500">{priorityLabel[priority]}</span>
+                <span className="rounded-md bg-slate-50 px-1.5 py-1 text-slate-500">
+                  {store.dataPending ? 'Analisando' : priorityLabel[priority]}
+                </span>
               </div>
-              {store.suggestionReasons.length > 0 && (
+              {store.dataPending ? (
+                <div className="mt-1.5 flex items-center gap-1.5 text-[9px] font-semibold text-violet-600">
+                  <LoaderCircle className="h-3 w-3 animate-spin" />
+                  Analisando indicadores da loja...
+                </div>
+              ) : store.suggestionReasons.length > 0 && (
                 <div className="mt-1.5 flex flex-wrap items-center gap-1">
                   {store.suggestionReasons.map((reason) => (
                     <span
@@ -490,7 +529,13 @@ function OpportunityCard({ store, priority, selected, onToggle, onHover }: { sto
 
       <div className="mt-3 border-t border-slate-100 pt-2.5">
         <p className="mb-1.5 text-[10px] font-bold uppercase tracking-[0.12em] text-slate-400">Oportunidades identificadas</p>
-        <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-5">
+        {store.dataPending ? (
+          <div className="grid animate-pulse grid-cols-5 gap-1.5" aria-hidden="true">
+            {[0, 1, 2, 3, 4].map((item) => (
+              <div key={item} className="h-14 rounded-lg border border-slate-100 bg-slate-50" />
+            ))}
+          </div>
+        ) : <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-5">
           {opportunityIndicators.map((item) => {
             const active = store[item.field];
             const hadPreviousProduction =
@@ -523,14 +568,21 @@ function OpportunityCard({ store, priority, selected, onToggle, onHover }: { sto
               </span>
             </div>;
           })}
-        </div>
+        </div>}
       </div>
 
     </article>
   );
 }
 
-function PriorityBadge({ band }: { band: RouteOpportunityPriorityBand }) {
+function PriorityBadge({ band, pending = false }: { band: RouteOpportunityPriorityBand; pending?: boolean }) {
+  if (pending) {
+    return (
+      <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-violet-100 bg-violet-50 text-violet-600" role="img" aria-label="Analisando oportunidade" title="Analisando oportunidade">
+        <LoaderCircle className="h-4 w-4 animate-spin" />
+      </span>
+    );
+  }
   const optimal = band === 'baixa';
   return (
     <span className={cn('flex h-9 w-9 shrink-0 items-center justify-center rounded-full border shadow-sm', band === 'alta' && 'border-rose-200 bg-rose-100 text-rose-600', band === 'media' && 'border-amber-200 bg-amber-100 text-amber-600', band === 'baixa' && 'border-emerald-200 bg-emerald-100 text-emerald-600')} role="img" aria-label={`Prioridade: ${priorityLabel[band]}`} title={priorityLabel[band]}>

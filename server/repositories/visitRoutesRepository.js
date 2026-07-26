@@ -74,10 +74,19 @@ export async function fetchAuthorizedRouteOwners(user, { storeKeys = [] } = {}) 
       sup.COD_FUNC,
       sup.NOME_FUNC,
       sup.CHAVE_SUPERVISAO,
-      sup.DESC_SUPERVISAO
+      sup.DESC_SUPERVISAO,
+      ent.CHAVE_COORDENACAO,
+      ent.DESC_COORDENACAO,
+      gc3.NOME_FUNC AS NOME_COORDENADOR
     FROM TESTE..TB_COORD_SUP AS sup
     INNER JOIN MESU..CONS_DISTRIBUICAO_ENTIDADES AS ent
       ON ent.CHAVE_SUPERVISAO = sup.CHAVE_SUPERVISAO
+    OUTER APPLY (
+      SELECT TOP (1) coordenador.NOME_FUNC
+      FROM TESTE..TB_COORD_COORDENADOR AS coordenador
+      WHERE coordenador.CHAVE_COORDENACAO = ent.CHAVE_COORDENACAO
+      ORDER BY coordenador.NOME_FUNC
+    ) AS gc3
     WHERE sup.COD_FUNC IS NOT NULL
       ${ownSql}
       ${accessSql}

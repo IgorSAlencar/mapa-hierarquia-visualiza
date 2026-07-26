@@ -302,14 +302,18 @@ function drawCoverHeader(page: PDFPage, fonts: PdfFonts, route: VisitRoute): voi
   });
   const supervision = route.owner?.descricaoSupervisao
     ? `${route.owner.descricaoSupervisao} | Funcional ${route.owner.funcional}`
-    : `Supervisão ${String(route.chaveSupervisao).padStart(3, '0')}`;
-  page.drawText(truncateToWidth(supervision, fonts.regular, 8.5, 250), {
-    x: MARGIN + 18,
-    y: 649,
-    size: 8.5,
-    font: fonts.regular,
-    color: COLORS.slate,
-  });
+    : route.chaveSupervisao > 0
+      ? `Supervisão ${String(route.chaveSupervisao).padStart(3, '0')}`
+      : null;
+  if (supervision) {
+    page.drawText(truncateToWidth(supervision, fonts.regular, 8.5, 250), {
+      x: MARGIN + 18,
+      y: 649,
+      size: 8.5,
+      font: fonts.regular,
+      color: COLORS.slate,
+    });
+  }
   page.drawText('DATA PLANEJADA', {
     x: 375,
     y: 682,
@@ -1150,13 +1154,24 @@ export async function buildRoutePdf(
 }
 
 export function routePdfFilename(route: VisitRoute): string {
-  const date = pdfText(route.plannedDate || new Date().toISOString().slice(0, 10), 'roteiro');
-  const name = pdfText(route.nome, 'roteiro-comercial')
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 48);
-  return `${name || 'roteiro-comercial'}-${date}.pdf`;
+  const destination = pdfText(
+    route.destination?.nome || route.stops.at(-1)?.nome || route.nome,
+    'Destino'
+  )
+    .replace(/[<>:"/\\|?*\x00-\x1F]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .replace(/[. ]+$/g, '')
+    .slice(0, 60)
+    .trim() || 'Destino';
+
+  const isoDate = /^(\d{4})-(\d{2})-(\d{2})/.exec(route.plannedDate ?? '');
+  const displayDate = /^(\d{1,2})\/(\d{1,2})/.exec(route.data ?? '');
+  const today = new Date();
+  const date = isoDate
+    ? `${isoDate[3]}.${isoDate[2]}`
+    : displayDate
+      ? `${displayDate[1].padStart(2, '0')}.${displayDate[2].padStart(2, '0')}`
+      : `${String(today.getDate()).padStart(2, '0')}.${String(today.getMonth() + 1).padStart(2, '0')}`;
+
+  return `Roteiro ${destination} - ${date}.pdf`;
 }

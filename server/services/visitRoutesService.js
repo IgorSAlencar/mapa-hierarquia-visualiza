@@ -166,6 +166,11 @@ function ownerDto(row) {
     nome: String(row.NOME_FUNC ?? '').trim(),
     chaveSupervisao: Number(row.CHAVE_SUPERVISAO),
     descricaoSupervisao: String(row.DESC_SUPERVISAO ?? '').trim() || null,
+    chaveCoordenacao: Number.isFinite(Number(row.CHAVE_COORDENACAO))
+      ? Number(row.CHAVE_COORDENACAO)
+      : null,
+    descricaoCoordenacao: String(row.DESC_COORDENACAO ?? '').trim() || null,
+    nomeCoordenador: String(row.NOME_COORDENADOR ?? '').trim() || null,
   };
 }
 

@@ -10,6 +10,8 @@ export interface SqlMapPoint {
   nome: string;
   kind: SqlMapPointKind;
   lngLat: [number, number];
+  /** Resultado espacial leve exibido enquanto os indicadores da oportunidade são enriquecidos. */
+  plannerDataPending?: boolean;
   codAg?: string | null;
   nomeAg?: string | null;
   descSupervisao?: string | null;

@@ -779,7 +779,7 @@
  * diferentes. A viewport apenas limita o card; o conteúdo rola internamente.
  */
 .route-planning-journey {
-  width: min(400px, calc(100dvw - 32px));
+  width: min(380px, calc(100dvw - 32px));
   height: min(520px, calc(100dvh - 96px));
   max-width: calc(100dvw - 32px);
   max-height: calc(100dvh - 96px);
@@ -802,7 +802,7 @@
 /* Notebooks compactos (aprox. 13–14"): reduz o conjunto sem deformar o card. */
 @media (max-width: 1600px) and (max-height: 900px) {
   .route-planning-journey {
-    width: min(360px, calc(100dvw - 32px));
+    width: min(340px, calc(100dvw - 32px));
     height: min(468px, calc(100dvh - 96px));
   }
 

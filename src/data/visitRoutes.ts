@@ -39,6 +39,9 @@ export interface VisitRouteOwner {
   nome: string;
   chaveSupervisao: number;
   descricaoSupervisao?: string | null;
+  chaveCoordenacao?: number | null;
+  descricaoCoordenacao?: string | null;
+  nomeCoordenador?: string | null;
 }
 
 export interface VisitRouteSaveMetadata {
@@ -66,4 +69,3 @@ export interface VisitRoute {
   owner?: VisitRouteOwner;
   saved?: VisitRouteSaveMetadata;
 }
-

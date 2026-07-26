@@ -15,6 +15,7 @@ function sampleRoute(stopCount = 3): VisitRoute {
     distanciaKm: 12,
     duracaoEstimada: '3h',
     durationBreakdown: { travelMinutes: 60, visitMinutes: 120, minutesPerVisit: 40, source: 'calculated' },
+    destination: { nome: 'Agência Centro', lat: -23.55, lng: -46.63 },
     stops: Array.from({ length: stopCount }, (_, index) => ({
       id: index + 1,
       ordem: index + 1,
@@ -51,7 +52,6 @@ test('gera capa e duas fichas de loja por página A4', async () => {
   }
 });
 
-test('gera nome de arquivo seguro e previsível', () => {
-  assert.equal(routePdfFilename(sampleRoute(1)), 'roteiro-centro-2026-07-21.pdf');
+test('gera nome de arquivo com destino e data curta', () => {
+  assert.equal(routePdfFilename(sampleRoute(1)), 'Roteiro Agência Centro - 21.07.pdf');
 });
-
