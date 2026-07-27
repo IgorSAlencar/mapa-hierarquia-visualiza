@@ -1,5 +1,5 @@
 import type { VisitRoute, VisitRouteOwner } from '@/data/visitRoutes';
-import type { StoreProductionPoint } from '@/lib/mapDataApi';
+import type { StoreCertificationOverview, StoreProductionPoint } from '@/lib/mapDataApi';
 import { apiFetch } from '@/lib/apiClient';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? '';
@@ -28,6 +28,7 @@ export interface VisitRouteExportStoreData {
   chaveLoja: string;
   production: StoreProductionPoint | null;
   previousProduction: StoreProductionPoint | null;
+  certification?: StoreCertificationOverview;
 }
 
 async function responseError(response: Response): Promise<Error> {

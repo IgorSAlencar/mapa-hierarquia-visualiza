@@ -2,8 +2,10 @@ import React, { useEffect, useMemo, useState } from 'react';
 import {
   ArrowLeft,
   ArrowRightLeft,
+  BadgeCheck,
   Banknote,
   BriefcaseBusiness,
+  CalendarClock,
   ChartNoAxesCombined,
   Check,
   ChevronRight,
@@ -14,6 +16,7 @@ import {
   ShieldCheck,
   TrendingDown,
   TrendingUp,
+  Users,
 } from 'lucide-react';
 import CieloIcon from '@/components/CieloIcon';
 import {
@@ -29,6 +32,7 @@ import {
 import {
   fetchStoreProductionHistory,
   type StoreBusinessDailyPoint,
+  type StoreCertificationOverview,
   type StoreProductionPoint,
 } from '@/lib/mapDataApi';
 
@@ -479,6 +483,154 @@ function QuickFactCard({
   );
 }
 
+function formatCertificationDate(value: string | null): string {
+  if (!value) return 'não informada';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return 'não informada';
+  return date.toLocaleDateString('pt-BR', { timeZone: 'UTC' });
+}
+
+function certificationPresentation(status: string | null, hasPeople: boolean) {
+  const normalized = String(status ?? '').toUpperCase();
+  if (normalized.includes('PERDA') || normalized.startsWith('BLOQUEADO')) {
+    return {
+      container: 'border-red-200 bg-red-50/80 text-red-700',
+      badge: 'bg-red-100 text-red-700',
+      label: normalized.includes('PERDA') ? 'Vencida' : 'Bloqueada',
+    };
+  }
+  if (normalized.includes('PENDENTE RENOVAÇÃO') || normalized.startsWith('A BLOQUEAR')) {
+    return {
+      container: 'border-amber-200 bg-amber-50/80 text-amber-700',
+      badge: 'bg-amber-100 text-amber-700',
+      label: normalized.includes('PENDENTE') ? 'Renovar' : 'A bloquear',
+    };
+  }
+  if (hasPeople) {
+    return {
+      container: 'border-emerald-200 bg-emerald-50/80 text-emerald-700',
+      badge: 'bg-emerald-100 text-emerald-700',
+      label: 'Em dia',
+    };
+  }
+  return {
+    container: 'border-red-200 bg-red-50/80 text-red-700',
+    badge: 'bg-red-100 text-red-700',
+    label: 'Pendente',
+  };
+}
+
+function CertificationSummary({
+  certification,
+  tooltipId,
+}: {
+  certification: StoreCertificationOverview;
+  tooltipId: string;
+}) {
+  const people = certification.people;
+  const presentation = certificationPresentation(certification.status, people.length > 0);
+  const nextExpiration = people
+    .map((person) => person.expirationDate)
+    .filter((value): value is string => Boolean(value))
+    .sort()[0] ?? null;
+
+  const summaryContents = (
+    <>
+      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-white/85 shadow-sm">
+        {people.length > 1 ? (
+          <Users className="h-3.5 w-3.5" aria-hidden />
+        ) : (
+          <BadgeCheck className="h-3.5 w-3.5" aria-hidden />
+        )}
+      </span>
+      <span className="min-w-0 flex-1">
+        <strong className="block truncate text-[10.5px] font-semibold leading-tight">
+          {people.length === 0
+            ? 'Sem certificação'
+            : people.length === 1
+              ? people[0].name
+              : `${people.length} pessoas certificadas`}
+        </strong>
+        <span className="mt-0.5 flex items-center gap-1 text-[8.5px] leading-none opacity-80">
+          {people.length > 0 ? <CalendarClock className="h-2.5 w-2.5 shrink-0" aria-hidden /> : null}
+          {people.length === 0
+            ? 'Nenhuma certificação vigente encontrada'
+            : `Vencimento ${formatCertificationDate(nextExpiration)}`}
+        </span>
+      </span>
+      <span className={`shrink-0 rounded-full px-2 py-1 text-[7.5px] font-bold uppercase tracking-wide ${presentation.badge}`}>
+        {presentation.label}
+      </span>
+    </>
+  );
+
+  return (
+    <div className="border-t border-slate-100 px-3 py-2.5">
+      <p className="mb-1.5 text-[9px] font-semibold uppercase tracking-wide text-slate-500">
+        Certificação
+      </p>
+      {people.length > 1 ? (
+        <button
+          type="button"
+          className={`group relative flex w-full items-center gap-2 rounded-lg border px-2 py-1.5 text-left outline-none transition focus-visible:ring-2 focus-visible:ring-emerald-300 ${presentation.container}`}
+          aria-label={`${people.length} pessoas com registro de certificação. Passe o mouse ou pressione Tab para ver nomes e vencimentos.`}
+          aria-describedby={tooltipId}
+        >
+          {summaryContents}
+          <span
+            id={tooltipId}
+            role="tooltip"
+            className="pointer-events-none invisible absolute right-0 top-full z-50 mt-2 w-[285px] translate-y-1 rounded-xl border border-slate-200 bg-white p-2.5 text-left text-slate-700 opacity-0 shadow-xl shadow-slate-900/15 transition duration-150 group-hover:visible group-hover:translate-y-0 group-hover:opacity-100 group-focus:visible group-focus:translate-y-0 group-focus:opacity-100"
+          >
+            <span className="flex items-center justify-between gap-2 border-b border-slate-100 pb-2">
+              <strong className="text-[10px] font-semibold text-slate-900">
+                Pessoas certificadas
+              </strong>
+              <span className="text-[9px] font-medium text-slate-500">
+                {people.length} registros
+              </span>
+            </span>
+            <span className="mt-1.5 flex max-h-40 flex-col gap-1 overflow-y-auto">
+              {people.map((person) => {
+                const personPresentation = certificationPresentation(person.status, true);
+                return (
+                  <span
+                    key={`${person.cpf ?? person.name}-${person.certificationDate ?? ''}`}
+                    className="flex items-center justify-between gap-3 rounded-md bg-slate-50 px-2 py-1.5"
+                  >
+                    <span className="min-w-0">
+                      <strong className="block truncate text-[10px] font-semibold text-slate-800">
+                        {person.name}
+                      </strong>
+                      <span className="mt-0.5 block text-[8.5px] text-slate-500">
+                        Vence em {formatCertificationDate(person.expirationDate)}
+                      </span>
+                    </span>
+                    <span className={`shrink-0 rounded-full px-1.5 py-0.5 text-[7px] font-bold uppercase ${personPresentation.badge}`}>
+                      {personPresentation.label}
+                    </span>
+                  </span>
+                );
+              })}
+            </span>
+          </span>
+        </button>
+      ) : (
+        <div
+          className={`flex items-center gap-2 rounded-lg border px-2 py-1.5 ${presentation.container}`}
+          aria-label={
+            people.length === 1
+              ? `${people[0].name}, vencimento ${formatCertificationDate(people[0].expirationDate)}`
+              : 'Loja sem certificação'
+          }
+        >
+          {summaryContents}
+        </div>
+      )}
+    </div>
+  );
+}
+
 type StoreProductionChartProps = {
   chaveLoja: string;
   cieloM0: boolean | null;
@@ -492,6 +644,10 @@ const StoreProductionChart: React.FC<StoreProductionChartProps> = ({
 }) => {
   const [history, setHistory] = useState<StoreProductionPoint[]>([]);
   const [businessDaily, setBusinessDaily] = useState<StoreBusinessDailyPoint[]>([]);
+  const [certification, setCertification] = useState<StoreCertificationOverview>({
+    status: null,
+    people: [],
+  });
   const [metricKey, setMetricKey] = useState<SelectedStoreProductionMetricKey>(DEFAULT_METRIC);
   const [showMonthlyHistory, setShowMonthlyHistory] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -504,11 +660,13 @@ const StoreProductionChart: React.FC<StoreProductionChartProps> = ({
     setError(null);
     setHistory([]);
     setBusinessDaily([]);
+    setCertification({ status: null, people: [] });
 
     fetchStoreProductionHistory(chaveLoja, controller.signal)
       .then((production) => {
         setHistory(production.history);
         setBusinessDaily(production.businessDaily);
+        setCertification(production.certification);
       })
       .catch((requestError) => {
         if (requestError instanceof DOMException && requestError.name === 'AbortError') return;
@@ -628,6 +786,7 @@ const StoreProductionChart: React.FC<StoreProductionChartProps> = ({
             <div key={item} className="mx-2 h-9 animate-pulse rounded bg-slate-100 first:ml-0 last:mr-0" />
           ))}
         </div>
+        <div className="mt-2 h-12 animate-pulse rounded-lg bg-slate-100" />
         <div className="mt-2 grid grid-cols-4 gap-1.5 border-t border-slate-100 pt-2">
           {[0, 1, 2, 3].map((item) => (
             <div key={item} className="h-14 animate-pulse rounded-lg bg-slate-100" />
@@ -657,11 +816,17 @@ const StoreProductionChart: React.FC<StoreProductionChartProps> = ({
 
   if (history.length === 0) {
     return (
-      <section className="border-t border-slate-100 px-3 py-4">
-        <p className="text-xs font-semibold text-slate-800">Produção mensal</p>
-        <p className="mt-1 text-xs text-slate-500">
-          Nenhum indicador encontrado para esta chave de loja.
-        </p>
+      <section>
+        <CertificationSummary
+          certification={certification}
+          tooltipId={`store-certification-${chaveLoja}`}
+        />
+        <div className="border-t border-slate-100 px-3 py-4">
+          <p className="text-xs font-semibold text-slate-800">Produção mensal</p>
+          <p className="mt-1 text-xs text-slate-500">
+            Nenhum indicador encontrado para esta chave de loja.
+          </p>
+        </div>
       </section>
     );
   }
@@ -988,6 +1153,11 @@ const StoreProductionChart: React.FC<StoreProductionChartProps> = ({
           </div>
         </div>
       </div>
+
+      <CertificationSummary
+        certification={certification}
+        tooltipId={`store-certification-${chaveLoja}`}
+      />
 
       <div className="border-t border-slate-100 px-3 py-3">
         <div className="flex items-center justify-between gap-2">

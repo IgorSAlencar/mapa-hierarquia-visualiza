@@ -8,7 +8,11 @@ import {
   type RGB,
 } from 'pdf-lib';
 import type { VisitRoute, VisitStop } from '../data/visitRoutes';
-import type { StoreProductionPoint } from './mapDataApi';
+import type {
+  StoreCertificationOverview,
+  StoreCertificationPerson,
+  StoreProductionPoint,
+} from './mapDataApi';
 import {
   buildProductComparisonRows,
   dashWhenZero,
@@ -46,6 +50,9 @@ const COLORS = {
   green: color('#13835F'),
   greenSurface: color('#E9F6F1'),
   greenBorder: color('#B9E1D3'),
+  warning: color('#9A6500'),
+  warningSurface: color('#FFF7DF'),
+  warningBorder: color('#E9D493'),
   negative: color('#9A3A4B'),
   negativeSurface: color('#F9EDF0'),
   inactiveSurface: color('#F1F4F7'),
@@ -601,6 +608,138 @@ function drawStoreMetric(
   });
 }
 
+function formatCertificationDate(value: string | null): string {
+  if (!value) return 'sem data';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return 'sem data';
+  return new Intl.DateTimeFormat('pt-BR', {
+    day: '2-digit',
+    month: '2-digit',
+    year: '2-digit',
+    timeZone: 'UTC',
+  }).format(date);
+}
+
+function compactPersonName(person: StoreCertificationPerson): string {
+  const parts = pdfText(person.name, 'Nome não informado').split(' ').filter(Boolean);
+  if (parts.length <= 2) return parts.join(' ');
+  return `${parts[0]} ${parts.at(-1)}`;
+}
+
+function certificationDetail(certification: StoreCertificationOverview | undefined): string {
+  if (!certification) return 'Dado não carregado';
+  if (certification.people.length === 0) return 'Nenhuma pessoa certificada';
+
+  const shown = certification.people.slice(0, 2).map((person) =>
+    `${compactPersonName(person)} ${formatCertificationDate(person.expirationDate)}`
+  );
+  const remaining = certification.people.length - shown.length;
+  return `${shown.join(' | ')}${remaining > 0 ? ` | +${remaining}` : ''}`;
+}
+
+function certificationAppearance(
+  certification: StoreCertificationOverview | undefined
+): { label: string; color: RGB; surface: RGB; border: RGB } {
+  if (!certification) {
+    return {
+      label: 'INDISPONÍVEL',
+      color: COLORS.inactiveIcon,
+      surface: COLORS.inactiveSurface,
+      border: COLORS.line,
+    };
+  }
+  const status = String(certification.status ?? '').toUpperCase();
+  if (status.includes('PERDA') || status.startsWith('BLOQUEADO')) {
+    return {
+      label: status.includes('PERDA') ? 'VENCIDA' : 'BLOQUEADA',
+      color: COLORS.negative,
+      surface: COLORS.negativeSurface,
+      border: color('#E4C3CB'),
+    };
+  }
+  if (status.includes('PENDENTE RENOVAÇÃO') || status.startsWith('A BLOQUEAR')) {
+    return {
+      label: status.includes('PENDENTE') ? 'RENOVAR' : 'A BLOQUEAR',
+      color: COLORS.warning,
+      surface: COLORS.warningSurface,
+      border: COLORS.warningBorder,
+    };
+  }
+  if (certification.people.length > 0) {
+    return {
+      label: 'EM DIA',
+      color: COLORS.green,
+      surface: COLORS.greenSurface,
+      border: COLORS.greenBorder,
+    };
+  }
+  return {
+    label: 'SEM CERT.',
+    color: COLORS.negative,
+    surface: COLORS.negativeSurface,
+    border: color('#E4C3CB'),
+  };
+}
+
+function drawCertificationSummary(
+  page: PDFPage,
+  fonts: PdfFonts,
+  certification: StoreCertificationOverview | undefined,
+  x: number,
+  y: number,
+  width: number
+): void {
+  const appearance = certificationAppearance(certification);
+  const height = 24;
+  page.drawRectangle({
+    x,
+    y,
+    width,
+    height,
+    color: appearance.surface,
+    borderColor: appearance.border,
+    borderWidth: 0.6,
+  });
+  page.drawCircle({ x: x + 9, y: y + 12, size: 4, color: appearance.color });
+  page.drawCircle({ x: x + 9, y: y + 12, size: 1.6, color: COLORS.white });
+
+  page.drawText('CERTIFICAÇÃO', {
+    x: x + 17,
+    y: y + 15,
+    size: 4.8,
+    font: fonts.bold,
+    color: appearance.color,
+  });
+
+  const badgeWidth = fonts.bold.widthOfTextAtSize(appearance.label, 4.6) + 7;
+  page.drawRectangle({
+    x: x + width - badgeWidth - 5,
+    y: y + 13,
+    width: badgeWidth,
+    height: 7.5,
+    color: COLORS.white,
+    opacity: 0.78,
+  });
+  page.drawText(appearance.label, {
+    x: x + width - badgeWidth - 1.5,
+    y: y + 15,
+    size: 4.6,
+    font: fonts.bold,
+    color: appearance.color,
+  });
+
+  page.drawText(
+    truncateToWidth(certificationDetail(certification), fonts.bold, 5.4, width - 24),
+    {
+      x: x + 17,
+      y: y + 5.2,
+      size: 5.4,
+      font: fonts.bold,
+      color: COLORS.ink,
+    }
+  );
+}
+
 interface GridColumn {
   start: number;
   width: number;
@@ -881,6 +1020,7 @@ function drawStoreCard(
   top: number
 ): void {
   const production = productionPair?.current ?? null;
+  const certification = productionPair?.certification;
   const x = MARGIN;
   const width = A4_WIDTH - MARGIN * 2;
   const height = 322;
@@ -923,8 +1063,10 @@ function drawStoreCard(
   const agencyLabel = stop.codAg
     ? (stop.nomeAg ? `${stop.codAg} - ${stop.nomeAg}` : String(stop.codAg))
     : null;
+  const certificationX = x + width - 210;
+  const headerDetailWidth = certificationX - (x + 48) - 8;
   if (agencyLabel) {
-    page.drawText(truncateToWidth(`Agência ${agencyLabel}`, fonts.regular, 7.2, 360), {
+    page.drawText(truncateToWidth(`Agência ${agencyLabel}`, fonts.regular, 7.2, headerDetailWidth), {
       x: x + 48,
       y: top - 48,
       size: 7.2,
@@ -933,7 +1075,7 @@ function drawStoreCard(
     });
   }
   if (stop.statusTablet) {
-    page.drawText(truncateToWidth(`Tablet ${stop.statusTablet}`, fonts.regular, 7.2, 360), {
+    page.drawText(truncateToWidth(`Tablet ${stop.statusTablet}`, fonts.regular, 7.2, headerDetailWidth), {
       x: x + 48,
       y: top - 59,
       size: 7.2,
@@ -968,7 +1110,7 @@ function drawStoreCard(
     ? ''
     : rawAddress;
   if (addressLabel) {
-    page.drawText(truncateToWidth(addressLabel, fonts.regular, 7.2, width - 48), {
+    page.drawText(truncateToWidth(addressLabel, fonts.regular, 7.2, headerDetailWidth), {
       x: x + 48,
       y: top - 70,
       size: 7.2,
@@ -976,6 +1118,14 @@ function drawStoreCard(
       color: COLORS.slate,
     });
   }
+  drawCertificationSummary(
+    page,
+    fonts,
+    certification,
+    certificationX,
+    top - 68,
+    width - (certificationX - x) - 16
+  );
 
   const metricY = top - 111;
   const metricGap = 7;

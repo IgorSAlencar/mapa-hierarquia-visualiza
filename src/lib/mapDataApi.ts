@@ -85,9 +85,23 @@ export interface StoreBusinessDailyPoint {
   qtdNeg: number;
 }
 
+export interface StoreCertificationPerson {
+  name: string;
+  cpf: string | null;
+  status: string;
+  certificationDate: string | null;
+  expirationDate: string | null;
+}
+
+export interface StoreCertificationOverview {
+  status: string | null;
+  people: StoreCertificationPerson[];
+}
+
 export interface StoreProductionOverview {
   history: StoreProductionPoint[];
   businessDaily: StoreBusinessDailyPoint[];
+  certification: StoreCertificationOverview;
 }
 
 export type ProductionHeatmapUnit = 'quantity' | 'currency';
@@ -435,7 +449,13 @@ export async function fetchStoreProductionHistory(
   signal?: AbortSignal
 ): Promise<StoreProductionOverview> {
   const key = String(chaveLoja ?? '').trim();
-  if (!key) return { history: [], businessDaily: [] };
+  if (!key) {
+    return {
+      history: [],
+      businessDaily: [],
+      certification: { status: null, people: [] },
+    };
+  }
 
   const url = `${API_BASE_URL}/api/map/lojas/${encodeURIComponent(key)}/producao`;
   let response: Response;
@@ -457,6 +477,15 @@ export async function fetchStoreProductionHistory(
   return {
     history: Array.isArray(data.history) ? data.history : [],
     businessDaily: Array.isArray(data.businessDaily) ? data.businessDaily : [],
+    certification: {
+      status:
+        typeof data.certification?.status === 'string'
+          ? data.certification.status
+          : null,
+      people: Array.isArray(data.certification?.people)
+        ? data.certification.people
+        : [],
+    },
   };
 }
 

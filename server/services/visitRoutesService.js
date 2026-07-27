@@ -9,7 +9,11 @@ import {
   deleteVisitRouteById,
 } from '../repositories/visitRoutesRepository.js';
 import { canAssignRouteOutsideOwnerPortfolio } from '../auth/routeAssignmentPolicy.js';
-import { fetchStoreProductionHistory } from '../repositories/mapDataRepository.js';
+import {
+  fetchStoreCertifications,
+  fetchStoreProductionHistory,
+} from '../repositories/mapDataRepository.js';
+import { normalizeStoreCertificationRows } from './storeCertificationNormalizer.js';
 import { normalizeStoreProductionRows } from './storeProductionNormalizer.js';
 
 // SQL Server NEWSEQUENTIALID() gera UNIQUEIDENTIFIER válido, mas não
@@ -385,12 +389,17 @@ export async function getVisitRouteExportData(id, user) {
       const index = cursor;
       cursor += 1;
       const chaveLoja = storeKeys[index];
-      const rows = normalizeStoreProductionRows(await fetchStoreProductionHistory(chaveLoja));
+      const [productionRows, certificationRows] = await Promise.all([
+        fetchStoreProductionHistory(chaveLoja),
+        fetchStoreCertifications(chaveLoja),
+      ]);
+      const rows = normalizeStoreProductionRows(productionRows);
       const sorted = rows.slice().sort((a, b) => b.periodo - a.periodo);
       stores[index] = {
         chaveLoja,
         production: sorted[0] ?? null,
         previousProduction: sorted[1] ?? null,
+        certification: normalizeStoreCertificationRows(certificationRows),
       };
     }
   }

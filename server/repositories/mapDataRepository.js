@@ -1003,6 +1003,136 @@ export async function fetchStoreProductionHistory(chaveLoja) {
 }
 
 /**
+ * Certificações vinculadas à loja.
+ *
+ * Mantém uma linha sem pessoa quando a loja ainda não possui certificado,
+ * permitindo distinguir o prazo inicial de 60 dias do bloqueio definitivo.
+ */
+export async function fetchStoreCertifications(chaveLoja) {
+  const request = pool.request();
+  request.input('certificationChaveLoja', String(chaveLoja ?? '').trim());
+
+  const result = await request.query(`
+    WITH LOJAS AS (
+      SELECT
+        A.CHAVE_LOJA,
+        A.CNPJ_LOJA,
+        MAX(B.DATA_INAUGURACAO) AS DATA_INAUGURACAO
+      FROM MESU..TB_CERTIFICADOS_PRACTA AS A
+      INNER JOIN MESU..TB_CERTIFICADOS_TOTUM AS B
+        ON A.CHAVE_LOJA = B.CHAVE_LOJA
+      INNER JOIN MESU..TB_EMPRESAS AS C
+        ON C.COD_EMP = A.COD_EMP
+      WHERE C.COD_EMP NOT IN (
+        '29000',
+        '29001',
+        '29002',
+        '29003',
+        '97463',
+        '32399',
+        '20077',
+        '257956'
+      )
+        AND LTRIM(RTRIM(CONVERT(NVARCHAR(100), A.CHAVE_LOJA))) =
+          @certificationChaveLoja
+      GROUP BY
+        A.CHAVE_LOJA,
+        A.CNPJ_LOJA
+    ),
+    ULTIMOS_CERTIFICADOS AS (
+      SELECT
+        certificado.CNPJ,
+        certificado.CPF,
+        MAX(certificado.DATA_CERTIFICACAO) AS MAX_DATA_CERTIFICACAO
+      FROM MESU..TB_CERTIFICADOS AS certificado
+      INNER JOIN LOJAS AS loja
+        ON loja.CNPJ_LOJA = certificado.CNPJ
+      GROUP BY
+        certificado.CNPJ,
+        certificado.CPF
+    ),
+    CERTIFICADOS AS (
+      SELECT
+        certificado.CNPJ,
+        certificado.CPF,
+        certificado.NOME_INSCRITO,
+        certificado.DATA_CERTIFICACAO
+      FROM ULTIMOS_CERTIFICADOS AS ultimo
+      INNER JOIN MESU..TB_CERTIFICADOS AS certificado
+        ON ultimo.CPF = certificado.CPF
+       AND ultimo.CNPJ = certificado.CNPJ
+       AND ultimo.MAX_DATA_CERTIFICACAO = certificado.DATA_CERTIFICACAO
+    ),
+    BASE AS (
+      SELECT
+        loja.CHAVE_LOJA,
+        certificado.NOME_INSCRITO,
+        certificado.CPF,
+        CASE
+          WHEN certificado.DATA_CERTIFICACAO IS NOT NULL
+               AND DATEDIFF(
+                 DAY,
+                 GETDATE(),
+                 DATEADD(YEAR, 5, certificado.DATA_CERTIFICACAO)
+               ) BETWEEN 1 AND 90
+            THEN 'CERTIFICAÇÃO OK - PENDENTE RENOVAÇÃO'
+          WHEN certificado.DATA_CERTIFICACAO IS NOT NULL
+               AND DATEADD(YEAR, 5, certificado.DATA_CERTIFICACAO) > GETDATE()
+            THEN 'CERTIFICAÇÃO OK'
+          WHEN certificado.DATA_CERTIFICACAO IS NOT NULL
+               AND GETDATE() >= DATEADD(YEAR, 5, certificado.DATA_CERTIFICACAO)
+            THEN 'BLOQUEADO - PERDA DA CERTIFICAÇÃO'
+          WHEN certificado.DATA_CERTIFICACAO IS NULL
+               AND DATEDIFF(DAY, loja.DATA_INAUGURACAO, GETDATE()) >= 60
+            THEN 'BLOQUEADO - SEM CERTIFICAÇÃO'
+          WHEN certificado.DATA_CERTIFICACAO IS NULL
+               AND DATEDIFF(DAY, loja.DATA_INAUGURACAO, GETDATE()) < 60
+            THEN 'A BLOQUEAR - SEM CERTIFICAÇÃO'
+          ELSE 'SEM CERTIFICAÇÃO'
+        END AS STATUS_CERTIFICACAO,
+        certificado.DATA_CERTIFICACAO,
+        CASE
+          WHEN certificado.DATA_CERTIFICACAO IS NULL THEN NULL
+          ELSE DATEADD(YEAR, 5, certificado.DATA_CERTIFICACAO)
+        END AS DATA_VENCIMENTO
+      FROM LOJAS AS loja
+      LEFT JOIN CERTIFICADOS AS certificado
+        ON certificado.CNPJ = loja.CNPJ_LOJA
+    )
+    SELECT DISTINCT
+      CHAVE_LOJA,
+      CASE
+        WHEN NOME_INSCRITO IS NULL THEN NULL
+        ELSE UPPER(
+          LTRIM(
+            RTRIM(
+              REPLACE(
+                REPLACE(
+                  REPLACE(NOME_INSCRITO, ' ', '<>'),
+                  '><',
+                  ''
+                ),
+                '<>',
+                ' '
+              )
+            )
+          )
+        )
+      END AS NOME_INSCRITO,
+      CPF,
+      STATUS_CERTIFICACAO,
+      DATA_CERTIFICACAO,
+      DATA_VENCIMENTO
+    FROM BASE
+    ORDER BY
+      DATA_VENCIMENTO ASC,
+      NOME_INSCRITO ASC
+  `);
+
+  return result.recordset ?? [];
+}
+
+/**
  * Produção diária de transações de negócio dos três períodos mais recentes.
  * O número do dia útil vem do calendário corporativo MESU..TB_DIA_UTIL.
  */

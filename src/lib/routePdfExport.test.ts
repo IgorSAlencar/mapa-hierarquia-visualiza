@@ -43,7 +43,32 @@ function sampleRoute(stopCount = 3): VisitRoute {
 }
 
 test('gera capa e duas fichas de loja por página A4', async () => {
-  const bytes = await buildRoutePdf(sampleRoute(3), {});
+  const bytes = await buildRoutePdf(sampleRoute(3), {
+    '1': {
+      current: null,
+      previous: null,
+      certification: {
+        status: 'CERTIFICAÇÃO OK - PENDENTE RENOVAÇÃO',
+        people: [
+          {
+            name: 'Pessoa Certificada',
+            cpf: '123',
+            status: 'CERTIFICAÇÃO OK - PENDENTE RENOVAÇÃO',
+            certificationDate: '2021-08-10T00:00:00.000Z',
+            expirationDate: '2026-08-10T00:00:00.000Z',
+          },
+        ],
+      },
+    },
+    '2': {
+      current: null,
+      previous: null,
+      certification: {
+        status: 'BLOQUEADO - SEM CERTIFICAÇÃO',
+        people: [],
+      },
+    },
+  });
   const document = await PDFDocument.load(bytes);
   assert.equal(document.getPageCount(), 3);
   for (const page of document.getPages()) {

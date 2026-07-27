@@ -7,10 +7,12 @@ import {
   fetchProductionHeatmapPeriods,
   fetchProductionHeatmapRows,
   fetchProductionHeatmapStores,
+  fetchStoreCertifications,
   fetchStoreCoordinates,
   fetchStoreProductionHistory,
   hasStoreAccess,
 } from '../repositories/mapDataRepository.js';
+import { normalizeStoreCertificationRows } from './storeCertificationNormalizer.js';
 import { normalizeStoreProductionRows } from './storeProductionNormalizer.js';
 import {
   getProductionHeatmapMetric,
@@ -231,12 +233,14 @@ export async function getStoreMapPoints({ bbox = null, limit = null, codAg = nul
 export async function getStoreProductionHistory(chaveLoja, user) {
   const allowed = await hasStoreAccess(chaveLoja, user);
   if (!allowed) return null;
-  const [rows, dailyRows] = await Promise.all([
+  const [rows, dailyRows, certificationRows] = await Promise.all([
     fetchStoreProductionHistory(chaveLoja),
     fetchStoreBusinessDailyHistory(chaveLoja),
+    fetchStoreCertifications(chaveLoja),
   ]);
 
   const history = normalizeStoreProductionRows(rows);
+  const certification = normalizeStoreCertificationRows(certificationRows);
 
   const businessDaily = dailyRows
     .map((row) => ({
@@ -252,7 +256,7 @@ export async function getStoreProductionHistory(chaveLoja, user) {
         Number.isFinite(row.qtdNeg)
     );
 
-  return { history, businessDaily };
+  return { history, businessDaily, certification };
 }
 
 export class ProductionHeatmapError extends Error {

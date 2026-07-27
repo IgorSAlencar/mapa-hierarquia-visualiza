@@ -1,9 +1,10 @@
-import type { StoreProductionPoint } from '../mapDataApi';
+import type { StoreCertificationOverview, StoreProductionPoint } from '../mapDataApi';
 
 /** Produção da loja nos dois períodos usados no comparativo do PDF. */
 export interface RoutePdfStoreProduction {
   current: StoreProductionPoint | null;
   previous: StoreProductionPoint | null;
+  certification?: StoreCertificationOverview;
 }
 
 interface ProductMetric {
