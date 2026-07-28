@@ -166,7 +166,18 @@ export async function getAgencyDetail(codAg, user) {
   };
 }
 
-export async function getStoreMapPoints({ bbox = null, limit = null, codAg = null, hierarchy = null, sortByCenter = false, search = null, mapOnly = false, user = null } = {}) {
+export async function getStoreMapPoints({
+  bbox = null,
+  limit = null,
+  codAg = null,
+  hierarchy = null,
+  sortByCenter = false,
+  search = null,
+  mapOnly = false,
+  popupReady = false,
+  segment = null,
+  user = null,
+} = {}) {
   const targetCodAg = normalizeCodAg(codAg);
   const rows = await fetchStoreCoordinates({
     bbox: targetCodAg ? null : bbox,
@@ -176,6 +187,8 @@ export async function getStoreMapPoints({ bbox = null, limit = null, codAg = nul
     sortByCenter,
     search,
     mapOnly,
+    popupReady,
+    segment,
     user,
   });
 
@@ -203,7 +216,7 @@ export async function getStoreMapPoints({ bbox = null, limit = null, codAg = nul
         segmento: normalizeText(row.DESC_SEGTO),
       };
       if (mapOnly) return basePoint;
-      return {
+      const popupPoint = {
         ...basePoint,
         descSupervisao: normalizeText(row.DESC_SUPERVISAO),
         gerenteComercial: normalizeText(row.NOME_GERENTE_COMERCIAL),
@@ -214,6 +227,12 @@ export async function getStoreMapPoints({ bbox = null, limit = null, codAg = nul
         dataUltimaTransacao: normalizeDate(row.DT_ULT_TRX),
         cieloM0: normalizeBinaryFlag(row.CIELO_M0),
         cieloFaturamentoM0: normalizeNumber(row.VLR_FAT_CIELO_M0),
+        propostaValor: normalizeBinaryFlag(row.PROPOSTA_VALOR),
+        checklist: normalizeText(row.STATUS_CHECKLIST)?.toUpperCase() ?? null,
+      };
+      if (popupReady) return popupPoint;
+      return {
+        ...popupPoint,
         cieloHistorico: normalizeBinaryFlag(row.CIELO_HISTORICO),
         cieloHistoricoMeses: normalizeNumber(row.CIELO_HISTORICO_MESES),
         creditoM0: normalizeBinaryFlag(row.CREDITO_M0),
@@ -223,8 +242,6 @@ export async function getStoreMapPoints({ bbox = null, limit = null, codAg = nul
         negocioHistorico: normalizeBinaryFlag(row.NEGOCIO_HISTORICO),
         negocioHistoricoMeses: normalizeNumber(row.NEGOCIO_HISTORICO_MESES),
         ativoPadeM0: normalizeBinaryFlag(row.ATIVO_PADE_M0),
-        propostaValor: normalizeBinaryFlag(row.PROPOSTA_VALOR),
-        checklist: normalizeText(row.STATUS_CHECKLIST)?.toUpperCase() ?? null,
       };
     })
     .filter(Boolean);

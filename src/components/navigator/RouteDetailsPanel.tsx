@@ -15,6 +15,7 @@ interface RouteDetailsPanelProps {
   onStopSelect: (stopId: number) => void;
   onStopsReorder?: (stops: VisitStop[]) => void;
   onRouteSaved?: (route: VisitRoute) => void;
+  onTreatStop?: (stop: VisitStop) => void;
   /** Volta para a seleção das lojas quando o painel exibe um roteiro em planejamento. */
   onBack?: () => void;
   /** Fecha o painel conforme a regra definida pelo fluxo que o abriu. */
@@ -33,6 +34,7 @@ const RouteDetailsPanel: React.FC<RouteDetailsPanelProps> = ({
   onStopSelect,
   onStopsReorder,
   onRouteSaved,
+  onTreatStop,
   onBack,
   onClose,
   shellStyle,
@@ -118,6 +120,7 @@ const RouteDetailsPanel: React.FC<RouteDetailsPanelProps> = ({
           selectedStopId={selectedStopId}
           onStopSelect={onStopSelect}
           onStopsReorder={onStopsReorder}
+          onTreatStop={onTreatStop}
           footerAction={(
             <div className="flex gap-2">
               {onRouteSaved && <SaveRouteDialog route={route} onSaved={onRouteSaved} />}

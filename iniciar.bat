@@ -9,5 +9,8 @@ start "Mapa Hierarquia - Frontend" cmd /k "npm run dev"
 echo Iniciando API...
 start "Mapa Hierarquia - API" cmd /k "node server/index.js"
 
-echo Frontend e API iniciados em janelas separadas.
+echo Iniciando worker de visitas (a feature flag define se permanecerá ativo)...
+start "Mapa Hierarquia - Worker" cmd /k "npm run worker:visits"
+
+echo Frontend, API e worker habilitado iniciados em janelas separadas.
 endlocal

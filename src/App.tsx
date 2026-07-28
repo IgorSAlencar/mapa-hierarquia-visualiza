@@ -6,6 +6,7 @@ import { BrowserRouter, Routes, Route } from "react-router-dom";
 import Index from "./pages/Index";
 import Login from "./pages/Login";
 import NotFound from "./pages/NotFound";
+import NotificationsCenter from "./pages/NotificationsCenter";
 import PrivateRoute from "./components/PrivateRoute";
 import { AuthProvider } from "./context/AuthContext";
 
@@ -22,6 +23,7 @@ const App = () => (
             <Route path="/login" element={<Login />} />
             <Route path="/login=:credentials" element={<Login />} />
             <Route path="/" element={<PrivateRoute><Index /></PrivateRoute>} />
+            <Route path="/notificacoes" element={<PrivateRoute><NotificationsCenter /></PrivateRoute>} />
             {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
             <Route path="*" element={<NotFound />} />
           </Routes>

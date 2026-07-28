@@ -1,6 +1,16 @@
+import crypto from 'node:crypto';
 import { pool, poolConnect, sql } from '../db/sqlServer.js';
 import { applyAccessScope } from '../auth/scopeSql.js';
 import { canAssignRouteOutsideOwnerPortfolio } from '../auth/routeAssignmentPolicy.js';
+import { FEATURES } from '../config/features.js';
+import { productCodesFromFocusLabels } from '../domain/visitWorkflow.js';
+import { sqlTimeValue } from '../domain/sqlTime.js';
+import {
+  appendVisitHistory,
+  publishVisitEvent,
+  provisionVisitForStop,
+  recordRouteCreationEvents,
+} from './visitsRepository.js';
 
 function routeScopeSql(request, user, routeAlias = 'r', entityAlias = 'route_ent') {
   const accessSql = applyAccessScope(request, user, entityAlias, 'routeAuthCodFunc');
@@ -149,6 +159,8 @@ function bindHeader(request, payload, version) {
   request.input('plannedDate', sql.Date, payload.plannedDate);
   request.input('version', version);
   request.input('nome', sql.NVarChar(250), payload.nome);
+  request.input('priority', sql.VarChar(10), payload.priority ?? 'NORMAL');
+  request.input('orientation', sql.NVarChar(1000), payload.orientation ?? null);
   request.input('originName', sql.NVarChar(250), payload.origin.nome);
   request.input('originLat', payload.origin.lat);
   request.input('originLng', payload.origin.lng);
@@ -194,7 +206,7 @@ export async function insertVisitRoute(payload) {
       INSERT INTO TESTE..ROTEIROS_MAPA (
         REQUEST_ID, COD_FUNC_RESPONSAVEL, NOME_RESPONSAVEL, CHAVE_SUPERVISAO,
         DESC_SUPERVISAO, COD_FUNC_CRIADOR, NOME_CRIADOR, DATA_ROTEIRO, VERSAO,
-        NOME, ORIGEM_NOME, ORIGEM_LAT, ORIGEM_LNG, DESTINO_NOME, DESTINO_LAT,
+        NOME, PRIORIDADE, ORIENTACAO, ORIGEM_NOME, ORIGEM_LAT, ORIGEM_LNG, DESTINO_NOME, DESTINO_LAT,
         DESTINO_LNG, DISTANCIA_METROS, DESLOCAMENTO_MINUTOS, VISITAS_MINUTOS,
         MINUTOS_POR_VISITA, GEOMETRIA_JSON
       )
@@ -202,7 +214,7 @@ export async function insertVisitRoute(payload) {
       VALUES (
         @requestId, @responsavelFuncional, @responsavelNome, @chaveSupervisao,
         @descSupervisao, @criadorFuncional, @criadorNome, @plannedDate, @version,
-        @nome, @originName, @originLat, @originLng, @destinationName, @destinationLat,
+        @nome, @priority, @orientation, @originName, @originLat, @originLng, @destinationName, @destinationLat,
         @destinationLng, @distanceMeters, @travelMinutes, @visitMinutes,
         @minutesPerVisit, @geometryJson
       )
@@ -227,17 +239,38 @@ export async function insertVisitRoute(payload) {
       stopRequest.input('proximaAcao', sql.NVarChar(1000), stop.proximaAcao);
       stopRequest.input('lat', stop.lat);
       stopRequest.input('lng', stop.lng);
-      await stopRequest.query(`
+      const insertedStop = await stopRequest.query(`
         INSERT INTO TESTE..ROTEIRO_PARADAS_MAPA (
           ROTEIRO_ID, ORDEM, CHAVE_LOJA, COD_AG, NOME, HORARIO, STATUS, ENDERECO,
           CEP_CONTEXTO, PRODUTO_FOCO, FOCOS_JSON, OPORTUNIDADES_JSON, ULTIMA_VISITA,
           PROXIMA_ACAO, LAT, LNG
-        ) VALUES (
+        )
+        OUTPUT INSERTED.ID
+        VALUES (
           @routeId, @ordem, @chaveLoja, @codAg, @nomeStop, @horario, @status, @endereco,
           @cep, @produtoFoco, @focosJson, @oportunidadesJson, @ultimaVisita,
           @proximaAcao, @lat, @lng
         )
       `);
+      if (FEATURES.visits) {
+        await provisionVisitForStop(transaction, {
+          routeId,
+          stopId: insertedStop.recordset[0].ID,
+          stop,
+          payload,
+          productCodes: productCodesFromFocusLabels(stop.focos),
+          correlationId: payload.correlationId,
+        });
+      }
+    }
+    if (FEATURES.visits) {
+      await recordRouteCreationEvents(transaction, {
+        routeId,
+        payload,
+        stopCount: payload.stops.length,
+        correlationId: payload.correlationId,
+        notificationsEnabled: FEATURES.notifications,
+      });
     }
     await transaction.commit();
     return { id: routeId, version, existing: false };
@@ -268,7 +301,9 @@ export async function fetchVisitRouteSummaries({ user, from, to, chaveSupervisao
       r.VISITAS_MINUTOS, r.MINUTOS_POR_VISITA, r.CRIADO_EM,
       COUNT(p.ID) AS TOTAL_PARADAS
     FROM TESTE..ROTEIROS_MAPA AS r
-    LEFT JOIN TESTE..ROTEIRO_PARADAS_MAPA AS p ON p.ROTEIRO_ID = r.ID
+    LEFT JOIN TESTE..ROTEIRO_PARADAS_MAPA AS p
+      ON p.ROTEIRO_ID = r.ID
+     ${FEATURES.visits ? 'AND p.ATIVO = 1' : ''}
     WHERE r.DATA_ROTEIRO BETWEEN @fromDate AND @toDate
       ${supervisionSql}
       ${scopeSql}
@@ -291,7 +326,12 @@ export async function fetchVisitRouteSummaryBySupervision({ user, from, to }) {
   const result = await request.query(`
     WITH latest AS (
       SELECT r.*,
-        (SELECT COUNT_BIG(*) FROM TESTE..ROTEIRO_PARADAS_MAPA p WHERE p.ROTEIRO_ID = r.ID) AS TOTAL_VISITAS,
+        (
+          SELECT COUNT_BIG(*)
+          FROM TESTE..ROTEIRO_PARADAS_MAPA p
+          WHERE p.ROTEIRO_ID = r.ID
+          ${FEATURES.visits ? 'AND p.ATIVO = 1' : ''}
+        ) AS TOTAL_VISITAS,
         ROW_NUMBER() OVER (
           PARTITION BY r.COD_FUNC_RESPONSAVEL, r.DATA_ROTEIRO
           ORDER BY r.VERSAO DESC, r.CRIADO_EM DESC
@@ -326,9 +366,36 @@ export async function fetchVisitRouteById(id, user) {
 
   const stopsRequest = pool.request();
   stopsRequest.input('routeId', sql.UniqueIdentifier, id);
+  const treatmentFields = FEATURES.visits
+    ? `,
+      visita.ID AS VISITA_ID,
+      visita.STATUS AS VISITA_STATUS,
+      visita.VERSAO_LINHA AS VISITA_VERSAO_LINHA,
+      produtos.TOTAL_PRODUTOS,
+      produtos.PRODUTOS_TRATADOS`
+    : `,
+      CAST(NULL AS BIGINT) AS VISITA_ID,
+      CAST(NULL AS VARCHAR(20)) AS VISITA_STATUS,
+      CAST(NULL AS VARBINARY(8)) AS VISITA_VERSAO_LINHA,
+      CAST(0 AS BIGINT) AS TOTAL_PRODUTOS,
+      CAST(0 AS BIGINT) AS PRODUTOS_TRATADOS`;
+  const treatmentJoins = FEATURES.visits
+    ? `
+    LEFT JOIN TESTE..TB_VISITA_TRATATIVA AS visita
+      ON visita.PARADA_ROTEIRO_ID = p.ID
+     AND visita.EH_ATUAL = 1
+    OUTER APPLY (
+      SELECT
+        COUNT_BIG(*) AS TOTAL_PRODUTOS,
+        SUM(CASE WHEN vp.STATUS_TRATATIVA <> 'PENDENTE' THEN 1 ELSE 0 END) AS PRODUTOS_TRATADOS
+      FROM TESTE..TB_VISITA_PRODUTO AS vp
+      WHERE vp.VISITA_ID = visita.ID
+        AND vp.ATIVO = 1
+    ) AS produtos`
+    : '';
   const stops = await stopsRequest.query(`
     SELECT
-      p.*,
+      p.*${treatmentFields},
       (
         SELECT TOP (1) LTRIM(RTRIM(CAST(ent.NOME_AG AS NVARCHAR(255))))
         FROM MESU..CONS_DISTRIBUICAO_ENTIDADES AS ent
@@ -351,6 +418,7 @@ export async function fetchVisitRouteById(id, user) {
     FROM TESTE..ROTEIRO_PARADAS_MAPA AS p
     LEFT JOIN DATALAKE..DL_BRADESCO_EXPRESSO AS be
       ON be.CHAVE_LOJA = p.CHAVE_LOJA
+    ${treatmentJoins}
     LEFT JOIN (
       SELECT
         DATEADD(YEAR, 1, MAX(DT_CADASTRO)) AS DT_VENCIMENTO_CHECKLIST,
@@ -379,8 +447,9 @@ export async function deleteVisitRouteById(id, user) {
     checkRequest.input('routeId', sql.UniqueIdentifier, id);
     const scopeSql = routeScopeSql(checkRequest, user, 'r', 'delete_ent');
     const existing = await checkRequest.query(`
-      SELECT TOP (1) r.ID
+      SELECT TOP (1) r.ID, r.STATUS_GESTAO
       FROM TESTE..ROTEIROS_MAPA AS r
+      ${FEATURES.visits ? 'WITH (UPDLOCK, HOLDLOCK)' : ''}
       WHERE r.ID = @routeId
         ${scopeSql}
     `);
@@ -389,20 +458,524 @@ export async function deleteVisitRouteById(id, user) {
       return false;
     }
 
-    const stopsRequest = new sql.Request(transaction);
-    stopsRequest.input('routeId', sql.UniqueIdentifier, id);
-    await stopsRequest.query(`
-      DELETE FROM TESTE..ROTEIRO_PARADAS_MAPA
+    if (FEATURES.visits) {
+      const actorCode = Number(user.funcional);
+      const correlationId = crypto.randomUUID();
+      const visitsRequest = new sql.Request(transaction);
+      visitsRequest.input('routeId', sql.UniqueIdentifier, id);
+      const visits = await visitsRequest.query(`
+        SELECT ID, STATUS
+        FROM TESTE..TB_VISITA_TRATATIVA WITH (UPDLOCK, HOLDLOCK)
+        WHERE ROTEIRO_ID = @routeId
+          AND EH_ATUAL = 1
+      `);
+      if (visits.recordset.some((visit) => visit.STATUS !== 'PENDENTE')) {
+        const error = new Error('Roteiros com visita iniciada ou concluída não podem ser cancelados.');
+        error.status = 409;
+        error.code = 'ROUTE_HAS_ACTIVITY';
+        throw error;
+      }
+
+      const cancelRequest = new sql.Request(transaction);
+      cancelRequest.input('routeId', sql.UniqueIdentifier, id);
+      cancelRequest.input('actorCode', sql.Int, actorCode);
+      await cancelRequest.query(`
+        UPDATE TESTE..TB_VISITA_TRATATIVA
+        SET
+          STATUS = 'CANCELADA',
+          EH_ATUAL = 0,
+          FINALIZADA_EM_UTC = SYSUTCDATETIME(),
+          FINALIZADA_POR = @actorCode,
+          ATUALIZADO_EM_UTC = SYSUTCDATETIME(),
+          ATUALIZADO_POR = @actorCode
+        WHERE ROTEIRO_ID = @routeId
+          AND EH_ATUAL = 1
+          AND STATUS = 'PENDENTE';
+
+        UPDATE TESTE..ROTEIRO_PARADAS_MAPA
+        SET
+          ATIVO = 0,
+          CANCELADO_EM_UTC = SYSUTCDATETIME(),
+          CANCELADO_POR = @actorCode,
+          ATUALIZADO_EM_UTC = SYSUTCDATETIME(),
+          ATUALIZADO_POR = @actorCode
+        WHERE ROTEIRO_ID = @routeId
+          AND ATIVO = 1;
+
+        UPDATE TESTE..ROTEIROS_MAPA
+        SET
+          STATUS_GESTAO = 'CANCELADO',
+          ATUALIZADO_EM_UTC = SYSUTCDATETIME(),
+          ATUALIZADO_POR = @actorCode
+        WHERE ID = @routeId;
+      `);
+      for (const visit of visits.recordset) {
+        await appendVisitHistory(transaction, {
+          visitId: visit.ID,
+          eventType: 'VISITA_CANCELADA',
+          previousStatus: visit.STATUS,
+          newStatus: 'CANCELADA',
+          actorCode,
+          correlationId,
+          reason: 'Cancelamento do roteiro antes do início das visitas.',
+        });
+      }
+      const audit = new sql.Request(transaction);
+      audit.input('routeId', sql.UniqueIdentifier, id);
+      audit.input('actorCode', sql.Int, actorCode);
+      audit.input('correlationId', sql.UniqueIdentifier, correlationId);
+      await audit.query(`
+        INSERT INTO TESTE..TB_AUDITORIA_ROTEIRO (
+          ROTEIRO_ID, TIPO_EVENTO, DADOS_NOVOS_JSON, COD_FUNC_ATOR, ORIGEM, CORRELATION_ID
+        )
+        VALUES (
+          @routeId, 'ROTEIRO_CANCELADO', N'{"status":"CANCELADO"}',
+          @actorCode, 'USUARIO', @correlationId
+        )
+      `);
+    } else {
+      const stopsRequest = new sql.Request(transaction);
+      stopsRequest.input('routeId', sql.UniqueIdentifier, id);
+      await stopsRequest.query(`
+        DELETE FROM TESTE..ROTEIRO_PARADAS_MAPA
+        WHERE ROTEIRO_ID = @routeId
+      `);
+
+      const headerRequest = new sql.Request(transaction);
+      headerRequest.input('routeId', sql.UniqueIdentifier, id);
+      await headerRequest.query(`
+        DELETE FROM TESTE..ROTEIROS_MAPA
+        WHERE ID = @routeId
+      `);
+    }
+
+    await transaction.commit();
+    return true;
+  } catch (error) {
+    try { await transaction.rollback(); } catch { /* transação já encerrada */ }
+    throw error;
+  }
+}
+
+export async function patchVisitRouteById(id, user, payload) {
+  await poolConnect;
+  const transaction = new sql.Transaction(pool);
+  await transaction.begin(sql.ISOLATION_LEVEL.SERIALIZABLE);
+  try {
+    const routeRequest = new sql.Request(transaction);
+    routeRequest.input('routeId', sql.UniqueIdentifier, id);
+    const scopeSql = routeScopeSql(routeRequest, user, 'r', 'patch_ent');
+    const routeResult = await routeRequest.query(`
+      SELECT TOP (1) *
+      FROM TESTE..ROTEIROS_MAPA AS r WITH (UPDLOCK, HOLDLOCK)
+      WHERE r.ID = @routeId
+        ${scopeSql}
+    `);
+    const route = routeResult.recordset[0];
+    if (!route) {
+      await transaction.rollback();
+      return null;
+    }
+
+    const currentRequest = new sql.Request(transaction);
+    currentRequest.input('routeId', sql.UniqueIdentifier, id);
+    const current = await currentRequest.query(`
+      SELECT
+        p.*,
+        v.ID AS VISITA_ID,
+        v.STATUS AS VISITA_STATUS,
+        v.VERSAO_LINHA AS VISITA_VERSAO_LINHA
+      FROM TESTE..ROTEIRO_PARADAS_MAPA AS p WITH (UPDLOCK, HOLDLOCK)
+      LEFT JOIN TESTE..TB_VISITA_TRATATIVA AS v WITH (UPDLOCK, HOLDLOCK)
+        ON v.PARADA_ROTEIRO_ID = p.ID
+       AND v.EH_ATUAL = 1
+      WHERE p.ROTEIRO_ID = @routeId
+    `);
+    const activeStops = current.recordset.filter((stop) => Boolean(stop.ATIVO));
+    const changesAllVisits = payload.plannedDate != null
+      || payload.owner != null
+      || payload.priority != null
+      || payload.orientation !== undefined;
+    if (
+      changesAllVisits
+      && activeStops.some((stop) => stop.VISITA_STATUS !== 'PENDENTE')
+    ) {
+      const error = new Error('O roteiro possui visita iniciada; alterações globais foram bloqueadas.');
+      error.status = 409;
+      error.code = 'ROUTE_VISIT_ALREADY_STARTED';
+      throw error;
+    }
+
+    const nextOwner = payload.owner ?? {
+      funcional: String(route.COD_FUNC_RESPONSAVEL),
+      nome: route.NOME_RESPONSAVEL,
+      chaveSupervisao: route.CHAVE_SUPERVISAO,
+      descricaoSupervisao: route.DESC_SUPERVISAO,
+    };
+    const nextDate = payload.plannedDate ?? route.DATA_ROTEIRO;
+    const nextPriority = payload.priority ?? route.PRIORIDADE ?? 'NORMAL';
+    const nextOrientation = payload.orientation === undefined
+      ? route.ORIENTACAO
+      : payload.orientation;
+
+    const updateRoute = new sql.Request(transaction);
+    updateRoute.input('routeId', sql.UniqueIdentifier, id);
+    updateRoute.input('ownerCode', sql.Int, Number(nextOwner.funcional));
+    updateRoute.input('ownerName', sql.NVarChar(150), nextOwner.nome);
+    updateRoute.input('supervisionKey', sql.Int, Number(nextOwner.chaveSupervisao));
+    updateRoute.input('supervisionName', sql.NVarChar(150), nextOwner.descricaoSupervisao);
+    updateRoute.input('plannedDate', sql.Date, nextDate);
+    updateRoute.input('priority', sql.VarChar(10), nextPriority);
+    updateRoute.input('orientation', sql.NVarChar(1000), nextOrientation);
+    updateRoute.input('actorCode', sql.Int, Number(payload.actor.funcional));
+    await updateRoute.query(`
+      UPDATE TESTE..ROTEIROS_MAPA
+      SET
+        COD_FUNC_RESPONSAVEL = @ownerCode,
+        NOME_RESPONSAVEL = @ownerName,
+        CHAVE_SUPERVISAO = @supervisionKey,
+        DESC_SUPERVISAO = @supervisionName,
+        DATA_ROTEIRO = @plannedDate,
+        PRIORIDADE = @priority,
+        ORIENTACAO = @orientation,
+        ATUALIZADO_EM_UTC = SYSUTCDATETIME(),
+        ATUALIZADO_POR = @actorCode
+      WHERE ID = @routeId;
+
+      UPDATE TESTE..TB_VISITA_TRATATIVA
+      SET
+        COD_FUNC_RESPONSAVEL = @ownerCode,
+        NOME_RESPONSAVEL = @ownerName,
+        CHAVE_SUPERVISAO = @supervisionKey,
+        DATA_PLANEJADA = @plannedDate,
+        PRIORIDADE = @priority,
+        ORIENTACAO = @orientation,
+        ATUALIZADO_EM_UTC = SYSUTCDATETIME(),
+        ATUALIZADO_POR = @actorCode
       WHERE ROTEIRO_ID = @routeId
+        AND EH_ATUAL = 1
+        AND STATUS = 'PENDENTE';
     `);
 
-    const headerRequest = new sql.Request(transaction);
-    headerRequest.input('routeId', sql.UniqueIdentifier, id);
-    await headerRequest.query(`
-      DELETE FROM TESTE..ROTEIROS_MAPA
-      WHERE ID = @routeId
+    if (payload.stops) {
+      const desiredById = new Map(
+        payload.stops
+          .filter((stop) => stop.id != null)
+          .map((stop) => [Number(stop.id), stop])
+      );
+      for (const existing of activeStops) {
+        const desired = desiredById.get(Number(existing.ID));
+        if (!desired) {
+          if (existing.VISITA_STATUS !== 'PENDENTE') {
+            const error = new Error(`A parada ${existing.ID} já foi iniciada e não pode ser removida.`);
+            error.status = 409;
+            error.code = 'ROUTE_VISIT_ALREADY_STARTED';
+            throw error;
+          }
+          const cancel = new sql.Request(transaction);
+          cancel.input('stopId', sql.BigInt, existing.ID);
+          cancel.input('visitId', sql.BigInt, existing.VISITA_ID);
+          cancel.input('actorCode', sql.Int, Number(payload.actor.funcional));
+          await cancel.query(`
+            UPDATE TESTE..ROTEIRO_PARADAS_MAPA
+            SET
+              ATIVO = 0,
+              CANCELADO_EM_UTC = SYSUTCDATETIME(),
+              CANCELADO_POR = @actorCode,
+              ATUALIZADO_EM_UTC = SYSUTCDATETIME(),
+              ATUALIZADO_POR = @actorCode
+            WHERE ID = @stopId;
+
+            UPDATE TESTE..TB_VISITA_TRATATIVA
+            SET
+              STATUS = 'CANCELADA',
+              EH_ATUAL = 0,
+              FINALIZADA_EM_UTC = SYSUTCDATETIME(),
+              FINALIZADA_POR = @actorCode,
+              ATUALIZADO_EM_UTC = SYSUTCDATETIME(),
+              ATUALIZADO_POR = @actorCode
+            WHERE ID = @visitId;
+          `);
+          await appendVisitHistory(transaction, {
+            visitId: existing.VISITA_ID,
+            eventType: 'VISITA_CANCELADA_POR_REMOCAO_DA_PARADA',
+            previousStatus: 'PENDENTE',
+            newStatus: 'CANCELADA',
+            actorCode: Number(payload.actor.funcional),
+            correlationId: payload.correlationId,
+            reason: payload.changeReason,
+          });
+          continue;
+        }
+        if (existing.VISITA_STATUS !== 'PENDENTE') {
+          const changed = Number(desired.ordem) !== Number(existing.ORDEM)
+            || desired.horario !== String(existing.HORARIO)
+            || JSON.stringify(desired.focos) !== JSON.stringify(
+              JSON.parse(String(existing.FOCOS_JSON ?? '[]'))
+            );
+          if (changed) {
+            const error = new Error(`A parada ${existing.ID} já foi iniciada e não pode ser alterada.`);
+            error.status = 409;
+            error.code = 'ROUTE_VISIT_ALREADY_STARTED';
+            throw error;
+          }
+          continue;
+        }
+        const stopUpdate = new sql.Request(transaction);
+        stopUpdate.input('stopId', sql.BigInt, existing.ID);
+        stopUpdate.input('ordem', sql.Int, desired.ordem);
+        stopUpdate.input('horario', sql.NVarChar(20), desired.horario);
+        stopUpdate.input('productFocus', sql.NVarChar(500), desired.produtoFoco);
+        stopUpdate.input('focusJson', sql.NVarChar(sql.MAX), JSON.stringify(desired.focos));
+        stopUpdate.input(
+          'opportunitiesJson',
+          sql.NVarChar(sql.MAX),
+          JSON.stringify(desired.oportunidades)
+        );
+        stopUpdate.input('nextAction', sql.NVarChar(1000), desired.proximaAcao);
+        stopUpdate.input('plannedTime', sql.Time(0), sqlTimeValue(desired.horario));
+        stopUpdate.input('actorCode', sql.Int, Number(payload.actor.funcional));
+        await stopUpdate.query(`
+          UPDATE TESTE..ROTEIRO_PARADAS_MAPA
+          SET
+            ORDEM = @ordem,
+            HORARIO = @horario,
+            PRODUTO_FOCO = @productFocus,
+            FOCOS_JSON = @focusJson,
+            OPORTUNIDADES_JSON = @opportunitiesJson,
+            PROXIMA_ACAO = @nextAction,
+            ATUALIZADO_EM_UTC = SYSUTCDATETIME(),
+            ATUALIZADO_POR = @actorCode
+          WHERE ID = @stopId;
+
+          UPDATE TESTE..TB_VISITA_TRATATIVA
+          SET
+            HORARIO_PLANEJADO = @plannedTime,
+            ATUALIZADO_EM_UTC = SYSUTCDATETIME(),
+            ATUALIZADO_POR = @actorCode
+          WHERE ID = ${Number(existing.VISITA_ID)};
+        `);
+
+        const codes = productCodesFromFocusLabels(desired.focos);
+        const products = new sql.Request(transaction);
+        products.input('visitId', sql.BigInt, existing.VISITA_ID);
+        products.input('codes', sql.NVarChar(sql.MAX), JSON.stringify(codes));
+        products.input('actorCode', sql.Int, Number(payload.actor.funcional));
+        products.input(
+          'opportunity',
+          sql.NVarChar(sql.MAX),
+          JSON.stringify(desired.oportunidades)
+        );
+        await products.query(`
+          UPDATE vp
+          SET
+            ATIVO = 0,
+            REMOVIDO_EM_UTC = SYSUTCDATETIME(),
+            REMOVIDO_POR = @actorCode,
+            ATUALIZADO_EM_UTC = SYSUTCDATETIME(),
+            ATUALIZADO_POR = @actorCode
+          FROM TESTE..TB_VISITA_PRODUTO AS vp
+          WHERE vp.VISITA_ID = @visitId
+            AND vp.ATIVO = 1
+            AND vp.CODIGO_PRODUTO_SNAPSHOT NOT IN (
+              SELECT value FROM OPENJSON(@codes)
+            );
+
+          UPDATE vp
+          SET
+            ATIVO = 1,
+            REMOVIDO_EM_UTC = NULL,
+            REMOVIDO_POR = NULL,
+            OPORTUNIDADE_SNAPSHOT_JSON = @opportunity,
+            ATUALIZADO_EM_UTC = SYSUTCDATETIME(),
+            ATUALIZADO_POR = @actorCode
+          FROM TESTE..TB_VISITA_PRODUTO AS vp
+          WHERE vp.VISITA_ID = @visitId
+            AND vp.CODIGO_PRODUTO_SNAPSHOT IN (
+              SELECT value FROM OPENJSON(@codes)
+            );
+
+          INSERT INTO TESTE..TB_VISITA_PRODUTO (
+            VISITA_ID,
+            PRODUTO_ID,
+            REGRA_ACOMPANHAMENTO_ID,
+            CODIGO_PRODUTO_SNAPSHOT,
+            NOME_PRODUTO_SNAPSHOT,
+            TIPO_OPORTUNIDADE,
+            OPORTUNIDADE_SNAPSHOT_JSON,
+            STATUS_TRATATIVA,
+            NECESSITA_ACOMPANHAMENTO,
+            STATUS_ACOMPANHAMENTO,
+            CRIADO_POR,
+            ATUALIZADO_POR
+          )
+          SELECT
+            @visitId,
+            p.ID,
+            r.ID,
+            p.CODIGO,
+            p.NOME,
+            'GERAL',
+            @opportunity,
+            'PENDENTE',
+            0,
+            'NAO_APLICAVEL',
+            @actorCode,
+            @actorCode
+          FROM OPENJSON(@codes) AS requested
+          INNER JOIN TESTE..TB_PRODUTO_FOCO AS p
+            ON p.CODIGO = requested.value
+           AND p.ATIVO = 1
+          LEFT JOIN TESTE..TB_PRODUTO_REGRA_ACOMPANHAMENTO AS r
+            ON r.PRODUTO_ID = p.ID
+           AND r.TIPO_OPORTUNIDADE = 'GERAL'
+           AND r.ATIVO = 1
+          WHERE NOT EXISTS (
+            SELECT 1
+            FROM TESTE..TB_VISITA_PRODUTO AS existingProduct
+            WHERE existingProduct.VISITA_ID = @visitId
+              AND existingProduct.PRODUTO_ID = p.ID
+          );
+        `);
+        await appendVisitHistory(transaction, {
+          visitId: existing.VISITA_ID,
+          eventType: 'PARADA_E_PRODUTOS_ALTERADOS',
+          previousStatus: 'PENDENTE',
+          newStatus: 'PENDENTE',
+          newData: { order: desired.ordem, time: desired.horario, products: codes },
+          actorCode: Number(payload.actor.funcional),
+          correlationId: payload.correlationId,
+          reason: payload.changeReason,
+        });
+      }
+
+      for (const stop of payload.stops.filter((item) => item.id == null)) {
+        const insertStop = new sql.Request(transaction);
+        insertStop.input('routeId', sql.UniqueIdentifier, id);
+        insertStop.input('ordem', sql.Int, stop.ordem);
+        insertStop.input('storeKey', sql.NVarChar(100), stop.chaveLoja);
+        insertStop.input('agencyCode', sql.NVarChar(20), stop.codAg);
+        insertStop.input('name', sql.NVarChar(250), stop.nome);
+        insertStop.input('time', sql.NVarChar(20), stop.horario);
+        insertStop.input('address', sql.NVarChar(500), stop.endereco);
+        insertStop.input('zip', sql.NVarChar(250), stop.cep);
+        insertStop.input('focus', sql.NVarChar(500), stop.produtoFoco);
+        insertStop.input('focusJson', sql.NVarChar(sql.MAX), JSON.stringify(stop.focos));
+        insertStop.input(
+          'opportunitiesJson',
+          sql.NVarChar(sql.MAX),
+          JSON.stringify(stop.oportunidades)
+        );
+        insertStop.input('lastVisit', sql.NVarChar(100), stop.ultimaVisita);
+        insertStop.input('nextAction', sql.NVarChar(1000), stop.proximaAcao);
+        insertStop.input('lat', stop.lat);
+        insertStop.input('lng', stop.lng);
+        const inserted = await insertStop.query(`
+          INSERT INTO TESTE..ROTEIRO_PARADAS_MAPA (
+            ROTEIRO_ID, ORDEM, CHAVE_LOJA, COD_AG, NOME, HORARIO, STATUS, ENDERECO,
+            CEP_CONTEXTO, PRODUTO_FOCO, FOCOS_JSON, OPORTUNIDADES_JSON,
+            ULTIMA_VISITA, PROXIMA_ACAO, LAT, LNG
+          )
+          OUTPUT INSERTED.ID
+          VALUES (
+            @routeId, @ordem, @storeKey, @agencyCode, @name, @time, 'pendente', @address,
+            @zip, @focus, @focusJson, @opportunitiesJson,
+            @lastVisit, @nextAction, @lat, @lng
+          )
+        `);
+        await provisionVisitForStop(transaction, {
+          routeId: id,
+          stopId: inserted.recordset[0].ID,
+          stop,
+          payload: {
+            requestId: null,
+            owner: nextOwner,
+            createdBy: payload.actor,
+            plannedDate: nextDate,
+            priority: nextPriority,
+            orientation: nextOrientation,
+          },
+          productCodes: productCodesFromFocusLabels(stop.focos),
+          correlationId: payload.correlationId,
+        });
+      }
+    }
+
+    const audit = new sql.Request(transaction);
+    audit.input('routeId', sql.UniqueIdentifier, id);
+    audit.input('actorCode', sql.Int, Number(payload.actor.funcional));
+    audit.input('correlationId', sql.UniqueIdentifier, payload.correlationId);
+    audit.input('reason', sql.NVarChar(1000), payload.changeReason);
+    audit.input('oldData', sql.NVarChar(sql.MAX), JSON.stringify({
+      ownerCode: route.COD_FUNC_RESPONSAVEL,
+      plannedDate: route.DATA_ROTEIRO,
+      priority: route.PRIORIDADE,
+      orientation: route.ORIENTACAO,
+    }));
+    audit.input('newData', sql.NVarChar(sql.MAX), JSON.stringify({
+      ownerCode: nextOwner.funcional,
+      plannedDate: nextDate,
+      priority: nextPriority,
+      orientation: nextOrientation,
+      stops: payload.stops?.length ?? activeStops.length,
+    }));
+    await audit.query(`
+      INSERT INTO TESTE..TB_AUDITORIA_ROTEIRO (
+        ROTEIRO_ID,
+        TIPO_EVENTO,
+        DADOS_ANTERIORES_JSON,
+        DADOS_NOVOS_JSON,
+        MOTIVO,
+        COD_FUNC_ATOR,
+        ORIGEM,
+        CORRELATION_ID
+      )
+      VALUES (
+        @routeId,
+        'ROTEIRO_ALTERADO',
+        @oldData,
+        @newData,
+        @reason,
+        @actorCode,
+        'USUARIO',
+        @correlationId
+      )
     `);
 
+    if (
+      FEATURES.notifications
+      && Number(nextOwner.funcional) !== Number(payload.actor.funcional)
+    ) {
+      const eventPayload = {
+        ruleCode: 'ROTEIRO_ATUALIZADO',
+        dedupeKey: `ROTEIRO_ATUALIZADO:${id}:${payload.correlationId}`,
+        recipients: [Number(nextOwner.funcional)],
+        originatorCode: Number(payload.actor.funcional),
+        entityType: 'ROTEIRO',
+        entityId: id,
+        routeId: id,
+        storeKey: null,
+        destination: {
+          section: 'visitas',
+          routeId: id,
+          openTreatment: false,
+          mapFocus: true,
+        },
+        variables: {
+          routeName: route.NOME,
+          originatorName: payload.actor.nome,
+          changeSummary: payload.changeReason,
+        },
+      };
+      await publishVisitEvent(transaction, {
+        type: 'ROTEIRO_ALTERADO',
+        aggregateType: 'ROTEIRO',
+        aggregateId: id,
+        payload: eventPayload,
+        correlationId: payload.correlationId,
+        dedupeKey: `ROTEIRO_ALTERADO:${id}:${payload.correlationId}`,
+      });
+    }
     await transaction.commit();
     return true;
   } catch (error) {

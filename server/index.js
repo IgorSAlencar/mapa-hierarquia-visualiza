@@ -6,8 +6,11 @@ import mapRoutes from './routes/mapRoutes.js';
 import expressoRoutes from './routes/expressoRoutes.js';
 import commercialStructureRoutes from './routes/commercialStructureRoutes.js';
 import visitRoutesRoutes from './routes/visitRoutesRoutes.js';
+import visitsRoutes from './routes/visitsRoutes.js';
+import notificationsRoutes from './routes/notificationsRoutes.js';
 import { requireAuth } from './auth/authMiddleware.js';
 import { poolConnect } from './db/sqlServer.js';
+import { correlationId } from './middleware/correlationId.js';
 import {
   DEV_API_PORT,
   DEV_API_PROXY_TARGET,
@@ -38,6 +41,7 @@ app.use(cors({
 }));
 // A geometria GeoJSON completa precisa atravessar a API sem ser truncada.
 app.use(express.json({ limit: '6mb' }));
+app.use(correlationId);
 
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true });
@@ -49,6 +53,8 @@ app.use('/api/map', mapRoutes);
 app.use('/api/expresso', expressoRoutes);
 app.use('/api/estrutura', commercialStructureRoutes);
 app.use('/api/roteiros', visitRoutesRoutes);
+app.use('/api/visitas', visitsRoutes);
+app.use('/api/notificacoes', notificationsRoutes);
 
 poolConnect
   .then(() => {

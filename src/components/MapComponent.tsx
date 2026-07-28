@@ -1338,7 +1338,12 @@ function storePopupInfoIsComplete(info: StorePopupInfo): boolean {
 async function fetchCompleteStorePoint(chaveLoja: string): Promise<SqlMapPoint | null> {
   const key = String(chaveLoja ?? '').trim();
   if (!key) return null;
-  const points = await fetchStorePoints({ search: key, limit: 8, hierarchy: null });
+  const points = await fetchStorePoints({
+    search: key,
+    limit: 8,
+    hierarchy: null,
+    popupReady: true,
+  });
   return points.find((point) => String(point.chaveLoja ?? '').trim() === key) ?? null;
 }
 
@@ -2199,7 +2204,14 @@ function resolveStoreSegment(point: SqlMapPoint): StoreSegmentKey {
     return 'grandes_redes';
   }
   if (tipoPosto.includes('exclusivo')) return 'exclusivo';
-  if (tipoPosto.includes('varejo')) return 'varejo';
+  // Varejo = Tradicional + Ilha (rótulo já normalizado pelo backend ou valor bruto).
+  if (
+    tipoPosto.includes('varejo') ||
+    tipoPosto.includes('tradicional') ||
+    tipoPosto.includes('ilha')
+  ) {
+    return 'varejo';
+  }
 
   // Compatibilidade com pontos antigos/mock que ainda não possuem TIPO_POSTO.
   const cod = String(point.codAg ?? '').trim();
@@ -2213,6 +2225,11 @@ function resolveStoreSegment(point: SqlMapPoint): StoreSegmentKey {
   }
   const bucket = Math.abs(hash) % 4;
   return STORE_SEGMENT_OPTIONS[bucket].id;
+}
+
+/** Oportunidades do roteiro: somente Varejo (Tradicional + Ilhas). */
+function isPlannerOpportunityStore(point: SqlMapPoint): boolean {
+  return resolveStoreSegment(point) === 'varejo';
 }
 
 const MapComponent: React.FC<MapComponentProps> = ({
@@ -2512,8 +2529,8 @@ const MapComponent: React.FC<MapComponentProps> = ({
       setOverlayMarkerSelection(info);
       return;
     }
-    // Exibe o resumo imediatamente; os indicadores completos hidratam o mesmo card
-    // em segundo plano sem fazer o clique parecer travado.
+    // Overlay popupReady já traz o card completo. Hidrata só fallback
+    // (ex.: loja do planner carregada com mapOnly) enquanto o gráfico pode esperar.
     setOverlayMarkerSelection(info);
     void fetchCompleteStorePoint(chaveLoja)
       .then((completePoint) => {
@@ -3332,6 +3349,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
       silent?: boolean;
       hierarchy?: SqlHierarchyFilter | null;
       mapOnly?: boolean;
+      popupReady?: boolean;
     }) => {
       const fetchGen = ++overlayStoreFetchGenRef.current;
       const codAg = options?.codAg !== undefined ? options.codAg : null;
@@ -3343,6 +3361,8 @@ const MapComponent: React.FC<MapComponentProps> = ({
           : codAg
             ? null
             : seatHierarchy ?? null;
+      const mapOnly = options?.mapOnly === true;
+      const popupReady = !mapOnly && options?.popupReady !== false;
 
       if (!silent) {
         setLoadingStorePoints(true);
@@ -3351,14 +3371,14 @@ const MapComponent: React.FC<MapComponentProps> = ({
         const resolvedHierarchy = hierarchyForFetch ?? hierarchyFilterRef.current ?? null;
         const points = await fetchStorePoints(
           codAg
-            ? { codAg, hierarchy: null, mapOnly: options?.mapOnly }
-            : { hierarchy: resolvedHierarchy, mapOnly: options?.mapOnly }
+            ? { codAg, hierarchy: null, mapOnly, popupReady }
+            : { hierarchy: resolvedHierarchy, mapOnly, popupReady }
         );
         if (fetchGen !== overlayStoreFetchGenRef.current) return points;
         applyStoreFetchResult(points, 'replace');
         loadedStoreScopeRef.current = codAg
-          ? `agency:${normalizeCodAgKey(codAg)}`
-          : hierarchyFilterSignature(resolvedHierarchy);
+          ? `agency:${normalizeCodAgKey(codAg)}:popup`
+          : `${hierarchyFilterSignature(resolvedHierarchy)}:popup`;
         return points;
       } finally {
         if (!silent && fetchGen === overlayStoreFetchGenRef.current) setLoadingStorePoints(false);
@@ -3398,7 +3418,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
     await loadStoreOverlayPoints({
       codAg: null,
       hierarchy: hierarchyFilterRef.current ?? null,
-      mapOnly: true,
+      popupReady: true,
     });
   }, [loadStoreOverlayPoints, overlayLojas, resetAgencyStoreFilterSync]);
 
@@ -3425,7 +3445,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
       setOverlayLojas(true);
 
       try {
-        const linked = await loadStoreOverlayPoints({ codAg: normalized, mapOnly: true });
+        const linked = await loadStoreOverlayPoints({ codAg: normalized, popupReady: true });
         if (linked.length === 0) {
           toast({
             title: 'Nenhuma loja vinculada',
@@ -3641,10 +3661,12 @@ const MapComponent: React.FC<MapComponentProps> = ({
     void fetchStorePoints({
       bbox,
       hierarchy: null,
+      segment: 'varejo',
     })
       .then((points) => {
         if (!active || fetchGen !== plannerStoreFetchGenRef.current) return;
         const territoryStores = points
+          .filter(isPlannerOpportunityStore)
           .map((point) => ({
             point,
             distanceKm: distanceToPlannerSegmentKm(point.lngLat, center, center),
@@ -3682,6 +3704,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
     const destinationKey = normalizeCodAgKey(destination.codAg);
     const retainedOriginStores = plannerStorePointsRef.current
       .filter((point) => normalizeCodAgKey(point.codAg) === originKey)
+      .filter(isPlannerOpportunityStore)
       .map((point) => ({ ...point, routeRole: 'origin' as const }));
     setPlannerStorePoints(retainedOriginStores);
 
@@ -3711,6 +3734,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
           if (point.routeRole === 'corridor') visible.delete(key);
         }
         for (const point of points) {
+          if (!isPlannerOpportunityStore(point)) continue;
           const codAg = normalizeCodAgKey(point.codAg);
           if (codAg === originKey || codAg === destinationKey) continue;
           if (distanceToPlannerRouteKm(point.lngLat, routeCoordinates) > PLANNER_ROUTE_CORRIDOR_KM) {
@@ -3724,6 +3748,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
 
       const fallbackRouteCoordinates: [number, number][] = [origin.lngLat, destination.lngLat];
       const cachedCorridorStores = [...overlayStoreCacheRef.current.values()]
+        .filter(isPlannerOpportunityStore)
         .filter((point) =>
           distanceToPlannerRouteKm(point.lngLat, fallbackRouteCoordinates) <= PLANNER_ROUTE_CORRIDOR_KM
         );
@@ -3738,6 +3763,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
         limit: PLANNER_ROUTE_PREFETCH_LIMIT,
         hierarchy: null,
         mapOnly: true,
+        segment: 'varejo',
       }).catch((error) => {
         if (isCurrent()) console.error('Falha ao antecipar lojas do corredor:', error);
         return [] as SqlMapPoint[];
@@ -3765,8 +3791,9 @@ const MapComponent: React.FC<MapComponentProps> = ({
             codAg,
             limit: PLANNER_ROUTE_ENDPOINT_LIMIT,
             hierarchy: null,
+            segment: 'varejo',
           });
-          return { points, routeRole };
+          return { points: points.filter(isPlannerOpportunityStore), routeRole };
         } catch (error) {
           if (isCurrent()) console.error(`Falha ao carregar lojas de ${routeRole}:`, error);
           return { points: [], routeRole };
@@ -3799,6 +3826,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
         bbox: corridorBbox,
         limit: PLANNER_ROUTE_DETAIL_LIMIT,
         hierarchy: null,
+        segment: 'varejo',
       });
       if (!isCurrent()) return;
 
@@ -3938,7 +3966,12 @@ const MapComponent: React.FC<MapComponentProps> = ({
     setStoreSearchLoading(true);
     const timer = window.setTimeout(() => {
       const activeHierarchy = overlaySeatHierarchyRef.current ?? hierarchyFilterRef.current ?? null;
-      void fetchStorePoints({ search: query, limit: 8, hierarchy: activeHierarchy })
+      void fetchStorePoints({
+        search: query,
+        limit: 8,
+        hierarchy: activeHierarchy,
+        popupReady: true,
+      })
         .then((points) => {
           if (!active) return;
           setStoreSearchOptions(buildStoreSearchOptions(points));
@@ -4712,7 +4745,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
     // Carrega o escopo completo uma única vez; mover ou dar zoom não troca o conjunto de lojas.
     setStoreSegmentMenuOpen(true);
     const activeHierarchy = overlaySeatHierarchyRef.current ?? hierarchyFilter ?? null;
-    const scopeSignature = hierarchyFilterSignature(activeHierarchy);
+    const scopeSignature = `${hierarchyFilterSignature(activeHierarchy)}:popup`;
     if (loadedStoreScopeRef.current === scopeSignature) {
       setOverlayLojas(true);
       return;
@@ -4723,7 +4756,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
       await loadStoreOverlayPoints({
         codAg: null,
         hierarchy: activeHierarchy,
-        mapOnly: true,
+        popupReady: true,
       });
       setOverlayLojas(true);
     } catch (error) {
@@ -5160,13 +5193,13 @@ const MapComponent: React.FC<MapComponentProps> = ({
           try {
             const [agencias, lojas] = await Promise.all([
               fetchAgencyPoints({ hierarchy }),
-              fetchStorePoints({ hierarchy }),
+              fetchStorePoints({ hierarchy, popupReady: true }),
             ]);
             applyAgencyFetchResult(agencias, 'replace');
             applyStoreFetchResult(lojas, 'replace');
             const scopeSignature = hierarchyFilterSignature(hierarchy);
             loadedAgencyScopeRef.current = scopeSignature;
-            loadedStoreScopeRef.current = scopeSignature;
+            loadedStoreScopeRef.current = `${scopeSignature}:popup`;
             setOverlayAgencias(true);
             setOverlayLojas(true);
             window.setTimeout(() => {
@@ -6476,7 +6509,6 @@ const MapComponent: React.FC<MapComponentProps> = ({
 
         const hoverPopup = new mapboxgl.Popup(agencyMapPopupHoverOptions);
         agencyHoverPopupRef.current = hoverPopup;
-        let storeHoverRequestGeneration = 0;
 
         const onOverlayMarkerHoverEnter = (e: mapboxgl.MapLayerMouseEvent) => {
           const f = e.features?.[0];
@@ -6487,57 +6519,27 @@ const MapComponent: React.FC<MapComponentProps> = ({
             info.kind === 'loja'
               ? readStorePopupInfoFromProperties(f.properties)
               : null;
-          const requestGeneration = ++storeHoverRequestGeneration;
-          const openHoverPopup = (popupHtml: string) => {
-            const mapInstance = map.current;
-            if (!mapInstance || requestGeneration !== storeHoverRequestGeneration) {
-              return;
-            }
-            visibleHoverFeature = f as GeoJSON.Feature;
-            hoverPopup
-              .setLngLat(coordinates)
-              .setHTML(popupHtml)
-              .addTo(mapInstance);
-          };
 
           map.current.getCanvas().style.cursor = 'pointer';
-          if (
-            storeInfo &&
-            storeInfo.chaveLoja &&
-            !storePopupInfoIsComplete(storeInfo)
-          ) {
-            void fetchCompleteStorePoint(storeInfo.chaveLoja)
-              .then((completePoint) => {
-                openHoverPopup(
-                  buildStorePopupHtml(
-                    completePoint
-                      ? storePopupInfoFromPoint(completePoint)
-                      : storeInfo
-                  )
-                );
-              })
-              .catch(() => {
-                openHoverPopup(buildStorePopupHtml(storeInfo));
-              });
-            return;
-          }
-          openHoverPopup(
-            storeInfo
-              ? buildStorePopupHtml(storeInfo)
-              : buildAgencyPopupHtml(info, { compact: true })
-          );
+          visibleHoverFeature = f as GeoJSON.Feature;
+          hoverPopup
+            .setLngLat(coordinates)
+            .setHTML(
+              storeInfo
+                ? buildStorePopupHtml(storeInfo)
+                : buildAgencyPopupHtml(info, { compact: true })
+            )
+            .addTo(map.current);
         };
 
         const onOverlayMarkerHoverLeave = () => {
           if (!map.current) return;
-          storeHoverRequestGeneration += 1;
           visibleHoverFeature = null;
           map.current.getCanvas().style.cursor = '';
           hoverPopup.remove();
         };
 
         const onOverlayMarkerPointerDown = () => {
-          storeHoverRequestGeneration += 1;
           hoverPopup.remove();
         };
 
@@ -6938,17 +6940,17 @@ const MapComponent: React.FC<MapComponentProps> = ({
   useEffect(() => {
     if (plannerMode || overlayLojas) return;
     const activeHierarchy = overlaySeatHierarchyRef.current ?? hierarchyFilterRef.current ?? null;
-    const scopeSignature = hierarchyFilterSignature(activeHierarchy);
+    const scopeSignature = `${hierarchyFilterSignature(activeHierarchy)}:popup`;
     if (loadedStoreScopeRef.current === scopeSignature) return;
 
-    // Prepara apenas os campos usados pelos marcadores quando o navegador estiver
-    // livre. Se o usuário clicar antes, o cliente reaproveita a mesma requisição.
+    // Pré-aquece o payload do popup quando o navegador estiver livre.
+    // Se o usuário clicar antes, o cliente reaproveita a mesma requisição/cache.
     const timer = window.setTimeout(() => {
       void loadStoreOverlayPoints({
         codAg: null,
         hierarchy: activeHierarchy,
         silent: true,
-        mapOnly: true,
+        popupReady: true,
       }).catch((error) => {
         console.warn('Pré-carga de lojas não concluída:', error);
       });

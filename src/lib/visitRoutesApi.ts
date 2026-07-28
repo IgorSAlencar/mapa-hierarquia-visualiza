@@ -1,6 +1,7 @@
 import type { VisitRoute, VisitRouteOwner } from '@/data/visitRoutes';
 import type { StoreCertificationOverview, StoreProductionPoint } from '@/lib/mapDataApi';
 import { apiFetch } from '@/lib/apiClient';
+import { randomUuid } from '@/lib/randomUuid';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? '';
 
@@ -33,8 +34,8 @@ export interface VisitRouteExportStoreData {
 
 async function responseError(response: Response): Promise<Error> {
   try {
-    const body = await response.json() as { message?: string };
-    return new Error(body.message || `Erro ${response.status}`);
+    const body = await response.json() as { message?: string; detail?: string };
+    return new Error(body.detail || body.message || `Erro ${response.status}`);
   } catch {
     return new Error(`Erro ${response.status}`);
   }
@@ -60,7 +61,10 @@ export async function saveRouteVersion(
 ): Promise<VisitRoute> {
   const response = await apiFetch(`${API_BASE_URL}/api/roteiros`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      'Idempotency-Key': requestId,
+    },
     body: JSON.stringify({
       requestId,
       ownerFuncional: owner.funcional,
@@ -124,13 +128,22 @@ export async function fetchSavedRouteExportData(id: string): Promise<VisitRouteE
 export async function deleteSavedRoute(id: string): Promise<void> {
   const response = await apiFetch(`${API_BASE_URL}/api/roteiros/${encodeURIComponent(id)}`, {
     method: 'DELETE',
+    headers: { 'Idempotency-Key': randomUuid() },
   });
   if (!response.ok) throw await responseError(response);
+}
+
+/** Data civil local (YYYY-MM-DD). Evita toISOString/UTC — após 21h BRT virava o dia seguinte. */
+export function localIsoDate(date = new Date()): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
 }
 
 export function defaultRouteHistoryRange(): { from: string; to: string } {
   const to = new Date();
   const from = new Date(to);
   from.setDate(from.getDate() - 89);
-  return { from: from.toISOString().slice(0, 10), to: to.toISOString().slice(0, 10) };
+  return { from: localIsoDate(from), to: localIsoDate(to) };
 }

@@ -27,7 +27,7 @@ test('normaliza, ordena e remove certificações duplicadas', () => {
     },
   ]);
 
-  assert.equal(result.status, 'CERTIFICAÇÃO OK - PENDENTE RENOVAÇÃO');
+  assert.equal(result.status, 'CERTIFICAÇÃO OK');
   assert.equal(result.people.length, 2);
   assert.equal(result.people[0].name, 'Pessoa Um');
   assert.equal(result.people[0].expirationDate, '2026-08-01T00:00:00.000Z');
@@ -46,4 +46,26 @@ test('preserva o status de loja sem certificação sem criar pessoa', () => {
 
   assert.equal(result.status, 'BLOQUEADO - SEM CERTIFICAÇÃO');
   assert.deepEqual(result.people, []);
+});
+
+test('prioriza certificação positiva quando outra pessoa está vencida', () => {
+  const result = normalizeStoreCertificationRows([
+    {
+      NOME_INSCRITO: 'Pessoa Vencida',
+      CPF: '111',
+      STATUS_CERTIFICACAO: 'BLOQUEADO - PERDA DA CERTIFICAÇÃO',
+      DATA_CERTIFICACAO: '2018-01-01',
+      DATA_VENCIMENTO: '2023-01-01',
+    },
+    {
+      NOME_INSCRITO: 'Pessoa Em Dia',
+      CPF: '222',
+      STATUS_CERTIFICACAO: 'CERTIFICAÇÃO OK',
+      DATA_CERTIFICACAO: '2024-06-01',
+      DATA_VENCIMENTO: '2029-06-01',
+    },
+  ]);
+
+  assert.equal(result.status, 'CERTIFICAÇÃO OK');
+  assert.equal(result.people.length, 2);
 });

@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import {
   fetchAuthorizedRouteOwners,
   fetchAuthorizedStoreKeys,
@@ -7,6 +8,7 @@ import {
   fetchVisitRouteSummaryBySupervision,
   insertVisitRoute,
   deleteVisitRouteById,
+  patchVisitRouteById,
 } from '../repositories/visitRoutesRepository.js';
 import { canAssignRouteOutsideOwnerPortfolio } from '../auth/routeAssignmentPolicy.js';
 import {
@@ -15,6 +17,9 @@ import {
 } from '../repositories/mapDataRepository.js';
 import { normalizeStoreCertificationRows } from './storeCertificationNormalizer.js';
 import { normalizeStoreProductionRows } from './storeProductionNormalizer.js';
+import { PRIORITIES } from '../domain/visitWorkflow.js';
+import { FEATURES } from '../config/features.js';
+import { flushNotificationOutbox } from './outboxDispatcher.js';
 
 // SQL Server NEWSEQUENTIALID() gera UNIQUEIDENTIFIER válido, mas não
 // necessariamente usa os bits de versão/variante exigidos pelo UUID RFC.
@@ -88,7 +93,7 @@ function opportunitySnapshot(value) {
 function routeStop(value, index) {
   if (!value || typeof value !== 'object') throw new VisitRouteError('Parada inválida.');
   const focos = Array.isArray(value.focos)
-    ? value.focos.map((item) => text(item, 100, true)).slice(0, 5)
+    ? value.focos.map((item) => text(item, 100, true)).slice(0, 20)
     : [];
   if (focos.length === 0) throw new VisitRouteError('A parada precisa ter ao menos um foco.');
   return {
@@ -199,10 +204,15 @@ function normalizeSavePayload(body, user, owner) {
   }
   return {
     requestId: body.requestId,
+    correlationId: crypto.randomUUID(),
     owner,
     createdBy: { funcional: user.funcional, nome: user.nome },
     plannedDate: body.plannedDate,
     nome: text(body.nome, 250, true),
+    priority: PRIORITIES.has(String(body.priority ?? 'NORMAL').toUpperCase())
+      ? String(body.priority ?? 'NORMAL').toUpperCase()
+      : 'NORMAL',
+    orientation: text(body.orientation, 1000),
     origin: endpoint(body.origin, true),
     destination: endpoint(body.destination, false),
     // A Directions API devolve metros como ponto flutuante. O banco armazena
@@ -247,6 +257,13 @@ export async function saveVisitRoute(body, user) {
   }
 
   const inserted = await insertVisitRoute(payload);
+  if (FEATURES.notifications) {
+    try {
+      await flushNotificationOutbox();
+    } catch (error) {
+      console.error('[notifications:flush-after-save]', error);
+    }
+  }
   return getVisitRoute(String(inserted.id), user);
 }
 
@@ -337,17 +354,30 @@ export async function getVisitRoute(id, user) {
       createdByFuncional: String(header.COD_FUNC_CRIADOR).padStart(7, '0'),
       createdByName: String(header.NOME_CRIADOR),
     },
+    managementStatus: String(header.STATUS_GESTAO ?? 'ATIVO'),
+    priority: String(header.PRIORIDADE ?? 'NORMAL'),
+    orientation: String(header.ORIENTACAO ?? '').trim() || null,
+    rowVersion: header.VERSAO_LINHA
+      ? Buffer.from(header.VERSAO_LINHA).toString('base64')
+      : null,
     origin: { nome: String(header.ORIGEM_NOME), lat: Number(header.ORIGEM_LAT), lng: Number(header.ORIGEM_LNG) },
     destination: header.DESTINO_NOME
       ? { nome: String(header.DESTINO_NOME), lat: Number(header.DESTINO_LAT), lng: Number(header.DESTINO_LNG) }
       : undefined,
     routeGeometry: normalizeGeometry(header.GEOMETRIA_JSON),
     stops: stops.map((stop) => ({
-      id: Number(stop.ORDEM),
+      id: Number(stop.ID),
       ordem: Number(stop.ORDEM),
       nome: String(stop.NOME),
       horario: String(stop.HORARIO),
-      status: stop.STATUS === 'concluida' ? 'concluida' : 'pendente',
+      status: ({
+        EM_ANDAMENTO: 'em_andamento',
+        REALIZADA: 'concluida',
+        NAO_REALIZADA: 'nao_realizada',
+        REAGENDADA: 'reagendada',
+        CANCELADA: 'cancelada',
+      })[String(stop.VISITA_STATUS ?? '')]
+        ?? (stop.STATUS === 'concluida' ? 'concluida' : 'pendente'),
       endereco: String(stop.ENDERECO ?? ''),
       cep: String(stop.CEP_CONTEXTO ?? ''),
       produtoFoco: String(stop.PRODUTO_FOCO),
@@ -364,6 +394,16 @@ export async function getVisitRoute(id, user) {
       proximaAcao: String(stop.PROXIMA_ACAO ?? ''),
       lat: Number(stop.LAT),
       lng: Number(stop.LNG),
+      active: stop.ATIVO == null ? true : Boolean(stop.ATIVO),
+      currentVisitId: stop.VISITA_ID == null ? null : String(stop.VISITA_ID),
+      visitStatus: stop.VISITA_STATUS == null ? null : String(stop.VISITA_STATUS),
+      visitRowVersion: stop.VISITA_VERSAO_LINHA
+        ? Buffer.from(stop.VISITA_VERSAO_LINHA).toString('base64')
+        : null,
+      productProgress: {
+        treated: Number(stop.PRODUTOS_TRATADOS ?? 0),
+        total: Number(stop.TOTAL_PRODUTOS ?? 0),
+      },
     })),
   };
 }
@@ -415,11 +455,147 @@ export async function deleteVisitRoute(id, user) {
   return { id: String(id) };
 }
 
+function normalizeRouteIfMatch(value) {
+  const normalized = String(value ?? '').trim().replace(/^W\//i, '').replace(/^"|"$/g, '');
+  if (!normalized) {
+    throw new VisitRouteError(
+      'Envie If-Match com a versão atual do roteiro.',
+      428,
+      'PRECONDITION_REQUIRED'
+    );
+  }
+  return normalized;
+}
+
+export async function patchVisitRoute(id, body, user, ifMatch) {
+  if (!SQL_GUID_PATTERN.test(String(id ?? ''))) throw new VisitRouteError('Roteiro inválido.');
+  if (!user?.isAdmin && user?.role === 'supervisor') {
+    throw new VisitRouteError(
+      'Somente gestores podem alterar um roteiro atribuído.',
+      403,
+      'ROUTE_PATCH_FORBIDDEN'
+    );
+  }
+  const current = await getVisitRoute(id, user);
+  if (normalizeRouteIfMatch(ifMatch) !== current.rowVersion) {
+    throw new VisitRouteError(
+      'O roteiro foi alterado por outra operação. Atualize os dados.',
+      412,
+      'ROW_VERSION_MISMATCH'
+    );
+  }
+
+  let owner = null;
+  if (body?.ownerFuncional != null || body?.chaveSupervisao != null) {
+    const owners = await getAuthorizedRouteOwners(user);
+    const funcional = String(body.ownerFuncional ?? '').padStart(7, '0');
+    const supervision = Number(body.chaveSupervisao);
+    owner = owners.find((candidate) =>
+      candidate.funcional === funcional && candidate.chaveSupervisao === supervision
+    );
+    if (!owner) {
+      throw new VisitRouteError(
+        'Gerente Comercial fora do escopo autorizado.',
+        403,
+        'FORBIDDEN_OWNER'
+      );
+    }
+  }
+
+  const plannedDate = body?.plannedDate == null
+    ? null
+    : (DATE_PATTERN.test(String(body.plannedDate))
+      ? String(body.plannedDate)
+      : (() => { throw new VisitRouteError('Data do roteiro inválida.'); })());
+  const priority = body?.priority == null
+    ? null
+    : String(body.priority).toUpperCase();
+  if (priority != null && !PRIORITIES.has(priority)) {
+    throw new VisitRouteError('Prioridade inválida.');
+  }
+  const changeReason = text(body?.changeReason, 1000, true);
+  let stops = null;
+  if (body?.stops != null) {
+    if (!Array.isArray(body.stops) || body.stops.length > MAX_STOPS) {
+      throw new VisitRouteError(`O roteiro pode ter no máximo ${MAX_STOPS} paradas.`);
+    }
+    const currentById = new Map(current.stops.map((stop) => [Number(stop.id), stop]));
+    stops = body.stops.map((item, index) => {
+      const stopId = item?.id == null ? null : integer(item.id, { min: 1 });
+      const existing = stopId == null ? null : currentById.get(stopId);
+      if (stopId != null && !existing) {
+        throw new VisitRouteError(`Parada ${stopId} não pertence ao roteiro.`);
+      }
+      const normalized = routeStop({
+        ...(existing ?? {}),
+        ...item,
+        oportunidades: item?.oportunidades ?? existing?.oportunidades,
+        focos: item?.focos ?? existing?.focos,
+        produtoFoco: item?.produtoFoco
+          ?? (item?.focos ?? existing?.focos ?? []).join(', '),
+      }, index);
+      return { ...normalized, id: stopId };
+    });
+    if (new Set(stops.map((stop) => stop.ordem)).size !== stops.length) {
+      throw new VisitRouteError('A ordem das paradas não pode se repetir.');
+    }
+    if (new Set(stops.filter((stop) => stop.id != null).map((stop) => stop.id)).size
+      !== stops.filter((stop) => stop.id != null).length) {
+      throw new VisitRouteError('Uma parada não pode aparecer duas vezes.');
+    }
+    const targetOwner = owner ?? current.owner;
+    const storeKeys = [...new Set(stops.map((stop) => stop.chaveLoja))];
+    const authorized = new Set(await (
+      canAssignRouteOutsideOwnerPortfolio(user)
+        ? fetchUserAuthorizedStoreKeys(user, storeKeys)
+        : fetchAuthorizedStoreKeys(targetOwner.chaveSupervisao, storeKeys)
+    ));
+    if (storeKeys.some((key) => !authorized.has(key))) {
+      throw new VisitRouteError(
+        'Uma ou mais lojas estão fora do escopo autorizado.',
+        422,
+        'STORE_OUT_OF_SCOPE'
+      );
+    }
+  }
+
+  const changed = await patchVisitRouteById(id, user, {
+    owner,
+    plannedDate,
+    priority,
+    orientation: Object.hasOwn(body ?? {}, 'orientation')
+      ? text(body.orientation, 1000)
+      : undefined,
+    stops,
+    changeReason,
+    actor: { funcional: user.funcional, nome: user.nome },
+    correlationId: crypto.randomUUID(),
+  });
+  if (!changed) throw new VisitRouteError('Roteiro não encontrado.', 404, 'NOT_FOUND');
+  if (FEATURES.notifications) {
+    try {
+      await flushNotificationOutbox();
+    } catch (error) {
+      console.error('[notifications:flush-after-patch]', error);
+    }
+  }
+  return getVisitRoute(id, user);
+}
+
+function civilIsoDate(date = new Date(), timeZone = 'America/Sao_Paulo') {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(date);
+}
+
 export function defaultHistoryRange() {
-  const to = new Date();
-  const from = new Date(to);
-  from.setDate(from.getDate() - 89);
-  return { from: from.toISOString().slice(0, 10), to: to.toISOString().slice(0, 10) };
+  const to = civilIsoDate();
+  const fromDate = new Date();
+  fromDate.setDate(fromDate.getDate() - 89);
+  return { from: civilIsoDate(fromDate), to };
 }
 
 export function validateHistoryDate(value, fallback) {

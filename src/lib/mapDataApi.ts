@@ -259,9 +259,14 @@ export interface FetchPointsOptions {
   search?: string | null;
   /** Retorna somente os campos necessarios para desenhar rapidamente as lojas no mapa. */
   mapOnly?: boolean;
+  /** Payload do popup/card sem histórico de oportunidades do planner. */
+  popupReady?: boolean;
+  /** Grupo comercial. `varejo` = Tradicional + Ilha (oportunidades do roteiro). */
+  segment?: 'varejo' | null;
 }
 
 function pointsCacheTtlMs(path: string, options: FetchPointsOptions): number {
+  if (path === '/api/map/lojas' && options.popupReady) return 5 * 60_000;
   if (path === '/api/map/lojas' && options.search != null) return 60_000;
   if (path === '/api/map/lojas' && options.codAg) return 2 * 60_000;
   if (path === '/api/map/lojas' && options.bbox) return 30_000;
@@ -301,6 +306,8 @@ function buildQueryParams(options: FetchPointsOptions = {}) {
     codAgRaw && Number.isFinite(codAgNum) ? String(Math.trunc(codAgNum)) : codAgRaw;
   if (codAg) params.set('codAg', codAg);
   if (options.mapOnly) params.set('mapOnly', '1');
+  if (options.popupReady && !options.mapOnly) params.set('popupReady', '1');
+  if (options.segment === 'varejo') params.set('segment', 'varejo');
   // Evita que filtros de hierarquia (codAg da escada) sobrescrevam o codAg de lojas.
   if (options.hierarchy) {
     const entries: Array<[keyof SqlHierarchyFilter, string]> = [
@@ -352,25 +359,29 @@ async function fetchPoints(path: string, options: FetchPointsOptions = {}): Prom
   const cachedShapeIsCurrent =
     path !== '/api/map/lojas' ||
     options.mapOnly ||
-    cached?.points.every(
-      (point) =>
-        point.kind !== 'loja' ||
-        (Object.prototype.hasOwnProperty.call(point, 'cieloFaturamentoM0') &&
-          Object.prototype.hasOwnProperty.call(point, 'cieloHistorico') &&
-          Object.prototype.hasOwnProperty.call(point, 'cieloHistoricoMeses') &&
-          Object.prototype.hasOwnProperty.call(point, 'creditoM0') &&
-          Object.prototype.hasOwnProperty.call(point, 'creditoHistorico') &&
-          Object.prototype.hasOwnProperty.call(point, 'creditoHistoricoMeses') &&
-          Object.prototype.hasOwnProperty.call(point, 'negocioM0') &&
-          Object.prototype.hasOwnProperty.call(point, 'negocioHistorico') &&
-          Object.prototype.hasOwnProperty.call(point, 'negocioHistoricoMeses') &&
-          Object.prototype.hasOwnProperty.call(point, 'ativoPadeM0') &&
-          Object.prototype.hasOwnProperty.call(point, 'propostaValor') &&
-          Object.prototype.hasOwnProperty.call(point, 'nomeAg') &&
-          Object.prototype.hasOwnProperty.call(point, 'descSupervisao') &&
-          Object.prototype.hasOwnProperty.call(point, 'gerenteComercial') &&
-          Object.prototype.hasOwnProperty.call(point, 'orgaoPagador'))
-    );
+    cached?.points.every((point) => {
+      if (point.kind !== 'loja') return true;
+      const hasPopupFields =
+        Object.prototype.hasOwnProperty.call(point, 'cieloFaturamentoM0') &&
+        Object.prototype.hasOwnProperty.call(point, 'propostaValor') &&
+        Object.prototype.hasOwnProperty.call(point, 'nomeAg') &&
+        Object.prototype.hasOwnProperty.call(point, 'descSupervisao') &&
+        Object.prototype.hasOwnProperty.call(point, 'gerenteComercial') &&
+        Object.prototype.hasOwnProperty.call(point, 'orgaoPagador');
+      if (!hasPopupFields) return false;
+      if (options.popupReady) return true;
+      return (
+        Object.prototype.hasOwnProperty.call(point, 'cieloHistorico') &&
+        Object.prototype.hasOwnProperty.call(point, 'cieloHistoricoMeses') &&
+        Object.prototype.hasOwnProperty.call(point, 'creditoM0') &&
+        Object.prototype.hasOwnProperty.call(point, 'creditoHistorico') &&
+        Object.prototype.hasOwnProperty.call(point, 'creditoHistoricoMeses') &&
+        Object.prototype.hasOwnProperty.call(point, 'negocioM0') &&
+        Object.prototype.hasOwnProperty.call(point, 'negocioHistorico') &&
+        Object.prototype.hasOwnProperty.call(point, 'negocioHistoricoMeses') &&
+        Object.prototype.hasOwnProperty.call(point, 'ativoPadeM0')
+      );
+    });
   if (cached && cached.expiresAt > Date.now() && cachedShapeIsCurrent) {
     pointsResponseCache.delete(url);
     pointsResponseCache.set(url, cached);

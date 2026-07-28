@@ -1,7 +1,21 @@
 import type { OpportunitySnapshot } from '@/data/opportunities';
 import type { ChecklistStatus } from '@/lib/mapDataApi';
 
-export type VisitStopStatus = 'concluida' | 'pendente';
+export type VisitOperationalStatus =
+  | 'PENDENTE'
+  | 'EM_ANDAMENTO'
+  | 'REALIZADA'
+  | 'NAO_REALIZADA'
+  | 'REAGENDADA'
+  | 'CANCELADA';
+
+export type VisitStopStatus =
+  | 'concluida'
+  | 'pendente'
+  | 'em_andamento'
+  | 'nao_realizada'
+  | 'reagendada'
+  | 'cancelada';
 
 export interface VisitStop {
   id: number;
@@ -25,6 +39,11 @@ export interface VisitStop {
   proximaAcao: string;
   lat: number;
   lng: number;
+  active?: boolean;
+  currentVisitId?: string | null;
+  visitStatus?: VisitOperationalStatus | null;
+  visitRowVersion?: string | null;
+  productProgress?: { treated: number; total: number };
 }
 
 export interface VisitRouteDurationBreakdown {
@@ -68,4 +87,8 @@ export interface VisitRoute {
   routeGeometry?: [number, number][];
   owner?: VisitRouteOwner;
   saved?: VisitRouteSaveMetadata;
+  managementStatus?: string;
+  priority?: 'BAIXA' | 'NORMAL' | 'ALTA' | 'CRITICA';
+  orientation?: string | null;
+  rowVersion?: string | null;
 }

@@ -630,6 +630,17 @@ const RoutePlannerPanel: React.FC<Props> = ({
     const unique = new Map<string, PlannerOpportunity>();
     for (const point of plannerStores) {
       if (point.kind !== 'loja') continue;
+      const tipoPosto = String(point.tipoPosto ?? '')
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .trim()
+        .toLowerCase();
+      // Oportunidades do roteiro: somente Varejo (Tradicional + Ilhas).
+      const isVarejo =
+        tipoPosto.includes('varejo') ||
+        tipoPosto.includes('tradicional') ||
+        tipoPosto.includes('ilha');
+      if (tipoPosto && !isVarejo) continue;
       const opportunity = toPlannerOpportunity(point, originCoordinates, destinationCoordinates);
       unique.set(opportunity.id, opportunity);
     }

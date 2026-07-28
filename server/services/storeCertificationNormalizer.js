@@ -1,9 +1,11 @@
+// Maior = preferido no resumo da loja: qualquer certificação positiva
+// sobrescreve vencida/bloqueada de outra pessoa.
 const STATUS_PRIORITY = new Map([
-  ['BLOQUEADO - PERDA DA CERTIFICAÇÃO', 5],
-  ['BLOQUEADO - SEM CERTIFICAÇÃO', 4],
+  ['CERTIFICAÇÃO OK', 5],
+  ['CERTIFICAÇÃO OK - PENDENTE RENOVAÇÃO', 4],
   ['A BLOQUEAR - SEM CERTIFICAÇÃO', 3],
-  ['CERTIFICAÇÃO OK - PENDENTE RENOVAÇÃO', 2],
-  ['CERTIFICAÇÃO OK', 1],
+  ['BLOQUEADO - SEM CERTIFICAÇÃO', 2],
+  ['BLOQUEADO - PERDA DA CERTIFICAÇÃO', 1],
   ['SEM CERTIFICAÇÃO', 0],
 ]);
 
@@ -19,7 +21,7 @@ function normalizeDate(value) {
   return Number.isNaN(date.getTime()) ? null : date.toISOString();
 }
 
-function highestPriorityStatus(statuses) {
+function preferredStoreStatus(statuses) {
   return statuses.reduce((selected, status) => {
     if (!status) return selected;
     if (!selected) return status;
@@ -62,7 +64,7 @@ export function normalizeStoreCertificationRows(rows) {
 
   const rowStatuses = source.map((row) => normalizeText(row.STATUS_CERTIFICACAO));
   return {
-    status: highestPriorityStatus([
+    status: preferredStoreStatus([
       ...rowStatuses,
       ...people.map((person) => person.status),
     ]),

@@ -20,6 +20,26 @@ export const STOP_STATUS_STYLE: Record<VisitStopStatus, { label: string; badge: 
     badge: 'bg-amber-50 text-amber-700 border-amber-200',
     dot: 'bg-amber-500',
   },
+  em_andamento: {
+    label: 'Em andamento',
+    badge: 'bg-blue-50 text-blue-700 border-blue-200',
+    dot: 'bg-blue-500',
+  },
+  nao_realizada: {
+    label: 'Não realizada',
+    badge: 'bg-rose-50 text-rose-700 border-rose-200',
+    dot: 'bg-rose-500',
+  },
+  reagendada: {
+    label: 'Reagendada',
+    badge: 'bg-violet-50 text-violet-700 border-violet-200',
+    dot: 'bg-violet-500',
+  },
+  cancelada: {
+    label: 'Cancelada',
+    badge: 'bg-slate-100 text-slate-600 border-slate-200',
+    dot: 'bg-slate-400',
+  },
 };
 
 interface RouteStopsListProps {
@@ -28,6 +48,7 @@ interface RouteStopsListProps {
   onStopSelect: (stopId: number) => void;
   onStopsReorder?: (stops: VisitStop[]) => void;
   footerAction?: React.ReactNode;
+  onTreatStop?: (stop: VisitStop) => void;
 }
 
 const DEFAULT_VISIT_MINUTES = 40;
@@ -53,6 +74,7 @@ const RouteStopsList: React.FC<RouteStopsListProps> = ({
   onStopSelect,
   onStopsReorder,
   footerAction,
+  onTreatStop,
 }) => {
   const [isDurationTooltipOpen, setIsDurationTooltipOpen] = React.useState(false);
   const [draggedStopId, setDraggedStopId] = React.useState<number | null>(null);
@@ -60,7 +82,7 @@ const RouteStopsList: React.FC<RouteStopsListProps> = ({
   const isSuggestedRoute = Boolean(onStopsReorder);
   const canReorder = isSuggestedRoute && route.stops.length > 1;
   const concluidas = route.stops.filter((s) => s.status === 'concluida').length;
-  const pendentes = route.stops.length - concluidas;
+  const pendentes = route.stops.filter((s) => s.status === 'pendente').length;
   const fallbackVisitMinutes = route.stops.length * DEFAULT_VISIT_MINUTES;
   const fallbackTotalMinutes = parseDurationMinutes(route.duracaoEstimada);
   const durationBreakdown = route.durationBreakdown ?? {
@@ -276,6 +298,15 @@ const RouteStopsList: React.FC<RouteStopsListProps> = ({
                   {style.label}
                 </span>
               </button>
+              {onTreatStop && stop.currentVisitId && stop.active !== false && (
+                <button
+                  type="button"
+                  onClick={() => onTreatStop(stop)}
+                  className="m-1.5 shrink-0 rounded-lg border border-blue-200 bg-blue-50 px-2 py-1 text-[10px] font-bold text-blue-700 hover:bg-blue-100"
+                >
+                  {stop.visitStatus === 'EM_ANDAMENTO' ? 'Continuar' : 'Registrar'}
+                </button>
+              )}
             </li>
           );
         })}

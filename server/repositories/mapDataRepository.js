@@ -161,7 +161,19 @@ export async function fetchAgencyDetail({ codAg, user = null }) {
   return result.recordset[0] ?? null;
 }
 
-export async function fetchStoreCoordinates({ bbox = null, limit = null, codAg = null, hierarchy = null, sortByCenter = false, search = null, mapOnly = false, user = null } = {}) {
+export async function fetchStoreCoordinates({
+  bbox = null,
+  limit = null,
+  codAg = null,
+  hierarchy = null,
+  sortByCenter = false,
+  search = null,
+  mapOnly = false,
+  popupReady = false,
+  /** Grupo comercial: `varejo` = Tradicional + Ilha. */
+  segment = null,
+  user = null,
+} = {}) {
   const request = pool.request();
   const hasLimit = Number.isFinite(limit) && Number(limit) > 0;
   if (hasLimit) request.input('limit', Math.round(limit));
@@ -208,6 +220,12 @@ export async function fetchStoreCoordinates({ bbox = null, limit = null, codAg =
       )
     `
     : '';
+  const normalizedSegment = String(segment ?? '').trim().toLowerCase();
+  // Oportunidades do roteiro (gerente): somente Varejo = Tradicional + Ilha.
+  const segmentFilterSql =
+    normalizedSegment === 'varejo'
+      ? ` AND LTRIM(RTRIM(be.TIPO_POSTO)) IN (N'Tradicional', N'Ilha')`
+      : '';
   const storeKeySql = `LTRIM(RTRIM(CONVERT(NVARCHAR(100), l.CHAVE_LOJA))) COLLATE Latin1_General_100_CI_AI`;
   const storeNameSql = `LTRIM(RTRIM(CONVERT(NVARCHAR(255), be.NOME_LOJA))) COLLATE Latin1_General_100_CI_AI`;
   const searchFilterSql = hasStoreSearch
@@ -248,8 +266,7 @@ export async function fetchStoreCoordinates({ bbox = null, limit = null, codAg =
   const creditQuantitySql = storeCreditQuantitySql('ind');
   const businessQuantitySql = storeBusinessQuantitySql('ind', 'consortium');
 
-  // O mapa precisa primeiro apenas dos pontos que serao desenhados.
-  // Os indicadores completos continuam sendo buscados sob demanda ao abrir a loja.
+  // Pontos leves para desenhar no mapa (planner/prefetch espacial).
   if (mapOnly) {
     const result = await request.query(`
       SELECT ${topSql}
@@ -278,6 +295,83 @@ export async function fetchStoreCoordinates({ bbox = null, limit = null, codAg =
         ${hierarchyFilterSql}
         ${bboxSql}
         ${searchFilterSql}
+        ${segmentFilterSql}
+      ${orderBySql}
+    `);
+    return result.recordset;
+  }
+
+  // Payload do popup/card: indicadores do hover sem histórico crédito/negócio do planner.
+  if (popupReady) {
+    const result = await request.query(`
+      SELECT ${topSql}
+        l.CHAVE_LOJA,
+        be.COD_AG_LOJA AS COD_AG,
+        be.NOME_AG,
+        supervision.DESC_SUPERVISAO,
+        supervisor.GUERRA_FUNC AS NOME_GERENTE_COMERCIAL,
+        CASE
+          WHEN UPPER(LTRIM(RTRIM(be.BE_ORG_PAGADOR))) = 'S' THEN 1
+          ELSE 0
+        END AS ORGAO_PAGADOR,
+        CAST(l.LONGITUDE AS float) AS lon,
+        CAST(l.LATITUDE AS float) AS lat,
+        be.NOME_LOJA,
+        be.MUNICIPIO,
+        be.UF,
+        be.STATUS_TABLET,
+        be.DATA_BLOQUEIO AS DT_BLOQUEIO,
+        be.MOTIVO_BLOQUEIO,
+        CASE
+          WHEN LTRIM(RTRIM(be.TIPO_POSTO)) IN (N'Tradicional', N'Ilha') THEN N'Varejo'
+          WHEN LTRIM(RTRIM(be.TIPO_POSTO)) = N'Gerenciada' THEN N'Grandes Redes'
+          WHEN LTRIM(RTRIM(be.TIPO_POSTO)) = N'Exclusivo' THEN N'Exclusivo'
+          WHEN LTRIM(RTRIM(be.TIPO_POSTO)) = N'Mesa de Negócios' THEN N'Casas Bahia'
+          ELSE be.TIPO_POSTO
+        END AS TIPO_POSTO,
+        be.DESC_SEGTO,
+        be.DATA_ULT_TRANSACAO AS DT_ULT_TRX,
+        CASE WHEN ind.QTD_CIELO > 0 THEN 1 ELSE 0 END AS CIELO_M0,
+        ISNULL(ind.VLR_FAT_CIELO, 0) AS VLR_FAT_CIELO_M0,
+        CASE WHEN missingProposal.CHAVE_LOJA IS NULL THEN 1 ELSE 0 END AS PROPOSTA_VALOR,
+        CASE
+          WHEN LTRIM(RTRIM(be.TIPO_POSTO)) IN (
+            N'Gerenciada',
+            N'Casas Bahia',
+            N'Mesa de Negócios',
+            N'Exclusivo'
+          ) THEN N'NÃO APTO'
+          WHEN checklist.DT_VENCIMENTO_CHECKLIST > GETDATE() THEN N'OK'
+          ELSE N'VENCIDO'
+        END AS STATUS_CHECKLIST
+      FROM TESTE..TB_COORD_BE_IGOR AS l
+      INNER JOIN DATALAKE..DL_BRADESCO_EXPRESSO AS be
+        ON be.CHAVE_LOJA = l.CHAVE_LOJA
+      LEFT JOIN MESU..CONS_DISTRIBUICAO_ENTIDADES AS supervision
+        ON TRY_CONVERT(bigint, supervision.COD_AG) = TRY_CONVERT(bigint, be.COD_AG_LOJA)
+      LEFT JOIN TESTE..TB_COORD_SUP AS supervisor
+        ON supervisor.CHAVE_SUPERVISAO = supervision.CHAVE_SUPERVISAO
+      LEFT JOIN DATAWAREHOUSE..TB_INDICADORES_BE AS ind
+        ON ind.CHAVE_LOJA = l.CHAVE_LOJA
+        AND ind.PERIODO = YEAR(GETDATE()) * 100 + MONTH(GETDATE())
+      LEFT JOIN TESTE..TB_PORTAL_COMERCIAL_LOJAS_S_PROPOSTA_VALOR AS missingProposal
+        ON missingProposal.CHAVE_LOJA = CONVERT(VARCHAR(50), l.CHAVE_LOJA)
+      LEFT JOIN (
+        SELECT
+          DATEADD(YEAR, 1, MAX(DT_CADASTRO)) AS DT_VENCIMENTO_CHECKLIST,
+          CHAVE_LOJA
+        FROM PAA.DBO.TB_ANALISE_CHECKLIST_AG WITH (NOLOCK)
+        WHERE ID_STATUS_CHECKLIST_AG = 1
+        GROUP BY CHAVE_LOJA
+      ) AS checklist
+        ON checklist.CHAVE_LOJA = l.CHAVE_LOJA
+      WHERE l.LONGITUDE IS NOT NULL
+        AND l.LATITUDE IS NOT NULL
+        ${codAgSql}
+        ${hierarchyFilterSql}
+        ${bboxSql}
+        ${searchFilterSql}
+        ${segmentFilterSql}
       ${orderBySql}
     `);
     return result.recordset;
@@ -446,6 +540,7 @@ export async function fetchStoreCoordinates({ bbox = null, limit = null, codAg =
       ${hierarchyFilterSql}
       ${bboxSql}
       ${searchFilterSql}
+      ${segmentFilterSql}
     ${orderBySql}
   `;
 

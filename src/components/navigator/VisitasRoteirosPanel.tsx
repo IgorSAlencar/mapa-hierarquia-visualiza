@@ -28,6 +28,7 @@ import {
   fetchRouteOwners,
   fetchRouteSummary,
   fetchSavedRoute,
+  localIsoDate,
   type VisitRouteSummary,
   type VisitRouteSupervisionSummary,
 } from '@/lib/visitRoutesApi';
@@ -101,23 +102,33 @@ const VisitasRoteirosPanel: React.FC<VisitasRoteirosPanelProps> = ({
 
   useEffect(() => {
     let active = true;
-    const today = new Date().toISOString().slice(0, 10);
     void Promise.allSettled([
       fetchGerenciasArea(),
       fetchCoordenacoes(),
       fetchSupervisoes(),
       fetchRouteOwners(),
-      fetchRouteSummary(today, today),
-    ]).then(([gg, gc3, gc, routeOwners, summary]) => {
+    ]).then(([gg, gc3, gc, routeOwners]) => {
       if (!active) return;
       if (gg.status === 'fulfilled') setGerencias(gg.value);
       if (gc3.status === 'fulfilled') setCoordenacoes(gc3.value);
       if (gc.status === 'fulfilled') setSupervisoes(gc.value);
       if (routeOwners.status === 'fulfilled') setOwners(routeOwners.value);
-      if (summary.status === 'fulfilled') setTodaySummary(summary.value);
     });
     return () => { active = false; };
   }, []);
+
+  // Resumo do dia civil local; recarrega ao voltar da visão do gerente.
+  useEffect(() => {
+    if (ownerSel) return;
+    let active = true;
+    const today = localIsoDate();
+    void fetchRouteSummary(today, today)
+      .then((summary) => {
+        if (active) setTodaySummary(summary);
+      })
+      .catch(() => undefined);
+    return () => { active = false; };
+  }, [ownerSel]);
 
   useEffect(() => {
     if (user?.role !== 'supervisor' || ownerSel || owners.length === 0) return;
@@ -267,7 +278,7 @@ const VisitasRoteirosPanel: React.FC<VisitasRoteirosPanelProps> = ({
       setHistory((current) => current.filter((route) => route.id !== target.id));
       if (activeRoute?.id === target.id) onRouteChange(null);
       setRoutePendingDelete(null);
-      const today = new Date().toISOString().slice(0, 10);
+      const today = localIsoDate();
       void fetchRouteSummary(today, today).then(setTodaySummary).catch(() => undefined);
     } catch (reason) {
       setHistoryError(reason instanceof Error ? reason.message : 'Não foi possível excluir o roteiro.');

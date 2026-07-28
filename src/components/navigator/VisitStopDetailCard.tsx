@@ -1,6 +1,6 @@
 import React from 'react';
 import type { CSSProperties } from 'react';
-import { ArrowLeft, ArrowRight, CalendarClock, MapPin, MapPinned, Package, X } from 'lucide-react';
+import { ArrowLeft, ArrowRight, CalendarClock, ClipboardCheck, MapPin, MapPinned, Package, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { VisitRoute, VisitStop } from '@/data/visitRoutes';
 import { STOP_STATUS_STYLE } from './RouteStopsList';
@@ -14,6 +14,7 @@ interface VisitStopDetailCardProps {
   onOpenOnMap: () => void;
   onPrev: () => void;
   onNext: () => void;
+  onTreat?: () => void;
   shellStyle?: CSSProperties;
   headerDragProps?: PanelHeaderDragProps;
 }
@@ -25,6 +26,7 @@ const VisitStopDetailCard: React.FC<VisitStopDetailCardProps> = ({
   onOpenOnMap,
   onPrev,
   onNext,
+  onTreat,
   shellStyle,
   headerDragProps,
 }) => {
@@ -125,6 +127,17 @@ const VisitStopDetailCard: React.FC<VisitStopDetailCardProps> = ({
         >
           Ver detalhes da loja
         </button>
+
+        {onTreat && stop.currentVisitId && stop.active !== false && (
+          <button
+            type="button"
+            onClick={onTreat}
+            className="flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 px-3 py-2.5 text-xs font-bold text-white transition-colors hover:bg-blue-700"
+          >
+            <ClipboardCheck className="h-4 w-4" />
+            {stop.visitStatus === 'EM_ANDAMENTO' ? 'Continuar tratativa' : 'Registrar visita'}
+          </button>
+        )}
 
         <div className="flex items-center justify-between gap-2 border-t border-slate-200 pt-3">
           <button

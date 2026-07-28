@@ -14,6 +14,7 @@ import {
 import { cn } from '@/lib/utils';
 import type { PanelHeaderDragProps } from '@/hooks/usePanelDrag';
 import { mergeHeaderDrag } from '@/components/navigator/mergeHeaderDrag';
+import { useAuth } from '@/context/AuthContext';
 
 export type NavigatorSection = 'visitas' | 'planejar' | 'comparar' | 'distancia' | 'heatmap';
 
@@ -80,6 +81,11 @@ const NavigatorPanel: React.FC<NavigatorPanelProps> = ({
   shellStyle,
   headerDragProps,
 }) => {
+  const { user } = useAuth();
+  const subjects = SUBJECTS.filter(
+    (subject) => subject.id !== 'comparar' || user?.isAdmin
+  );
+
   if (minimized) {
     return (
       <button
@@ -160,7 +166,7 @@ const NavigatorPanel: React.FC<NavigatorPanelProps> = ({
 
         <p className="mb-2 mt-4 text-[10px] font-semibold uppercase tracking-wider text-slate-500">Assuntos</p>
         <div className="space-y-1.5">
-          {SUBJECTS.map((subject) => {
+          {subjects.map((subject) => {
             const isClickable = Boolean(subject.section);
             const isActive = isClickable && activeSection === subject.section;
             return (

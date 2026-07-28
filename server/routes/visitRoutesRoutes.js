@@ -8,14 +8,19 @@ import {
   getVisitRouteExportData,
   getVisitRouteSummary,
   listVisitRoutes,
+  patchVisitRoute,
   saveVisitRoute,
   validateHistoryDate,
 } from '../services/visitRoutesService.js';
+import { FEATURES, requireFeature } from '../config/features.js';
+import { executeIdempotent } from '../services/idempotencyService.js';
 
 const router = Router();
 
 function handleError(res, error, context) {
-  const status = error instanceof VisitRouteError ? error.status : 500;
+  const status = error instanceof VisitRouteError || Number.isInteger(error?.status)
+    ? error.status
+    : 500;
   if (status >= 500) console.error(context, error);
   res.status(status).json({
     message: status >= 500 ? 'Erro ao processar roteiros.' : error.message,
@@ -80,9 +85,36 @@ router.get('/', async (req, res) => {
 
 router.post('/', async (req, res) => {
   try {
-    const route = await saveVisitRoute(req.body, req.user);
-    res.status(201).json({ route });
+    if (FEATURES.visits) {
+      const result = await executeIdempotent(req, 'ROTEIRO_CRIAR', async () => ({
+        status: 201,
+        body: {
+          route: await saveVisitRoute(req.body, req.user),
+          correlationId: req.correlationId,
+        },
+      }));
+      res.set('Idempotency-Replayed', result.replayed ? 'true' : 'false');
+      res.status(result.status).json(result.body);
+    } else {
+      const route = await saveVisitRoute(req.body, req.user);
+      res.status(201).json({ route, correlationId: req.correlationId });
+    }
   } catch (error) { handleError(res, error, 'Erro ao salvar roteiro:'); }
+});
+
+router.patch('/:id', requireFeature('visits'), async (req, res) => {
+  try {
+    const result = await executeIdempotent(req, `ROTEIRO_ALTERAR:${req.params.id}`, async () => ({
+      status: 200,
+      body: {
+        route: await patchVisitRoute(req.params.id, req.body, req.user, req.get('If-Match')),
+        correlationId: req.correlationId,
+      },
+    }));
+    res.set('Idempotency-Replayed', result.replayed ? 'true' : 'false');
+    if (result.body.route?.rowVersion) res.set('ETag', `"${result.body.route.rowVersion}"`);
+    res.status(result.status).json(result.body);
+  } catch (error) { handleError(res, error, 'Erro ao alterar roteiro:'); }
 });
 
 router.get('/:id/exportacao-dados', async (req, res) => {
@@ -99,7 +131,19 @@ router.get('/:id', async (req, res) => {
 
 router.delete('/:id', async (req, res) => {
   try {
-    res.json(await deleteVisitRoute(req.params.id, req.user));
+    if (FEATURES.visits) {
+      const result = await executeIdempotent(req, `ROTEIRO_CANCELAR:${req.params.id}`, async () => ({
+        status: 200,
+        body: {
+          ...(await deleteVisitRoute(req.params.id, req.user)),
+          correlationId: req.correlationId,
+        },
+      }));
+      res.set('Idempotency-Replayed', result.replayed ? 'true' : 'false');
+      res.status(result.status).json(result.body);
+    } else {
+      res.json(await deleteVisitRoute(req.params.id, req.user));
+    }
   } catch (error) { handleError(res, error, 'Erro ao excluir roteiro:'); }
 });
 

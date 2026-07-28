@@ -16,6 +16,7 @@ import { toast } from 'sonner';
 import type { VisitRoute, VisitRouteOwner } from '@/data/visitRoutes';
 import { useAuth } from '@/context/AuthContext';
 import { fetchRouteOwners, saveRouteVersion } from '@/lib/visitRoutesApi';
+import { randomUuid } from '@/lib/randomUuid';
 import { cn } from '@/lib/utils';
 import {
   Dialog,
@@ -32,15 +33,6 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 interface Props {
   route: VisitRoute;
   onSaved: (route: VisitRoute) => void;
-}
-
-function requestUuid(): string {
-  if (typeof crypto.randomUUID === 'function') return crypto.randomUUID();
-  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (char) => {
-    const random = Math.floor(Math.random() * 16);
-    const value = char === 'x' ? random : (random & 0x3) | 0x8;
-    return value.toString(16);
-  });
 }
 
 function routeStoreKeys(route: VisitRoute): string[] {
@@ -61,7 +53,7 @@ const SaveRouteDialog: React.FC<Props> = ({ route, onSaved }) => {
   const [loadingOwners, setLoadingOwners] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [requestId, setRequestId] = useState(() => requestUuid());
+  const [requestId, setRequestId] = useState(() => randomUuid());
   const storeKeys = useMemo(() => routeStoreKeys(route), [route]);
   const canAssignOutsidePortfolio = Boolean(
     user?.isAdmin || user?.role === 'coordenador' || user?.role === 'gerente_area'
@@ -124,7 +116,7 @@ const SaveRouteDialog: React.FC<Props> = ({ route, onSaved }) => {
   }, [ownerSearch, owners]);
 
   useEffect(() => {
-    setRequestId(requestUuid());
+    setRequestId(randomUuid());
     setError(null);
   }, [route.id]);
 

@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
+import { useSearchParams } from 'react-router-dom';
 import MapComponent from '@/components/MapComponent';
 import NavigatorPanel, { type NavigatorSection } from '@/components/navigator/NavigatorPanel';
 import CompararAreasPanel from '@/components/navigator/CompararAreasPanel';
@@ -34,6 +35,12 @@ import { Button } from '@/components/ui/button';
 import { fetchDrivingRoute } from '@/lib/mapboxDirections';
 import { useAuth } from '@/context/AuthContext';
 import type { AuthUser } from '@/lib/authApi';
+import { toast } from 'sonner';
+import VisitTreatmentDrawer from '@/components/visits/VisitTreatmentDrawer';
+import { FEATURE_FLAGS } from '@/lib/featureFlags';
+import type { VisitTreatment } from '@/lib/visitsApi';
+import { fetchSavedRoute } from '@/lib/visitRoutesApi';
+import NotificationBell from '@/components/notifications/NotificationBell';
 
 const NAVIGATOR_PANEL_DOCK = { x: 16, y: 150 } as const;
 const DISTANCE_PANEL_TOP = 150;
@@ -102,6 +109,7 @@ interface PlannerOpportunityFocus {
 
 const Index = () => {
   const { user, logout } = useAuth();
+  const [searchParams, setSearchParams] = useSearchParams();
   const baseFilters = useMemo(() => baseFiltersForUser(user), [user]);
   const [filters, setFilters] = useState<FiltrosEstrutura>(() => baseFiltersForUser(user));
 
@@ -115,6 +123,9 @@ const Index = () => {
   const activeRouteIdRef = useRef<string | null>(null);
   const [routeDetailsOpen, setRouteDetailsOpen] = useState(false);
   const [selectedStopId, setSelectedStopId] = useState<number | null>(null);
+  const [treatmentStopId, setTreatmentStopId] = useState<number | null>(null);
+  const [treatmentInitialStep, setTreatmentInitialStep] = useState(0);
+  const deepLinkHandledRef = useRef('');
   const [visitFocus, setVisitFocus] = useState<{ tick: number; stopId: number | null } | null>(null);
   const [plannerTerritory, setPlannerTerritory] = useState<string | null>(null);
   const [plannerTerritoryRadiusKm, setPlannerTerritoryRadiusKm] = useState<number | null>(null);
@@ -311,6 +322,10 @@ const Index = () => {
     () => activeRoute?.stops.find((stop) => stop.id === selectedStopId) ?? null,
     [activeRoute, selectedStopId]
   );
+  const treatmentStop = useMemo(
+    () => activeRoute?.stops.find((stop) => stop.id === treatmentStopId) ?? null,
+    [activeRoute, treatmentStopId]
+  );
 
   const positionRouteDetails = useCallback((resultsPanelExpanded: boolean) => {
     const viewportWidth = window.innerWidth;
@@ -503,6 +518,7 @@ const Index = () => {
   };
 
   const handleSelectSection = (section: NavigatorSection | null) => {
+    if (section === 'comparar' && !user?.isAdmin) return;
     const leavingComparar = activeSection === 'comparar' && section !== 'comparar';
     const leavingPlanner = activeSection === 'planejar' && section !== 'planejar';
     const leavingHeatmap = activeSection === 'heatmap' && section !== 'heatmap';
@@ -695,6 +711,89 @@ const Index = () => {
     if (next) setSelectedStopId(next.id);
   };
 
+  const openTreatment = (stop: VisitStop, initialStep = 0) => {
+    if (!stop.currentVisitId) return;
+    setSelectedStopId(stop.id);
+    setTreatmentStopId(stop.id);
+    setTreatmentInitialStep(initialStep);
+    setVisitFocus({ tick: Date.now(), stopId: stop.id });
+  };
+
+  const handleVisitUpdated = (visit: VisitTreatment) => {
+    const status = {
+      PENDENTE: 'pendente',
+      EM_ANDAMENTO: 'em_andamento',
+      REALIZADA: 'concluida',
+      NAO_REALIZADA: 'nao_realizada',
+      REAGENDADA: 'reagendada',
+      CANCELADA: 'cancelada',
+    }[visit.status] as VisitStop['status'];
+    setActiveRoute((current) => current ? {
+      ...current,
+      stops: current.stops.map((stop) => stop.id === Number(visit.stopId)
+        ? {
+            ...stop,
+            status,
+            visitStatus: visit.status,
+            currentVisitId: visit.id,
+            visitRowVersion: visit.rowVersion,
+            productProgress: visit.productProgress,
+          }
+        : stop),
+    } : current);
+  };
+
+  const handleTreatmentNext = () => {
+    if (!activeRoute || !treatmentStop) return;
+    const next = activeRoute.stops
+      .filter((stop) => stop.active !== false && stop.currentVisitId)
+      .sort((a, b) => a.ordem - b.ordem)
+      .find((stop) => stop.ordem > treatmentStop.ordem);
+    if (next) {
+      openTreatment(next);
+      return;
+    }
+    setTreatmentStopId(null);
+    toast.success('Todas as lojas disponíveis deste roteiro foram percorridas.');
+  };
+
+  useEffect(() => {
+    if (!FEATURE_FLAGS.visits) return;
+    const routeId = searchParams.get('routeId');
+    const visitId = searchParams.get('visitId');
+    const focus = searchParams.get('focus') ?? '';
+    const signature = `${routeId ?? ''}:${visitId ?? ''}:${searchParams.get('step') ?? ''}:${focus}`;
+    if (!routeId || deepLinkHandledRef.current === signature) return;
+    deepLinkHandledRef.current = signature;
+    setActiveSection('visitas');
+    setNavigatorMinimized(false);
+    void fetchSavedRoute(routeId).then((route) => {
+      activeRouteIdRef.current = route.id;
+      setActiveRoute(route);
+      setRouteDetailsOpen(true);
+      const stop = visitId
+        ? route.stops.find((item) => item.currentVisitId === visitId)
+        : null;
+      if (stop && searchParams.get('drawer') !== '0') {
+        setSelectedStopId(stop.id);
+        setTreatmentStopId(stop.id);
+        setTreatmentInitialStep(Math.max(0, Math.min(5, Number(searchParams.get('step')) || 0)));
+        setVisitFocus({ tick: Date.now(), stopId: stop.id });
+      } else if (!visitId && route.stops.length > 0) {
+        // Reabre o roteiro no mapa mesmo sem visita específica (Ver roteiro / Abrir no mapa).
+        const first = route.stops
+          .filter((item) => item.active !== false)
+          .sort((a, b) => a.ordem - b.ordem)[0] ?? route.stops[0];
+        if (first) {
+          setSelectedStopId(first.id);
+          setVisitFocus({ tick: Date.now(), stopId: first.id });
+        }
+      }
+    }).catch(() => {
+      deepLinkHandledRef.current = '';
+    });
+  }, [searchParams]);
+
   const handleNavigatorMinimize = () => {
     navigatorDrag.setPosition(NAVIGATOR_PANEL_DOCK);
     if (activeSection === 'distancia') distanceDrag.setPosition({ x: 16, y: DISTANCE_PANEL_TOP });
@@ -737,7 +836,7 @@ const Index = () => {
               headerDragProps={visitasDrag.headerDragProps}
             />
           )}
-          {activeSection === 'comparar' && (
+          {activeSection === 'comparar' && user?.isAdmin && (
             <CompararAreasPanel
               onBack={() => handleSelectSection(null)}
               onClose={() => handleSelectSection(null)}
@@ -851,6 +950,7 @@ const Index = () => {
             setActiveRoute(savedRoute);
             setSelectedStopId(null);
           }}
+          onTreatStop={FEATURE_FLAGS.visits ? (stop) => openTreatment(stop) : undefined}
           onBack={activeSection === 'planejar'
             ? () => {
                 setPlannerRouteReviewOpen(false);
@@ -873,8 +973,31 @@ const Index = () => {
           onOpenOnMap={() => setVisitFocus({ tick: Date.now(), stopId: selectedStop.id })}
           onPrev={() => handleStopStep(-1)}
           onNext={() => handleStopStep(1)}
+          onTreat={FEATURE_FLAGS.visits && selectedStop.currentVisitId
+            ? () => openTreatment(selectedStop)
+            : undefined}
           shellStyle={stopDetailDrag.shellStyle}
           headerDragProps={stopDetailDrag.headerDragProps}
+        />
+      )}
+
+      {FEATURE_FLAGS.visits && activeRoute && treatmentStop?.currentVisitId && (
+        <VisitTreatmentDrawer
+          key={`${treatmentStop.currentVisitId}:${treatmentInitialStep}`}
+          route={activeRoute}
+          stop={treatmentStop}
+          visitId={treatmentStop.currentVisitId}
+          initialStep={treatmentInitialStep}
+          onClose={() => {
+            setTreatmentStopId(null);
+            const next = new URLSearchParams(searchParams);
+            next.delete('visitId');
+            next.delete('drawer');
+            next.delete('step');
+            setSearchParams(next, { replace: true });
+          }}
+          onVisitUpdated={handleVisitUpdated}
+          onNext={handleTreatmentNext}
         />
       )}
     </>
@@ -912,6 +1035,7 @@ const Index = () => {
                     </p>
                   </div>
                 </div>
+                {FEATURE_FLAGS.notifications && <NotificationBell />}
                 <Button type="button" variant="ghost" size="icon" onClick={() => void logout()} aria-label="Sair">
                   <LogOut className="h-4 w-4" />
                 </Button>

@@ -31,9 +31,11 @@ router.get('/areas-supervisao', async (req, res) => {
   }
 });
 
-function storePointsCacheTtlMs({ bbox, codAg, hierarchy, search }) {
+function storePointsCacheTtlMs({ bbox, codAg, hierarchy, search, popupReady }) {
   const hasAdditionalHierarchy = hierarchy && Object.entries(hierarchy)
     .some(([key, value]) => key !== 'codAg' && value != null);
+  // Payload do popup é caro: cache mais longo para evitar reconsulta na sessão.
+  if (popupReady && (codAg || hasAdditionalHierarchy || !bbox)) return 5 * 60_000;
   if (codAg) return 2 * 60_000;
   if (search) return 60_000;
   if (bbox) return 30_000;
@@ -48,7 +50,7 @@ function roundedBbox(bbox) {
   );
 }
 
-function storePointsCacheKey({ bbox, limit, codAg, hierarchy, sortByCenter, search, mapOnly, accessKey }) {
+function storePointsCacheKey({ bbox, limit, codAg, hierarchy, sortByCenter, search, mapOnly, popupReady, segment, accessKey }) {
   return JSON.stringify({
     bbox: roundedBbox(bbox),
     limit,
@@ -57,6 +59,8 @@ function storePointsCacheKey({ bbox, limit, codAg, hierarchy, sortByCenter, sear
     sortByCenter,
     search,
     mapOnly,
+    popupReady,
+    segment,
     accessKey,
   });
 }
@@ -223,7 +227,10 @@ router.get('/lojas', async (req, res) => {
     const limit = search ? Math.min(requestedLimit ?? 20, 50) : requestedLimit;
     const codAg = readCodAgFromQuery(req.query);
     const mapOnly = String(req.query.mapOnly ?? '').trim() === '1';
+    const popupReady = !mapOnly && String(req.query.popupReady ?? '').trim() === '1';
     const sortByCenter = String(req.query.sortByCenter ?? '').trim() === '1';
+    const segmentRaw = String(req.query.segment ?? '').trim().toLowerCase();
+    const segment = segmentRaw === 'varejo' ? 'varejo' : null;
     const hierarchy = readHierarchyFromQuery(req.query);
     const options = {
       bbox,
@@ -233,6 +240,8 @@ router.get('/lojas', async (req, res) => {
       sortByCenter,
       search,
       mapOnly,
+      popupReady,
+      segment,
       user: req.user,
       accessKey: authCacheKey(req.user),
     };
