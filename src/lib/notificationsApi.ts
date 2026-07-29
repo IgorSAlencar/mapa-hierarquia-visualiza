@@ -147,13 +147,14 @@ export function formatNotificationMessage(message: string): string {
   );
 }
 
-export function notificationDestinationUrl(notification: AppNotification): string {
+export function notificationDestinationUrl(notification: AppNotification, action?: string): string {
   const destination = notification.destination ?? {};
   const params = new URLSearchParams();
   params.set('section', String(destination.section ?? 'visitas'));
   if (notification.routeId) params.set('routeId', notification.routeId);
   if (notification.visitId) params.set('visitId', notification.visitId);
   if (notification.visitProductId) params.set('visitProductId', notification.visitProductId);
+  if (action === 'VER_ROTEIRO') params.set('routePanelOnly', '1');
   if (destination.openTreatment !== false && notification.visitId) params.set('drawer', '1');
   if (destination.step != null) params.set('step', String(destination.step));
   // Garante reentrada: React Router ignora navigate() para a mesma URL,

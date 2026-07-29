@@ -98,7 +98,6 @@ export async function provisionVisitForStop(transaction, {
   request.input('plannedDate', sql.Date, payload.plannedDate);
   request.input('plannedTime', sql.Time(0), sqlTimeValue(stop.horario));
   request.input('priority', sql.VarChar(10), payload.priority ?? 'NORMAL');
-  request.input('orientation', sql.NVarChar(1000), payload.orientation ?? null);
   const inserted = await request.query(`
     INSERT INTO TESTE..TB_VISITA_TRATATIVA (
       PARADA_ROTEIRO_ID,
@@ -117,7 +116,6 @@ export async function provisionVisitForStop(transaction, {
       DATA_PLANEJADA,
       HORARIO_PLANEJADO,
       PRIORIDADE,
-      ORIENTACAO,
       STATUS,
       RESULTADO_COMERCIAL,
       CRIADO_POR,
@@ -141,7 +139,6 @@ export async function provisionVisitForStop(transaction, {
       @plannedDate,
       @plannedTime,
       @priority,
-      @orientation,
       'PENDENTE',
       'SEM_RESULTADO',
       @creatorCode,
@@ -410,12 +407,12 @@ export async function withLockedVisit(id, user, callback) {
     const visit = await lockedVisit(transaction, id, user);
     if (!visit) {
       await transaction.rollback();
-      return null;
+      return { found: false, value: null };
     }
     const products = await lockedProducts(transaction, id);
     const value = await callback({ transaction, visit, products });
     await transaction.commit();
-    return value;
+    return { found: true, value };
   } catch (error) {
     try { await transaction.rollback(); } catch { /* já encerrada */ }
     throw error;
@@ -432,11 +429,18 @@ export async function fetchVisitBundle(id, user) {
       r.NOME AS ROTEIRO_NOME,
       r.STATUS_GESTAO AS ROTEIRO_STATUS,
       r.PRIORIDADE AS ROTEIRO_PRIORIDADE,
-      r.ORIENTACAO AS ROTEIRO_ORIENTACAO,
       p.ORDEM AS PARADA_ORDEM,
       p.LAT AS LOJA_LAT,
       p.LNG AS LOJA_LNG,
-      p.ATIVO AS PARADA_ATIVA
+      p.ATIVO AS PARADA_ATIVA,
+      (
+        SELECT TOP (1)
+          LTRIM(RTRIM(CAST(agency_ent.NOME_AG AS NVARCHAR(255))))
+        FROM MESU..CONS_DISTRIBUICAO_ENTIDADES AS agency_ent
+        WHERE TRY_CAST(agency_ent.COD_AG AS BIGINT) = TRY_CAST(v.COD_AG AS BIGINT)
+          AND NULLIF(LTRIM(RTRIM(CAST(agency_ent.NOME_AG AS NVARCHAR(255)))), N'') IS NOT NULL
+        ORDER BY agency_ent.NOME_AG
+      ) AS NOME_AG
     FROM TESTE..TB_VISITA_TRATATIVA AS v
     INNER JOIN TESTE..ROTEIROS_MAPA AS r ON r.ID = v.ROTEIRO_ID
     INNER JOIN TESTE..ROTEIRO_PARADAS_MAPA AS p ON p.ID = v.PARADA_ROTEIRO_ID
@@ -844,7 +848,6 @@ export async function rescheduleVisitRows(transaction, visit, products, values, 
   next.input('newDate', sql.Date, values.newDate);
   next.input('newTime', sql.Time(0), sqlTimeValue(values.newTime));
   next.input('priority', sql.VarChar(10), values.priority);
-  next.input('orientation', sql.NVarChar(1000), values.orientation);
   next.input('actorCode', sql.Int, actorCode);
   const inserted = await next.query(`
     INSERT INTO TESTE..TB_VISITA_TRATATIVA (
@@ -866,7 +869,6 @@ export async function rescheduleVisitRows(transaction, visit, products, values, 
       HORARIO_PLANEJADO,
       FUSO_HORARIO,
       PRIORIDADE,
-      ORIENTACAO,
       STATUS,
       RESULTADO_COMERCIAL,
       CRIADO_POR,
@@ -892,7 +894,6 @@ export async function rescheduleVisitRows(transaction, visit, products, values, 
       @newTime,
       FUSO_HORARIO,
       @priority,
-      @orientation,
       'PENDENTE',
       'SEM_RESULTADO',
       @actorCode,
@@ -948,7 +949,6 @@ export async function rescheduleVisitRows(transaction, visit, products, values, 
   link.input('newTime', sql.Time(0), sqlTimeValue(values.newTime));
   link.input('reason', sql.VarChar(40), values.reason);
   link.input('justification', sql.NVarChar(1000), values.justification);
-  link.input('orientation', sql.NVarChar(1000), values.orientation);
   link.input('priority', sql.VarChar(10), values.priority);
   link.input('actorCode', sql.Int, actorCode);
   link.input('correlationId', sql.UniqueIdentifier, correlationId);
@@ -962,7 +962,6 @@ export async function rescheduleVisitRows(transaction, visit, products, values, 
       NOVO_HORARIO,
       MOTIVO,
       JUSTIFICATIVA,
-      ORIENTACAO,
       PRIORIDADE,
       REAGENDADO_POR,
       CORRELATION_ID
@@ -976,7 +975,6 @@ export async function rescheduleVisitRows(transaction, visit, products, values, 
       @newTime,
       @reason,
       @justification,
-      @orientation,
       @priority,
       @actorCode,
       @correlationId
@@ -1012,6 +1010,43 @@ export async function resolveVisitNotifications(transaction, visitId, actorCode,
       ON n.ID = nu.NOTIFICACAO_ID
     WHERE n.VISITA_ID = @visitId
       AND nu.STATUS NOT IN ('RESOLVIDA', 'CANCELADA');
+  `);
+}
+
+export async function cancelRouteNotifications(
+  transaction,
+  routeId,
+  actorCode,
+  reason = 'ROTEIRO_CANCELADO'
+) {
+  const request = new sql.Request(transaction);
+  request.input('routeId', sql.UniqueIdentifier, routeId);
+  request.input('actorCode', sql.Int, actorCode);
+  request.input('reason', sql.VarChar(60), reason);
+  await request.query(`
+    UPDATE TESTE..TB_NOTIFICACAO
+    SET
+      STATUS = 'CANCELADA',
+      RESOLVIDA_EM_UTC = COALESCE(RESOLVIDA_EM_UTC, SYSUTCDATETIME()),
+      RESOLVIDA_POR = @actorCode,
+      MOTIVO_RESOLUCAO = @reason
+    WHERE ROTEIRO_ID = @routeId
+      AND STATUS = 'ATIVA';
+
+    UPDATE nu
+    SET
+      STATUS = 'CANCELADA',
+      RESOLVIDA_EM_UTC = COALESCE(nu.RESOLVIDA_EM_UTC, SYSUTCDATETIME()),
+      ADIADA_ATE_EM_UTC = NULL,
+      ACAO_EXECUTADA = @reason,
+      ACAO_EXECUTADA_EM_UTC = SYSUTCDATETIME(),
+      ATUALIZADO_EM_UTC = SYSUTCDATETIME(),
+      ATUALIZADO_POR = @actorCode
+    FROM TESTE..TB_NOTIFICACAO_USUARIO AS nu
+    INNER JOIN TESTE..TB_NOTIFICACAO AS n
+      ON n.ID = nu.NOTIFICACAO_ID
+    WHERE n.ROTEIRO_ID = @routeId
+      AND nu.STATUS NOT IN ('RESOLVIDA', 'ARQUIVADA', 'CANCELADA');
   `);
 }
 

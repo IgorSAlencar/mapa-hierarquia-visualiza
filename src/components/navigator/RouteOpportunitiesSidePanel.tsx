@@ -82,7 +82,6 @@ interface Props {
   selectedOpportunityFilters: RouteOpportunityFilterKey[];
   selectedPriorityBands: RouteOpportunityPriorityBand[];
   onlyWithoutVisit: boolean;
-  onlyOnPath: boolean;
   date: string;
   startTime: string;
   routeMetrics: RouteMetrics;
@@ -95,7 +94,6 @@ interface Props {
   onClearSummaryFilters: () => void;
   onClearRegions: () => void;
   onToggleRegion: (key: string, append: boolean) => void;
-  onToggleOnlyOnPath: () => void;
   onToggleStore: (store: RouteOpportunityPanelItem) => void;
   onStoreHover?: (id: string | null) => void;
   onDateChange: (value: string) => void;
@@ -138,7 +136,6 @@ const RouteOpportunitiesSidePanel: React.FC<Props> = ({
   selectedOpportunityFilters,
   selectedPriorityBands,
   onlyWithoutVisit,
-  onlyOnPath,
   date,
   startTime,
   routeMetrics,
@@ -151,7 +148,6 @@ const RouteOpportunitiesSidePanel: React.FC<Props> = ({
   onClearSummaryFilters,
   onClearRegions,
   onToggleRegion,
-  onToggleOnlyOnPath,
   onToggleStore,
   onStoreHover,
   onDateChange,
@@ -284,13 +280,6 @@ const RouteOpportunitiesSidePanel: React.FC<Props> = ({
                 {selectedOpportunityFilters.length > 0 && <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-violet-600 px-1 text-[8px] font-bold text-white">{selectedOpportunityFilters.length}</span>}
               </button>
             </div>
-
-            <button type="button" onClick={onToggleOnlyOnPath} className="mt-1.5 flex min-h-7 w-full items-center justify-between rounded-lg px-1 text-left">
-              <span className="text-[9px] font-semibold text-slate-600">Apenas lojas do caminho</span>
-              <span className={cn('h-5 w-9 shrink-0 rounded-full p-0.5 transition-colors', onlyOnPath ? 'bg-violet-600' : 'bg-slate-300')}>
-                <span className={cn('block h-4 w-4 rounded-full bg-white shadow-sm transition-transform', onlyOnPath && 'translate-x-4')} />
-              </span>
-            </button>
 
             {filtersOpen && (
               <div className="mt-2 rounded-xl border border-violet-100 bg-violet-50/55 p-2.5">

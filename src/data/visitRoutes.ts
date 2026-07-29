@@ -89,6 +89,5 @@ export interface VisitRoute {
   saved?: VisitRouteSaveMetadata;
   managementStatus?: string;
   priority?: 'BAIXA' | 'NORMAL' | 'ALTA' | 'CRITICA';
-  orientation?: string | null;
   rowVersion?: string | null;
 }

@@ -7,7 +7,6 @@ import {
   Check,
   CheckCircle2,
   Clock3,
-  ListChecks,
   MapPin,
   Navigation,
   Route,
@@ -78,16 +77,13 @@ const INTENTIONS = [
   { id: 'prospectar', title: 'Prospectar novas lojas', description: 'Encontrar novas oportunidades', icon: Target },
   { id: 'viagem', title: 'Aproveitar viagem', description: 'Visitar lojas no caminho de uma viagem', icon: Navigation },
   { id: 'cidade', title: 'Visitar cidade específica', description: 'Quero visitar uma cidade ou região', icon: MapPin },
-  { id: 'outro', title: 'Outro objetivo', description: 'Personalizar minha intenção', icon: ListChecks },
 ];
 
 const PRIORITIES: Array<{ id: PlanningPriority; title: string; description: string; icon: React.ElementType }> = [
   { id: 'inteligente', title: 'Sugestão inteligente', description: 'Alerta/Atenção perto da rota, com reativação e foco em crédito', icon: Zap },
-  { id: 'potencial', title: 'Maior potencial comercial', description: 'Priorizar oportunidades com maior potencial', icon: Target },
   { id: 'sem_visita', title: 'Lojas sem visita', description: 'Priorizar lojas sem visita há mais tempo', icon: Clock3 },
   { id: 'deslocamento', title: 'Menor deslocamento', description: 'Priorizar menor distância e tempo', icon: Route },
   { id: 'alertas', title: 'Alertas e pendências', description: 'Priorizar lojas com alertas e pendências', icon: Bell },
-  { id: 'equilibrado', title: 'Misturar tudo automaticamente', description: 'Equilibrar todos os critérios', icon: Sparkles },
 ];
 
 const ROUTE_PLANNER_HERO_IMG_CLASS =
@@ -196,6 +192,16 @@ const RoutePlanningJourney: React.FC<Props> = ({ agencies, originId, destination
     }
   };
 
+  const handleOriginAgencySelect = (agencyId: string) => {
+    setSelectedOriginId(agencyId);
+    const agency = agencies.find((item) => item.id === agencyId);
+    if (agency) {
+      notifiedOriginAgencyIdRef.current = agency.id;
+      onOriginAgencySelect?.(agency);
+    }
+    setScreen(3);
+  };
+
   const handleOriginStoreSelect = (store: SqlMapPoint | null) => {
     setSelectedOriginStore(store);
     if (store) {
@@ -204,6 +210,7 @@ const RoutePlanningJourney: React.FC<Props> = ({ agencies, originId, destination
       onOriginLocationSelect?.(null);
     }
     onOriginStoreSelect?.(store);
+    if (store) setScreen(3);
   };
 
   const handleDestinationTypeSelect = (type: DestinationType) => {
@@ -221,12 +228,24 @@ const RoutePlanningJourney: React.FC<Props> = ({ agencies, originId, destination
     setDestinationLocation(location);
     setSelectedDestination(location?.label ?? '');
     onDestinationLocationSelect?.(location);
+    if (location) setScreen(4);
+  };
+
+  const handleDestinationAgencySelect = (agencyId: string) => {
+    setDestinationAgencyId(agencyId);
+    const agency = agencies.find((item) => item.id === agencyId);
+    if (agency) {
+      notifiedDestinationAgencyIdRef.current = agency.id;
+      onDestinationAgencySelect?.(agency);
+    }
+    setScreen(4);
   };
 
   const handleTerritoryRadius = (radiusKm: number) => {
     setTerritoryRadiusKm(radiusKm);
     setSelectedDestination(`Território em um raio de ${radiusKm} km`);
     onTerritoryRadiusSelect?.(radiusKm);
+    setScreen(4);
   };
 
   const canContinue =
@@ -300,9 +319,9 @@ const RoutePlanningJourney: React.FC<Props> = ({ agencies, originId, destination
   }
 
   return (
-    <JourneyShell title="Montar meu roteiro" step={screen} onBack={onBack} onClose={onClose} headerDragProps={headerDragProps}>
-      <div className="route-planning-step-body flex min-h-0 flex-col overflow-hidden px-3 pb-3 pt-3 sm:px-7 sm:pb-5 sm:pt-5">
-        <div className="route-planning-stage min-h-0 overflow-hidden">
+    <JourneyShell title="Montar meu roteiro" step={screen} allowOverflow={screen === 2} onBack={onBack} onClose={onClose} headerDragProps={headerDragProps}>
+      <div className={cn('route-planning-step-body flex min-h-0 flex-col px-3 pb-3 pt-3 sm:px-7 sm:pb-5 sm:pt-5', screen === 2 ? 'overflow-visible' : 'overflow-hidden')}>
+        <div className={cn('route-planning-stage min-h-0', screen === 2 ? 'route-planning-stage-overflow-visible' : 'overflow-hidden')}>
           {screen === 1 && <>
           <JourneyTitle title="Qual é sua intenção hoje?" subtitle="Selecione uma ou mais opções." />
           <div className="route-planning-choice-list route-planning-intention-grid mt-4 grid grid-cols-1 gap-2 min-[360px]:grid-cols-2 sm:mt-5">{INTENTIONS.map((option) => <ChoiceCard key={option.id} {...option} selected={intention === option.id} onClick={() => setIntention(option.id)} />)}</div>
@@ -311,7 +330,7 @@ const RoutePlanningJourney: React.FC<Props> = ({ agencies, originId, destination
           <JourneyTitle title="De onde você vai sair?" subtitle="Selecione sua origem." />
           <div className="route-planning-choice-list mt-4 space-y-2 sm:mt-5">
             <ChoiceRow icon={UsersRound} title="Agência" description="Sair de uma agência" selected={originType === 'agencia'} onClick={() => handleOriginTypeSelect('agencia')}>
-              {originType === 'agencia' && <AgencySearchSelect agencies={agencies} value={selectedOriginId} onChange={setSelectedOriginId} placeholder="Buscar agência por código ou nome..." />}
+              {originType === 'agencia' && <AgencySearchSelect agencies={agencies} value={selectedOriginId} onChange={handleOriginAgencySelect} placeholder="Buscar agência por código ou nome..." />}
             </ChoiceRow>
             <ChoiceRow icon={MapPin} title="Endereço" description="Digitar um endereço específico" selected={originType === 'endereco'} onClick={() => handleOriginTypeSelect('endereco')}>
               {originType === 'endereco' && <AddressAutocomplete
@@ -320,6 +339,7 @@ const RoutePlanningJourney: React.FC<Props> = ({ agencies, originId, destination
                 onChange={(location) => {
                   setAddressLocation(location);
                   onOriginLocationSelect?.(location);
+                  if (location) setScreen(3);
                 }}
               />}
             </ChoiceRow>
@@ -332,7 +352,7 @@ const RoutePlanningJourney: React.FC<Props> = ({ agencies, originId, destination
           <JourneyTitle title="Para onde pretende ir?" subtitle="Defina seu destino ou área de atuação." />
           <div className="route-planning-choice-list route-planning-destination-list mt-4 space-y-2 sm:mt-5">
           <ChoiceRow icon={Building2} title="Agência" description="Escolher uma agência como destino" selected={destinationType === 'agencia'} onClick={() => handleDestinationTypeSelect('agencia')}>
-              {destinationType === 'agencia' && <AgencySearchSelect agencies={agencies} value={destinationAgencyId} onChange={setDestinationAgencyId} placeholder="Buscar agência de destino..." />}
+              {destinationType === 'agencia' && <AgencySearchSelect agencies={agencies} value={destinationAgencyId} onChange={handleDestinationAgencySelect} placeholder="Buscar agência de destino..." />}
             </ChoiceRow>
 
             <ChoiceRow icon={MapPin} title="Município" description="Buscar uma cidade pelo nome" selected={destinationType === 'municipio'} onClick={() => handleDestinationTypeSelect('municipio')}>
@@ -361,9 +381,9 @@ const RoutePlanningJourney: React.FC<Props> = ({ agencies, originId, destination
   );
 };
 
-function JourneyShell({ title, step, onBack, onClose, children, headerDragProps }: { title: string; step?: number; onBack: () => void; onClose: () => void; children: React.ReactNode; headerDragProps?: PanelHeaderDragProps }) {
+function JourneyShell({ title, step, allowOverflow = false, onBack, onClose, children, headerDragProps }: { title: string; step?: number; allowOverflow?: boolean; onBack: () => void; onClose: () => void; children: React.ReactNode; headerDragProps?: PanelHeaderDragProps }) {
   const header = mergeHeaderDrag('flex shrink-0 items-center gap-2 border-b border-slate-200 px-3 py-2', headerDragProps);
-  return <section className="route-planning-journey pointer-events-auto flex min-h-0 min-w-0 flex-col overflow-hidden rounded-xl border border-slate-200 bg-white font-sans text-slate-700 shadow-2xl shadow-slate-900/20"><header className={header.className} style={header.dragStyle} {...header.dragHandlers} title="Arraste para mover"><button type="button" data-panel-drag-ignore onClick={onBack} className="shrink-0 rounded-lg p-1.5 text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-700" aria-label="Voltar para o painel Navegar"><ArrowLeft className="h-4 w-4" /></button><h1 className="min-w-0 flex-1 truncate text-xs font-bold uppercase tracking-wide text-slate-900">{title}</h1>{step ? <span className="shrink-0 text-[10px] font-medium text-slate-500">Passo {step} de 4</span> : null}<button type="button" data-panel-drag-ignore onClick={onClose} className="shrink-0 rounded-lg p-1.5 text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-700" aria-label="Fechar montagem do roteiro"><X className="h-4 w-4" /></button></header>{step ? <div className="route-planning-progress mx-3 mt-2 h-0.5 shrink-0 rounded-full bg-slate-100"><div className="h-full rounded-full bg-blue-700 transition-all" style={{ width: `${step * 25}%` }} /></div> : null}{children}</section>;
+  return <section className={cn('route-planning-journey pointer-events-auto flex min-h-0 min-w-0 flex-col rounded-xl border border-slate-200 bg-white font-sans text-slate-700 shadow-2xl shadow-slate-900/20', allowOverflow ? 'overflow-visible' : 'overflow-hidden')}><header className={header.className} style={header.dragStyle} {...header.dragHandlers} title="Arraste para mover"><button type="button" data-panel-drag-ignore onClick={onBack} className="shrink-0 rounded-lg p-1.5 text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-700" aria-label="Voltar para o painel Navegar"><ArrowLeft className="h-4 w-4" /></button><h1 className="min-w-0 flex-1 truncate text-xs font-bold uppercase tracking-wide text-slate-900">{title}</h1>{step ? <span className="shrink-0 text-[10px] font-medium text-slate-500">Passo {step} de 4</span> : null}<button type="button" data-panel-drag-ignore onClick={onClose} className="shrink-0 rounded-lg p-1.5 text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-700" aria-label="Fechar montagem do roteiro"><X className="h-4 w-4" /></button></header>{step ? <div className="route-planning-progress mx-3 mt-2 h-0.5 shrink-0 rounded-full bg-slate-100"><div className="h-full rounded-full bg-blue-700 transition-all" style={{ width: `${step * 25}%` }} /></div> : null}{children}</section>;
 }
 
 function JourneyTitle({ title, subtitle }: { title: string; subtitle: string }) {

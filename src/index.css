@@ -805,6 +805,10 @@
   scrollbar-gutter: auto;
 }
 
+.route-planning-stage.route-planning-stage-overflow-visible {
+  overflow: visible;
+}
+
 /* Notebooks compactos (aprox. 13–14"): reduz o conjunto sem deformar o card. */
 @media (max-width: 1600px) and (max-height: 900px) {
   .route-planning-journey {

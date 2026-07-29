@@ -105,33 +105,42 @@ export async function finishJob(job, workerId, result, error = null) {
 }
 
 export async function claimOutboxBatch(workerId, limit = 50, leaseSeconds = 120) {
-  const request = pool.request();
-  request.input('workerId', sql.VarChar(100), workerId);
-  request.input('limit', sql.Int, limit);
-  request.input('leaseSeconds', sql.Int, leaseSeconds);
-  const result = await request.query(`
-    ;WITH batch AS (
-      SELECT TOP (@limit) *
-      FROM TESTE..TB_EVENTO_OUTBOX WITH (UPDLOCK, READPAST, ROWLOCK)
-      WHERE STATUS IN ('PENDENTE', 'ERRO')
-        AND DISPONIVEL_EM_UTC <= SYSUTCDATETIME()
-        AND (
-          BLOQUEADO_ATE_EM_UTC IS NULL
-          OR BLOQUEADO_ATE_EM_UTC < SYSUTCDATETIME()
-        )
-        AND TENTATIVAS < 10
-      ORDER BY ID
-    )
-    UPDATE batch
-    SET
-      STATUS = 'PROCESSANDO',
-      TENTATIVAS = TENTATIVAS + 1,
-      BLOQUEADO_ATE_EM_UTC = DATEADD(SECOND, @leaseSeconds, SYSUTCDATETIME()),
-      BLOQUEADO_POR_WORKER = @workerId,
-      ULTIMO_ERRO = NULL
-    OUTPUT INSERTED.*;
-  `);
-  return result.recordset;
+  await poolConnect;
+  const transaction = new sql.Transaction(pool);
+  await transaction.begin(sql.ISOLATION_LEVEL.READ_COMMITTED);
+  try {
+    const request = new sql.Request(transaction);
+    request.input('workerId', sql.VarChar(100), workerId);
+    request.input('limit', sql.Int, limit);
+    request.input('leaseSeconds', sql.Int, leaseSeconds);
+    const result = await request.query(`
+      ;WITH batch AS (
+        SELECT TOP (@limit) *
+        FROM TESTE..TB_EVENTO_OUTBOX WITH (UPDLOCK, READPAST, ROWLOCK)
+        WHERE STATUS IN ('PENDENTE', 'ERRO')
+          AND DISPONIVEL_EM_UTC <= SYSUTCDATETIME()
+          AND (
+            BLOQUEADO_ATE_EM_UTC IS NULL
+            OR BLOQUEADO_ATE_EM_UTC < SYSUTCDATETIME()
+          )
+          AND TENTATIVAS < 10
+        ORDER BY ID
+      )
+      UPDATE batch
+      SET
+        STATUS = 'PROCESSANDO',
+        TENTATIVAS = TENTATIVAS + 1,
+        BLOQUEADO_ATE_EM_UTC = DATEADD(SECOND, @leaseSeconds, SYSUTCDATETIME()),
+        BLOQUEADO_POR_WORKER = @workerId,
+        ULTIMO_ERRO = NULL
+      OUTPUT INSERTED.*;
+    `);
+    await transaction.commit();
+    return result.recordset;
+  } catch (error) {
+    try { await transaction.rollback(); } catch { /* transação já encerrada */ }
+    throw error;
+  }
 }
 
 export async function fetchActiveNotificationRule(code) {
@@ -154,6 +163,21 @@ export async function materializeNotification(event, rule, payload, rendered) {
   const transaction = new sql.Transaction(pool);
   await transaction.begin(sql.ISOLATION_LEVEL.SERIALIZABLE);
   try {
+    if (payload.routeId) {
+      const route = new sql.Request(transaction);
+      route.input('routeId', sql.UniqueIdentifier, payload.routeId);
+      const activeRoute = await route.query(`
+        SELECT TOP (1) STATUS_GESTAO
+        FROM TESTE..ROTEIROS_MAPA WITH (HOLDLOCK)
+        WHERE ID = @routeId
+          AND STATUS_GESTAO <> 'CANCELADO'
+      `);
+      if (!activeRoute.recordset[0]) {
+        await transaction.commit();
+        return null;
+      }
+    }
+
     const find = new sql.Request(transaction);
     find.input('dedupeKey', sql.NVarChar(250), payload.dedupeKey);
     const existing = await find.query(`
@@ -559,34 +583,43 @@ export async function enqueueOverdueVisitEvents() {
 }
 
 export async function claimProductsForEvaluation(workerId, limit = 25, leaseSeconds = 180) {
-  const request = pool.request();
-  request.input('workerId', sql.VarChar(100), workerId);
-  request.input('limit', sql.Int, limit);
-  request.input('leaseSeconds', sql.Int, leaseSeconds);
-  const result = await request.query(`
-    ;WITH due AS (
-      SELECT TOP (@limit) vp.*
-      FROM TESTE..TB_VISITA_PRODUTO AS vp WITH (UPDLOCK, READPAST, ROWLOCK)
-      INNER JOIN TESTE..TB_VISITA_TRATATIVA AS v ON v.ID = vp.VISITA_ID
-      WHERE vp.ATIVO = 1
-        AND v.STATUS = 'REALIZADA'
-        AND vp.STATUS_ACOMPANHAMENTO = 'AGUARDANDO_EVOLUCAO'
-        AND vp.PROXIMA_VERIFICACAO_EM_UTC <= SYSUTCDATETIME()
-        AND (
-          vp.BLOQUEADO_ATE_EM_UTC IS NULL
-          OR vp.BLOQUEADO_ATE_EM_UTC < SYSUTCDATETIME()
-        )
-      ORDER BY vp.PROXIMA_VERIFICACAO_EM_UTC, vp.ID
-    )
-    UPDATE due
-    SET
-      BLOQUEADO_ATE_EM_UTC = DATEADD(SECOND, @leaseSeconds, SYSUTCDATETIME()),
-      BLOQUEADO_POR_WORKER = @workerId,
-      TENTATIVAS_TECNICAS = TENTATIVAS_TECNICAS + 1,
-      ULTIMO_ERRO_TECNICO = NULL
-    OUTPUT INSERTED.*;
-  `);
-  return result.recordset;
+  await poolConnect;
+  const transaction = new sql.Transaction(pool);
+  await transaction.begin(sql.ISOLATION_LEVEL.READ_COMMITTED);
+  try {
+    const request = new sql.Request(transaction);
+    request.input('workerId', sql.VarChar(100), workerId);
+    request.input('limit', sql.Int, limit);
+    request.input('leaseSeconds', sql.Int, leaseSeconds);
+    const result = await request.query(`
+      ;WITH due AS (
+        SELECT TOP (@limit) vp.*
+        FROM TESTE..TB_VISITA_PRODUTO AS vp WITH (UPDLOCK, READPAST, ROWLOCK)
+        INNER JOIN TESTE..TB_VISITA_TRATATIVA AS v ON v.ID = vp.VISITA_ID
+        WHERE vp.ATIVO = 1
+          AND v.STATUS = 'REALIZADA'
+          AND vp.STATUS_ACOMPANHAMENTO = 'AGUARDANDO_EVOLUCAO'
+          AND vp.PROXIMA_VERIFICACAO_EM_UTC <= SYSUTCDATETIME()
+          AND (
+            vp.BLOQUEADO_ATE_EM_UTC IS NULL
+            OR vp.BLOQUEADO_ATE_EM_UTC < SYSUTCDATETIME()
+          )
+        ORDER BY vp.PROXIMA_VERIFICACAO_EM_UTC, vp.ID
+      )
+      UPDATE due
+      SET
+        BLOQUEADO_ATE_EM_UTC = DATEADD(SECOND, @leaseSeconds, SYSUTCDATETIME()),
+        BLOQUEADO_POR_WORKER = @workerId,
+        TENTATIVAS_TECNICAS = TENTATIVAS_TECNICAS + 1,
+        ULTIMO_ERRO_TECNICO = NULL
+      OUTPUT INSERTED.*;
+    `);
+    await transaction.commit();
+    return result.recordset;
+  } catch (error) {
+    try { await transaction.rollback(); } catch { /* transação já encerrada */ }
+    throw error;
+  }
 }
 
 export async function fetchVisitForProductEvaluation(visitId) {

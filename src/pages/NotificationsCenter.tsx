@@ -107,7 +107,7 @@ const NotificationsCenter: React.FC = () => {
         } else if (!notification.readAt) {
           replace(await markNotificationRead(notification));
         }
-        navigate(notificationDestinationUrl(notification));
+        navigate(notificationDestinationUrl(notification, action));
         return;
       }
       if (action === 'ADIAR_LEMBRETE') {

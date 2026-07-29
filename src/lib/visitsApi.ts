@@ -49,6 +49,7 @@ export interface VisitTreatment {
     key: string;
     name: string;
     agencyCode: string | null;
+    agencyName: string | null;
     supervisionKey: number;
     address: string | null;
   };
@@ -58,7 +59,6 @@ export interface VisitTreatment {
   plannedTime: string | null;
   timeZone: string;
   priority: string;
-  orientation: string | null;
   status: VisitOperationalStatus;
   answer: 'SIM' | 'NAO' | 'REAGENDADA' | null;
   commercialResult: VisitCommercialResult;
@@ -216,7 +216,6 @@ export function rescheduleTreatment(
     newTime?: string | null;
     reason: string;
     justification?: string | null;
-    orientation?: string | null;
     priority?: string;
   }
 ) {

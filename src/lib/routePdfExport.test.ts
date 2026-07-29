@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { PDFDocument } from 'pdf-lib';
-import { buildRoutePdf, routePdfFilename } from './routePdfExport.ts';
+import {
+  buildRoutePdf,
+  routePdfFilename,
+  summarizeRouteCommercialPresence,
+} from './routePdfExport.ts';
 import type { VisitRoute } from '../data/visitRoutes.ts';
 
 function sampleRoute(stopCount = 3): VisitRoute {
@@ -79,4 +83,14 @@ test('gera capa e duas fichas de loja por página A4', async () => {
 
 test('gera nome de arquivo com destino e data curta', () => {
   assert.equal(routePdfFilename(sampleRoute(1)), 'Roteiro Agência Centro - 21.07.pdf');
+});
+
+test('resume quantas visitas já possuem cada indicador comercial, incluindo Crédito', () => {
+  assert.deepEqual(summarizeRouteCommercialPresence(sampleRoute(3)), [
+    { label: 'Cielo', visitsWithIndicator: 3 },
+    { label: 'Crédito', visitsWithIndicator: 0 },
+    { label: 'Realizando Negócio', visitsWithIndicator: 3 },
+    { label: 'Ativo PADE', visitsWithIndicator: 0 },
+    { label: 'Proposta de Valor', visitsWithIndicator: 3 },
+  ]);
 });

@@ -212,7 +212,6 @@ function normalizeSavePayload(body, user, owner) {
     priority: PRIORITIES.has(String(body.priority ?? 'NORMAL').toUpperCase())
       ? String(body.priority ?? 'NORMAL').toUpperCase()
       : 'NORMAL',
-    orientation: text(body.orientation, 1000),
     origin: endpoint(body.origin, true),
     destination: endpoint(body.destination, false),
     // A Directions API devolve metros como ponto flutuante. O banco armazena
@@ -356,7 +355,6 @@ export async function getVisitRoute(id, user) {
     },
     managementStatus: String(header.STATUS_GESTAO ?? 'ATIVO'),
     priority: String(header.PRIORIDADE ?? 'NORMAL'),
-    orientation: String(header.ORIENTACAO ?? '').trim() || null,
     rowVersion: header.VERSAO_LINHA
       ? Buffer.from(header.VERSAO_LINHA).toString('base64')
       : null,
@@ -563,9 +561,6 @@ export async function patchVisitRoute(id, body, user, ifMatch) {
     owner,
     plannedDate,
     priority,
-    orientation: Object.hasOwn(body ?? {}, 'orientation')
-      ? text(body.orientation, 1000)
-      : undefined,
     stops,
     changeReason,
     actor: { funcional: user.funcional, nome: user.nome },

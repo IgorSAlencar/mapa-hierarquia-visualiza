@@ -14,6 +14,10 @@ Rollback operacional, sem apagar dados:
 
 - `05_desativar_processamento.sql`
 
+Manutenção idempotente para remover do feed notificações de roteiros cancelados:
+
+- `07_remover_notificacoes_roteiros_cancelados.sql`
+
 O script `01` faz `DROP` + `CREATE` das tabelas de visitas/notificações.
 Reexecutá-lo apaga os dados dessas tabelas; depois rode o `02` (seed) de novo.
 

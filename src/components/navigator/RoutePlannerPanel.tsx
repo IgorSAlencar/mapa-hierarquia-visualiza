@@ -459,7 +459,6 @@ const RoutePlannerPanel: React.FC<Props> = ({
   const [destination, setDestination] = useState('São Paulo');
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [selectedRegionKeys, setSelectedRegionKeys] = useState<string[]>([]);
-  const [onlyOnPath, setOnlyOnPath] = useState(true);
   const [query, setQuery] = useState('');
   const [opportunityView, setOpportunityView] = useState<'table' | 'cards'>('table');
   const [opportunityFiltersOpen, setOpportunityFiltersOpen] = useState(false);
@@ -706,7 +705,7 @@ const RoutePlannerPanel: React.FC<Props> = ({
   const opportunityFilteredSuggestions = useMemo(() => {
     if (selectedOpportunityFilters.length === 0) return regionFilteredSuggestions;
     return regionFilteredSuggestions.filter((store) =>
-      selectedOpportunityFilters.some((filter) => storeHasMissingOpportunity(store, filter))
+      selectedOpportunityFilters.every((filter) => storeHasMissingOpportunity(store, filter))
     );
   }, [regionFilteredSuggestions, selectedOpportunityFilters]);
   const suggestions = useMemo(() => opportunityFilteredSuggestions.filter((store) => {
@@ -725,7 +724,7 @@ const RoutePlannerPanel: React.FC<Props> = ({
     return sqlOpportunities
       .filter((store) => selectedRegionKeys.length === 0 || selectedRegions.has(opportunityRegionKey(store)))
       .filter((store) => selectedOpportunityFilters.length === 0 ||
-        selectedOpportunityFilters.some((filter) => storeHasMissingOpportunity(store, filter)))
+        selectedOpportunityFilters.every((filter) => storeHasMissingOpportunity(store, filter)))
       .filter((store) => selectedPriorityBands.length === 0 ||
         selectedPriorityBands.includes(priorityBand(store)))
       .filter((store) => !onlyWithoutVisit || store.daysWithoutVisit > 30)
@@ -1263,7 +1262,6 @@ const RoutePlannerPanel: React.FC<Props> = ({
       selectedOpportunityFilters={selectedOpportunityFilters}
       selectedPriorityBands={selectedPriorityBands}
       onlyWithoutVisit={onlyWithoutVisit}
-      onlyOnPath={onlyOnPath}
       date={date}
       startTime={startTime}
       routeMetrics={{ distanceKm: routeKm, travelMinutes, visitMinutes, finish }}
@@ -1279,7 +1277,6 @@ const RoutePlannerPanel: React.FC<Props> = ({
       }}
       onClearRegions={() => setSelectedRegionKeys([])}
       onToggleRegion={toggleRegion}
-      onToggleOnlyOnPath={() => setOnlyOnPath((current) => !current)}
       onToggleStore={(panelStore) => {
         const store = sqlOpportunities.find((item) => item.id === panelStore.id);
         if (store) toggle(store);
@@ -1400,7 +1397,6 @@ const RoutePlannerPanel: React.FC<Props> = ({
                 </div>
               )}
             </div>
-            <button type="button" onClick={() => setOnlyOnPath((value) => !value)} className={cn('flex min-h-9 items-center gap-1.5 rounded-lg px-2.5 text-[11px] font-semibold backdrop-blur-sm transition-colors', onlyOnPath ? 'bg-violet-100/80 text-violet-800' : 'bg-white/45 text-slate-500 hover:bg-white/70')}><span className={cn('h-3.5 w-6 rounded-full p-0.5', onlyOnPath ? 'bg-violet-600' : 'bg-slate-300')}><span className={cn('block h-2.5 w-2.5 rounded-full bg-white shadow-sm transition-transform', onlyOnPath && 'translate-x-2.5')} /></span>Apenas no caminho</button>
           </div>
           {suggestions.length === 0 ? (
             <div className="p-8 text-center"><ShoppingCart className="mx-auto h-7 w-7 text-slate-300" /><p className="mt-2 text-xs font-semibold text-slate-700">Nenhuma oportunidade encontrada</p><p className="mt-1 text-[10px] text-slate-500">Revise a origem, o destino ou o raio selecionado.</p></div>

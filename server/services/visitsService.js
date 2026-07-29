@@ -159,6 +159,7 @@ function visitDto(bundle) {
       key: String(row.CHAVE_LOJA),
       name: String(row.NOME_LOJA),
       agencyCode: row.COD_AG == null ? null : String(row.COD_AG),
+      agencyName: row.NOME_AG == null ? null : String(row.NOME_AG),
       supervisionKey: Number(row.CHAVE_SUPERVISAO),
       address: row.ENDERECO == null ? null : String(row.ENDERECO),
     },
@@ -174,7 +175,6 @@ function visitDto(bundle) {
     plannedTime: timeOnly(row.HORARIO_PLANEJADO),
     timeZone: String(row.FUSO_HORARIO),
     priority: String(row.PRIORIDADE),
-    orientation: row.ORIENTACAO == null ? null : String(row.ORIENTACAO),
     status: String(row.STATUS),
     answer: row.RESPOSTA_REALIZACAO == null ? null : String(row.RESPOSTA_REALIZACAO),
     commercialResult: String(row.RESULTADO_COMERCIAL),
@@ -248,13 +248,13 @@ async function mutateVisit(id, req, callback) {
       context,
     });
   });
-  if (result == null) {
+  if (!result.found) {
     throw new ApiError('Visita não encontrada ou fora do seu escopo.', {
       status: 404,
       code: 'VISIT_NOT_FOUND',
     });
   }
-  return result;
+  return result.value;
 }
 
 function normalizedCommon(body) {
@@ -549,7 +549,6 @@ export async function rescheduleVisit(id, body, req) {
       newTime: normalizedTime(body?.newTime),
       reason: requiredText(body?.reason, 40, 'reason').toUpperCase(),
       justification: optionalText(body?.justification, 1000),
-      orientation: optionalText(body?.orientation ?? visit.ORIENTACAO, 1000),
       priority,
     };
     const result = await rescheduleVisitRows(

@@ -1,5 +1,13 @@
 import React from 'react';
-import { Clock3, GripVertical, HelpCircle, Route as RouteIcon, Store } from 'lucide-react';
+import {
+  CheckCircle2,
+  Clock3,
+  GripVertical,
+  HelpCircle,
+  MapPin,
+  Route as RouteIcon,
+  Store,
+} from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { VisitRoute, VisitStop, VisitStopStatus } from '@/data/visitRoutes';
 import {
@@ -52,6 +60,9 @@ interface RouteStopsListProps {
 }
 
 const DEFAULT_VISIT_MINUTES = 40;
+const DISTANCE_FORMATTER = new Intl.NumberFormat('pt-BR', {
+  maximumFractionDigits: 1,
+});
 
 function formatDurationMinutes(minutes: number): string {
   const safeMinutes = Math.max(0, Math.round(minutes));
@@ -93,10 +104,42 @@ const RouteStopsList: React.FC<RouteStopsListProps> = ({
   };
 
   const fullSummary = [
-    { value: String(route.stops.length), label: 'Visitas planejadas', accent: 'text-slate-900' },
-    { value: String(concluidas), label: 'Concluídas', accent: 'text-emerald-600' },
-    { value: String(pendentes), label: 'Pendentes', accent: 'text-amber-600' },
-    { value: `${route.distanciaKm} km`, label: 'Distância total', accent: 'text-slate-900' },
+    {
+      value: String(route.stops.length),
+      label: 'Visitas planejadas',
+      icon: <MapPin className="h-4 w-4" aria-hidden />,
+      border: 'border-violet-100',
+      surface: 'bg-violet-50 text-violet-700',
+      valueColor: 'text-violet-950',
+      hover: 'hover:border-violet-200 hover:bg-violet-50/30',
+    },
+    {
+      value: String(concluidas),
+      label: 'Concluídas',
+      icon: <CheckCircle2 className="h-4 w-4" aria-hidden />,
+      border: 'border-emerald-100',
+      surface: 'bg-emerald-50 text-emerald-700',
+      valueColor: 'text-emerald-700',
+      hover: 'hover:border-emerald-200 hover:bg-emerald-50/30',
+    },
+    {
+      value: String(pendentes),
+      label: 'Pendentes',
+      icon: <Clock3 className="h-4 w-4" aria-hidden />,
+      border: 'border-amber-100',
+      surface: 'bg-amber-50 text-amber-700',
+      valueColor: 'text-amber-700',
+      hover: 'hover:border-amber-200 hover:bg-amber-50/30',
+    },
+    {
+      value: `${DISTANCE_FORMATTER.format(route.distanciaKm)} km`,
+      label: 'Distância total',
+      icon: <RouteIcon className="h-4 w-4" aria-hidden />,
+      border: 'border-blue-100',
+      surface: 'bg-blue-50 text-blue-700',
+      valueColor: 'text-blue-950',
+      hover: 'hover:border-blue-200 hover:bg-blue-50/30',
+    },
   ];
   const summary = isSuggestedRoute
     ? [fullSummary[0], fullSummary[3]]
@@ -130,15 +173,32 @@ const RouteStopsList: React.FC<RouteStopsListProps> = ({
 
   return (
     <div className="space-y-3">
-      <div className={cn('grid gap-2', isSuggestedRoute ? 'grid-cols-2' : 'grid-cols-4')}>
+      <div
+        className="grid grid-cols-2 gap-2"
+        aria-label={isSuggestedRoute ? 'Resumo da sugestão de rota' : 'Resumo da rota'}
+      >
         {summary.map((item) => (
-          <div
+          <article
             key={item.label}
-            className="rounded-xl border border-slate-200 bg-white px-2 py-2.5 text-center"
+            className={cn(
+              'rounded-xl border bg-white px-2.5 py-2 shadow-sm transition-colors',
+              item.border,
+              item.hover
+            )}
+            aria-label={`${item.label}: ${item.value}`}
           >
-            <p className={cn('text-base font-bold leading-tight', item.accent)}>{item.value}</p>
-            <p className="mt-0.5 text-[9px] font-medium leading-tight text-slate-500">{item.label}</p>
-          </div>
+            <div className="flex items-center justify-between gap-2">
+              <span className={cn('flex h-6 w-6 items-center justify-center rounded-md', item.surface)}>
+                {item.icon}
+              </span>
+              <strong className={cn('whitespace-nowrap text-lg font-extrabold tracking-tight', item.valueColor)}>
+                {item.value}
+              </strong>
+            </div>
+            <p className="mt-1 text-[9px] font-semibold leading-tight text-slate-600">
+              {item.label}
+            </p>
+          </article>
         ))}
       </div>
 

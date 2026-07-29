@@ -26,6 +26,11 @@ import {
 export type { RoutePdfStoreProduction } from './routePdf/productionComparison.ts';
 export type RoutePdfProductionByStore = Record<string, RoutePdfStoreProduction | null>;
 
+export interface RoutePdfCommercialPresence {
+  label: string;
+  visitsWithIndicator: number;
+}
+
 interface PdfFonts {
   regular: PDFFont;
   bold: PDFFont;
@@ -409,40 +414,65 @@ function drawCoverMetrics(page: PDFPage, fonts: PdfFonts, route: VisitRoute): vo
   });
 }
 
+export function summarizeRouteCommercialPresence(route: VisitRoute): RoutePdfCommercialPresence[] {
+  return [
+    ['Cielo', 'oportunidadeCielo'],
+    ['Crédito', 'oportunidadeCredito'],
+    ['Realizando Negócio', 'oportunidadeNegocio'],
+    ['Ativo PADE', 'oportunidadeAtivoPade'],
+    ['Proposta de Valor', 'oportunidadePropostaValor'],
+  ].map(([label, field]) => ({
+    label,
+    visitsWithIndicator: route.stops.filter((stop) => stop.oportunidades?.[field] === true).length,
+  }));
+}
+
 function drawCoverSnapshot(page: PDFPage, fonts: PdfFonts, route: VisitRoute): void {
-  const totals = [
-    ['Cielo', route.stops.filter((stop) => stop.oportunidades?.oportunidadeCielo).length],
-    ['Proposta de valor', route.stops.filter((stop) => stop.oportunidades?.oportunidadePropostaValor).length],
-    ['Ativo PADE', route.stops.filter((stop) => stop.oportunidades?.oportunidadeAtivoPade).length],
-    ['Realizando Negócio', route.stops.filter((stop) => stop.oportunidades?.oportunidadeNegocio).length],
-  ] as const;
+  const metrics = summarizeRouteCommercialPresence(route);
+  const totalVisits = route.stops.length;
+  const visitLabel = totalVisits === 1 ? 'visita' : 'visitas';
   page.drawText('PANORAMA COMERCIAL', { x: MARGIN, y: 457, size: 8, font: fonts.bold, color: COLORS.ink });
-  page.drawText('Lojas com a Oportunidade / Total de visitas do roteiro', {
+  page.drawText('Visitas em lojas que já possuem cada produto ou indicador', {
     x: MARGIN,
     y: 443,
     size: 7.5,
     font: fonts.regular,
     color: COLORS.muted,
   });
-  const width = (A4_WIDTH - MARGIN * 2) / totals.length;
-  totals.forEach(([label, total], index) => {
-    const x = MARGIN + width * index;
-    if (index > 0) {
-      page.drawLine({ start: { x, y: 405 }, end: { x, y: 432 }, thickness: 0.7, color: COLORS.line });
-    }
-    page.drawText(`${total}/${route.stops.length}`, {
-      x: x + 10,
-      y: 418,
-      size: 13,
-      font: fonts.bold,
-      color: total > 0 ? COLORS.green : COLORS.slate,
+  const gap = 6;
+  const width = (A4_WIDTH - MARGIN * 2 - gap * (metrics.length - 1)) / metrics.length;
+  metrics.forEach(({ label, visitsWithIndicator }, index) => {
+    const x = MARGIN + (width + gap) * index;
+    page.drawRectangle({
+      x,
+      y: 399,
+      width,
+      height: 35,
+      color: visitsWithIndicator > 0 ? COLORS.greenSurface : COLORS.surface,
+      borderColor: visitsWithIndicator > 0 ? COLORS.greenBorder : COLORS.line,
+      borderWidth: 0.6,
     });
-    page.drawText(truncateToWidth(label.toUpperCase(), fonts.bold, 6.2, width - 20), {
-      x: x + 10,
-      y: 405,
-      size: 6.2,
+    page.drawText(truncateToWidth(label.toUpperCase(), fonts.bold, 5.8, width - 16), {
+      x: x + 8,
+      y: 422,
+      size: 5.8,
       font: fonts.bold,
       color: COLORS.muted,
+    });
+    const value = String(visitsWithIndicator);
+    page.drawText(value, {
+      x: x + 8,
+      y: 405,
+      size: 13,
+      font: fonts.bold,
+      color: visitsWithIndicator > 0 ? COLORS.green : COLORS.slate,
+    });
+    page.drawText(`de ${totalVisits} ${visitLabel}`, {
+      x: x + 11 + fonts.bold.widthOfTextAtSize(value, 13),
+      y: 408,
+      size: 6.8,
+      font: fonts.regular,
+      color: COLORS.slate,
     });
   });
 }

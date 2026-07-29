@@ -7,6 +7,7 @@ import { productCodesFromFocusLabels } from '../domain/visitWorkflow.js';
 import { sqlTimeValue } from '../domain/sqlTime.js';
 import {
   appendVisitHistory,
+  cancelRouteNotifications,
   publishVisitEvent,
   provisionVisitForStop,
   recordRouteCreationEvents,
@@ -160,7 +161,6 @@ function bindHeader(request, payload, version) {
   request.input('version', version);
   request.input('nome', sql.NVarChar(250), payload.nome);
   request.input('priority', sql.VarChar(10), payload.priority ?? 'NORMAL');
-  request.input('orientation', sql.NVarChar(1000), payload.orientation ?? null);
   request.input('originName', sql.NVarChar(250), payload.origin.nome);
   request.input('originLat', payload.origin.lat);
   request.input('originLng', payload.origin.lng);
@@ -206,7 +206,7 @@ export async function insertVisitRoute(payload) {
       INSERT INTO TESTE..ROTEIROS_MAPA (
         REQUEST_ID, COD_FUNC_RESPONSAVEL, NOME_RESPONSAVEL, CHAVE_SUPERVISAO,
         DESC_SUPERVISAO, COD_FUNC_CRIADOR, NOME_CRIADOR, DATA_ROTEIRO, VERSAO,
-        NOME, PRIORIDADE, ORIENTACAO, ORIGEM_NOME, ORIGEM_LAT, ORIGEM_LNG, DESTINO_NOME, DESTINO_LAT,
+        NOME, PRIORIDADE, ORIGEM_NOME, ORIGEM_LAT, ORIGEM_LNG, DESTINO_NOME, DESTINO_LAT,
         DESTINO_LNG, DISTANCIA_METROS, DESLOCAMENTO_MINUTOS, VISITAS_MINUTOS,
         MINUTOS_POR_VISITA, GEOMETRIA_JSON
       )
@@ -214,7 +214,7 @@ export async function insertVisitRoute(payload) {
       VALUES (
         @requestId, @responsavelFuncional, @responsavelNome, @chaveSupervisao,
         @descSupervisao, @criadorFuncional, @criadorNome, @plannedDate, @version,
-        @nome, @priority, @orientation, @originName, @originLat, @originLng, @destinationName, @destinationLat,
+        @nome, @priority, @originName, @originLat, @originLng, @destinationName, @destinationLat,
         @destinationLng, @distanceMeters, @travelMinutes, @visitMinutes,
         @minutesPerVisit, @geometryJson
       )
@@ -509,6 +509,7 @@ export async function deleteVisitRouteById(id, user) {
           ATUALIZADO_POR = @actorCode
         WHERE ID = @routeId;
       `);
+      await cancelRouteNotifications(transaction, id, actorCode);
       for (const visit of visits.recordset) {
         await appendVisitHistory(transaction, {
           visitId: visit.ID,
@@ -594,8 +595,7 @@ export async function patchVisitRouteById(id, user, payload) {
     const activeStops = current.recordset.filter((stop) => Boolean(stop.ATIVO));
     const changesAllVisits = payload.plannedDate != null
       || payload.owner != null
-      || payload.priority != null
-      || payload.orientation !== undefined;
+      || payload.priority != null;
     if (
       changesAllVisits
       && activeStops.some((stop) => stop.VISITA_STATUS !== 'PENDENTE')
@@ -614,9 +614,6 @@ export async function patchVisitRouteById(id, user, payload) {
     };
     const nextDate = payload.plannedDate ?? route.DATA_ROTEIRO;
     const nextPriority = payload.priority ?? route.PRIORIDADE ?? 'NORMAL';
-    const nextOrientation = payload.orientation === undefined
-      ? route.ORIENTACAO
-      : payload.orientation;
 
     const updateRoute = new sql.Request(transaction);
     updateRoute.input('routeId', sql.UniqueIdentifier, id);
@@ -626,7 +623,6 @@ export async function patchVisitRouteById(id, user, payload) {
     updateRoute.input('supervisionName', sql.NVarChar(150), nextOwner.descricaoSupervisao);
     updateRoute.input('plannedDate', sql.Date, nextDate);
     updateRoute.input('priority', sql.VarChar(10), nextPriority);
-    updateRoute.input('orientation', sql.NVarChar(1000), nextOrientation);
     updateRoute.input('actorCode', sql.Int, Number(payload.actor.funcional));
     await updateRoute.query(`
       UPDATE TESTE..ROTEIROS_MAPA
@@ -637,7 +633,6 @@ export async function patchVisitRouteById(id, user, payload) {
         DESC_SUPERVISAO = @supervisionName,
         DATA_ROTEIRO = @plannedDate,
         PRIORIDADE = @priority,
-        ORIENTACAO = @orientation,
         ATUALIZADO_EM_UTC = SYSUTCDATETIME(),
         ATUALIZADO_POR = @actorCode
       WHERE ID = @routeId;
@@ -649,7 +644,6 @@ export async function patchVisitRouteById(id, user, payload) {
         CHAVE_SUPERVISAO = @supervisionKey,
         DATA_PLANEJADA = @plannedDate,
         PRIORIDADE = @priority,
-        ORIENTACAO = @orientation,
         ATUALIZADO_EM_UTC = SYSUTCDATETIME(),
         ATUALIZADO_POR = @actorCode
       WHERE ROTEIRO_ID = @routeId
@@ -893,7 +887,6 @@ export async function patchVisitRouteById(id, user, payload) {
             createdBy: payload.actor,
             plannedDate: nextDate,
             priority: nextPriority,
-            orientation: nextOrientation,
           },
           productCodes: productCodesFromFocusLabels(stop.focos),
           correlationId: payload.correlationId,
@@ -910,13 +903,11 @@ export async function patchVisitRouteById(id, user, payload) {
       ownerCode: route.COD_FUNC_RESPONSAVEL,
       plannedDate: route.DATA_ROTEIRO,
       priority: route.PRIORIDADE,
-      orientation: route.ORIENTACAO,
     }));
     audit.input('newData', sql.NVarChar(sql.MAX), JSON.stringify({
       ownerCode: nextOwner.funcional,
       plannedDate: nextDate,
       priority: nextPriority,
-      orientation: nextOrientation,
       stops: payload.stops?.length ?? activeStops.length,
     }));
     await audit.query(`

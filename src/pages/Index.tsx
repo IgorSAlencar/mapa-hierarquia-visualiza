@@ -35,7 +35,6 @@ import { Button } from '@/components/ui/button';
 import { fetchDrivingRoute } from '@/lib/mapboxDirections';
 import { useAuth } from '@/context/AuthContext';
 import type { AuthUser } from '@/lib/authApi';
-import { toast } from 'sonner';
 import VisitTreatmentDrawer from '@/components/visits/VisitTreatmentDrawer';
 import { FEATURE_FLAGS } from '@/lib/featureFlags';
 import type { VisitTreatment } from '@/lib/visitsApi';
@@ -165,7 +164,6 @@ const Index = () => {
   const heatmapCacheRef = useRef(new Map<string, ProductionHeatmapData>());
 
   const navigatorDrag = usePanelDrag(NAVIGATOR_PANEL_DOCK);
-  const visitasDrag = usePanelDrag({ x: 332, y: 150 });
   const plannerDrag = usePanelDrag(NAVIGATOR_PANEL_DOCK);
   const compararDrag = usePanelDrag({ x: 332, y: 150 });
   const distanceDrag = usePanelDrag({ x: 316, y: DISTANCE_PANEL_TOP });
@@ -326,6 +324,8 @@ const Index = () => {
     () => activeRoute?.stops.find((stop) => stop.id === treatmentStopId) ?? null,
     [activeRoute, treatmentStopId]
   );
+  const treatmentOpen = FEATURE_FLAGS.visits
+    && Boolean(activeRoute && treatmentStop?.currentVisitId);
 
   const positionRouteDetails = useCallback((resultsPanelExpanded: boolean) => {
     const viewportWidth = window.innerWidth;
@@ -531,6 +531,9 @@ const Index = () => {
       setHeatmapViewByMunicipality(false);
     }
     setActiveSection(section);
+    if (section === 'visitas') {
+      setNavigatorMinimized(true);
+    }
     if (section === 'heatmap') {
       navigatorDrag.setPosition(NAVIGATOR_PANEL_DOCK);
       setNavigatorMinimized(true);
@@ -713,6 +716,9 @@ const Index = () => {
 
   const openTreatment = (stop: VisitStop, initialStep = 0) => {
     if (!stop.currentVisitId) return;
+    setActiveSection('visitas');
+    setNavigatorMinimized(true);
+    setRouteDetailsOpen(true);
     setSelectedStopId(stop.id);
     setTreatmentStopId(stop.id);
     setTreatmentInitialStep(initialStep);
@@ -743,33 +749,51 @@ const Index = () => {
     } : current);
   };
 
-  const handleTreatmentNext = () => {
-    if (!activeRoute || !treatmentStop) return;
-    const next = activeRoute.stops
-      .filter((stop) => stop.active !== false && stop.currentVisitId)
-      .sort((a, b) => a.ordem - b.ordem)
-      .find((stop) => stop.ordem > treatmentStop.ordem);
-    if (next) {
-      openTreatment(next);
-      return;
-    }
+  const clearTreatmentDeepLink = () => {
+    const next = new URLSearchParams(searchParams);
+    next.delete('routeId');
+    next.delete('visitId');
+    next.delete('visitProductId');
+    next.delete('drawer');
+    next.delete('step');
+    next.delete('focus');
+    setSearchParams(next, { replace: true });
+  };
+
+  const closeTreatment = () => {
     setTreatmentStopId(null);
-    toast.success('Todas as lojas disponíveis deste roteiro foram percorridas.');
+    clearTreatmentDeepLink();
+  };
+
+  const finishTreatment = () => {
+    setTreatmentStopId(null);
+    setSelectedStopId(null);
+    setRouteDetailsOpen(true);
+    setActiveSection('visitas');
+    setNavigatorMinimized(true);
+    clearTreatmentDeepLink();
   };
 
   useEffect(() => {
     if (!FEATURE_FLAGS.visits) return;
     const routeId = searchParams.get('routeId');
     const visitId = searchParams.get('visitId');
+    const routePanelOnly = searchParams.get('routePanelOnly') === '1';
     const focus = searchParams.get('focus') ?? '';
-    const signature = `${routeId ?? ''}:${visitId ?? ''}:${searchParams.get('step') ?? ''}:${focus}`;
+    const signature = `${routeId ?? ''}:${visitId ?? ''}:${searchParams.get('step') ?? ''}:${routePanelOnly}:${focus}`;
     if (!routeId || deepLinkHandledRef.current === signature) return;
     deepLinkHandledRef.current = signature;
     setActiveSection('visitas');
-    setNavigatorMinimized(false);
+    setNavigatorMinimized(true);
+    if (routePanelOnly) {
+      setRouteDetailsOpen(false);
+      setSelectedStopId(null);
+      setTreatmentStopId(null);
+    }
     void fetchSavedRoute(routeId).then((route) => {
       activeRouteIdRef.current = route.id;
       setActiveRoute(route);
+      if (routePanelOnly) return;
       setRouteDetailsOpen(true);
       const stop = visitId
         ? route.stops.find((item) => item.currentVisitId === visitId)
@@ -777,7 +801,7 @@ const Index = () => {
       if (stop && searchParams.get('drawer') !== '0') {
         setSelectedStopId(stop.id);
         setTreatmentStopId(stop.id);
-        setTreatmentInitialStep(Math.max(0, Math.min(5, Number(searchParams.get('step')) || 0)));
+        setTreatmentInitialStep(Math.max(0, Math.min(2, Number(searchParams.get('step')) || 0)));
         setVisitFocus({ tick: Date.now(), stopId: stop.id });
       } else if (!visitId && route.stops.length > 0) {
         // Reabre o roteiro no mapa mesmo sem visita específica (Ver roteiro / Abrir no mapa).
@@ -802,12 +826,46 @@ const Index = () => {
 
   const handleNavigatorRestore = () => {
     if (activeSection === 'distancia') distanceDrag.setPosition({ x: 316, y: DISTANCE_PANEL_TOP });
+    if (activeSection === 'visitas') handleSelectSection(null);
     setNavigatorMinimized(false);
   };
 
+  const visitasRoteirosPanel = activeSection === 'visitas' ? (
+    <VisitasRoteirosPanel
+      onBack={() => {
+        handleSelectSection(null);
+        setNavigatorMinimized(false);
+      }}
+      onClose={() => handleSelectSection(null)}
+      activeRoute={activeRoute}
+      onRouteChange={handleRouteChange}
+      shellStyle={navigatorDrag.shellStyle}
+      headerDragProps={navigatorDrag.headerDragProps}
+    />
+  ) : null;
+
+  const treatmentRoutePanel = treatmentOpen && activeRoute && routeDetailsOpen ? (
+    <RouteDetailsPanel
+      route={activeRoute}
+      selectedStopId={treatmentStopId}
+      onStopSelect={(stopId) => {
+        const stop = activeRoute.stops.find((item) => item.id === stopId);
+        if (stop) setVisitFocus({ tick: Date.now(), stopId: stop.id });
+      }}
+      onClose={() => setRouteDetailsOpen(false)}
+      shellStyle={{
+        position: 'absolute',
+        right: 16,
+        top: 16,
+        zIndex: 30,
+        maxHeight: 'calc(100vh - 113px)',
+      }}
+    />
+  ) : null;
+
   const navigatorOverlays = (
     <>
-      {navigatorMinimized ? (
+      {treatmentOpen ? treatmentRoutePanel : navigatorMinimized ? (
         <NavigatorPanel
           minimized
           onMinimize={handleNavigatorMinimize}
@@ -826,16 +884,6 @@ const Index = () => {
             shellStyle={navigatorDrag.shellStyle}
             headerDragProps={navigatorDrag.headerDragProps}
           />
-          {activeSection === 'visitas' && (
-            <VisitasRoteirosPanel
-              onBack={() => handleSelectSection(null)}
-              onClose={() => handleSelectSection(null)}
-              activeRoute={activeRoute}
-              onRouteChange={handleRouteChange}
-              shellStyle={visitasDrag.shellStyle}
-              headerDragProps={visitasDrag.headerDragProps}
-            />
-          )}
           {activeSection === 'comparar' && user?.isAdmin && (
             <CompararAreasPanel
               onBack={() => handleSelectSection(null)}
@@ -852,8 +900,11 @@ const Index = () => {
         </>
       )}
 
+      {/* Visitas substitui o painel Navegar e reutiliza sua posição enquanto o menu fica recolhido. */}
+      {!treatmentOpen && visitasRoteirosPanel}
+
       {/* O planejador é irmão do painel Navegar: minimizar o menu não desmonta o roteiro. */}
-      {activeSection === 'planejar' && (
+      {!treatmentOpen && activeSection === 'planejar' && (
         <RoutePlannerPanel
           onBack={() => {
             handleSelectSection(null);
@@ -886,7 +937,7 @@ const Index = () => {
         />
       )}
 
-      {activeSection === 'heatmap' && (
+      {!treatmentOpen && activeSection === 'heatmap' && (
         <ProductionHeatmapPanel
           metrics={heatmapMetrics}
           periods={heatmapPeriods}
@@ -918,7 +969,7 @@ const Index = () => {
         />
       )}
 
-      {activeSection === 'distancia' && (
+      {!treatmentOpen && activeSection === 'distancia' && (
         <DistanceAnalysisPanel
           onBack={() => {
             handleSelectSection(null);
@@ -933,7 +984,7 @@ const Index = () => {
         />
       )}
 
-      {activeRoute && routeDetailsOpen && (
+      {!treatmentOpen && activeRoute && routeDetailsOpen && (
         <RouteDetailsPanel
           route={activeRoute}
           selectedStopId={selectedStopId}
@@ -965,7 +1016,7 @@ const Index = () => {
         />
       )}
 
-      {activeRoute && selectedStop && (
+      {!treatmentOpen && activeRoute && selectedStop && (
         <VisitStopDetailCard
           route={activeRoute}
           stop={selectedStop}
@@ -988,16 +1039,9 @@ const Index = () => {
           stop={treatmentStop}
           visitId={treatmentStop.currentVisitId}
           initialStep={treatmentInitialStep}
-          onClose={() => {
-            setTreatmentStopId(null);
-            const next = new URLSearchParams(searchParams);
-            next.delete('visitId');
-            next.delete('drawer');
-            next.delete('step');
-            setSearchParams(next, { replace: true });
-          }}
+          onClose={closeTreatment}
           onVisitUpdated={handleVisitUpdated}
-          onNext={handleTreatmentNext}
+          onFinished={finishTreatment}
         />
       )}
     </>
@@ -1089,6 +1133,7 @@ const Index = () => {
           plannerHoveredStoreId={plannerHoveredStoreId}
           plannerStoreClassifications={plannerStoreClassifications}
           plannerResultsPanelExpanded={plannerResultsPanelExpanded}
+          treatmentPanelOpen={treatmentOpen}
           onPlannerStoresChange={setPlannerSqlStores}
           onPlannerStoresLoadingChange={setPlannerStoresLoading}
           distanceAnalysisMode={activeSection === 'distancia'}

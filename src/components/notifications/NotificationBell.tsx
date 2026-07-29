@@ -144,7 +144,7 @@ const NotificationBell: React.FC = () => {
       const result = await executeNotificationAction(notification, action);
       replace(result.notification);
       setOpen(false);
-      navigate(notificationDestinationUrl(notification));
+      navigate(notificationDestinationUrl(notification, action));
     } catch (cause) {
       toast.error(cause instanceof Error ? cause.message : 'Não foi possível abrir a notificação.');
     } finally {

@@ -32,6 +32,7 @@ import { Button } from '@/components/ui/button';
 import { useToast } from '@/hooks/use-toast';
 import { buildOutsideBrazilMaskFeature } from '@/lib/brazilOutsideMask';
 import { attachMapPointerGestureGuard } from '@/lib/mapPointerGestures';
+import { cn } from '@/lib/utils';
 import { MAPBOX_CONFIG } from '@/lib/mapbox-config';
 import {
   ensureMapboxRuntime,
@@ -2057,6 +2058,7 @@ interface MapComponentProps {
   plannerHoveredStoreId?: string | null;
   plannerStoreClassifications?: Record<string, 'alta' | 'media' | 'baixa'>;
   plannerResultsPanelExpanded?: boolean;
+  treatmentPanelOpen?: boolean;
   onPlannerStoresChange?: (points: SqlMapPoint[]) => void;
   onPlannerStoresLoadingChange?: (loading: boolean) => void;
   distanceAnalysisMode?: boolean;
@@ -2269,6 +2271,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
   plannerHoveredStoreId = null,
   plannerStoreClassifications = {},
   plannerResultsPanelExpanded = false,
+  treatmentPanelOpen = false,
   onPlannerStoresChange,
   onPlannerStoresLoadingChange,
   distanceAnalysisMode = false,
@@ -7851,7 +7854,10 @@ const MapComponent: React.FC<MapComponentProps> = ({
     <div className="relative h-full rounded-lg overflow-hidden">
       <div ref={mapContainer} className="absolute inset-0" />
       {navigatorOverlays ? (
-        <div className="pointer-events-none absolute inset-0 z-[15] overflow-visible">
+        <div className={cn(
+          'pointer-events-none absolute inset-0 overflow-visible',
+          treatmentPanelOpen ? 'z-[30]' : 'z-[15]'
+        )}>
           {navigatorOverlays}
         </div>
       ) : null}
@@ -8087,9 +8093,15 @@ const MapComponent: React.FC<MapComponentProps> = ({
         </div>
       </div>
       <div
-        className={`absolute top-4 z-20 flex flex-col items-end gap-2 overflow-visible transition-[right] duration-500 ease-out ${
-          rightSidePanelExpanded ? 'right-[calc(min(96vw,480px)+0.75rem)]' : 'right-4'
-        }`}
+        data-map-top-controls
+        className={cn(
+          'absolute top-4 z-20 flex-col items-end gap-2 overflow-visible transition-[right,opacity] duration-500 ease-out',
+          treatmentPanelOpen
+            ? 'right-4 flex'
+            : rightSidePanelExpanded
+              ? 'right-[calc(min(96vw,480px)+0.75rem)] flex'
+              : 'right-4 flex'
+        )}
       >
         <div className="flex items-start gap-2">
           {productionHeatmapActive &&
@@ -8208,11 +8220,17 @@ const MapComponent: React.FC<MapComponentProps> = ({
       </div>
       <div
         data-map-bottom-controls
-        className={`absolute bottom-4 z-20 flex max-w-[min(96vw,calc(100%-2rem))] items-end gap-3 overflow-visible pb-[env(safe-area-inset-bottom,0px)] transition-[right] duration-500 ease-out ${
-          rightSidePanelExpanded ? 'right-[calc(min(96vw,480px)+0.75rem)]' : 'right-4'
-        }`}
+        className={cn(
+          'absolute bottom-4 z-20 max-w-[min(96vw,calc(100%-2rem))] items-end gap-3 overflow-visible pb-[env(safe-area-inset-bottom,0px)] transition-[right,opacity] duration-500 ease-out',
+          treatmentPanelOpen
+            ? 'right-4 flex'
+            : rightSidePanelExpanded
+              ? 'right-[calc(min(96vw,480px)+0.75rem)] flex'
+              : 'right-4 flex'
+        )}
       >
         {canShowCommercialTeamOverlay &&
+        !plannerResultsPanelExpanded &&
         overlaySupervisores &&
         (seatLegendCompact ||
           seatLegendGc3Detail ||
