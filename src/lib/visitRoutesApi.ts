@@ -25,6 +25,56 @@ export interface VisitRouteSupervisionSummary {
   visits: number;
 }
 
+export interface VisitRouteMapRoute extends VisitRoute {
+  plannedDate: string;
+  owner: VisitRouteOwner;
+  version: number;
+  savedAt: string;
+  stopCount: number;
+  durationMinutes: number;
+}
+
+export interface VisitRouteHistoricalMetrics {
+  routeDays: number;
+  workingRouteDays: number;
+  workingDays: number;
+  frequencyRate: number;
+  totalRoutes: number;
+  totalDistanceMeters: number;
+  averageDistanceMeters: number;
+  plannedVisits: number;
+  completedVisits: number;
+  notCompletedVisits: number;
+  rescheduledVisits: number;
+  pendingVisits: number;
+  completionRate: number;
+}
+
+export interface VisitRouteWeeklyMetric {
+  weekStart: string;
+  routeDays: number;
+  routes: number;
+  distanceMeters: number;
+  plannedVisits: number;
+  completedVisits: number;
+  completionRate: number;
+}
+
+export interface VisitRouteDailyMapResponse {
+  date: string;
+  routes: VisitRouteMapRoute[];
+  missingSupervisionKeys: number[];
+}
+
+export interface VisitRouteHistoricalMapResponse {
+  from: string;
+  to: string;
+  owner: VisitRouteOwner;
+  routes: VisitRouteMapRoute[];
+  metrics: VisitRouteHistoricalMetrics;
+  weeklySeries: VisitRouteWeeklyMetric[];
+}
+
 export interface VisitRouteExportStoreData {
   chaveLoja: string;
   production: StoreProductionPoint | null;
@@ -95,7 +145,7 @@ export async function fetchRouteHistory(options: {
   if (options.chaveSupervisao) params.set('chaveSupervisao', String(options.chaveSupervisao));
   if (options.cursor) params.set('cursor', options.cursor);
   if (options.limit) params.set('limit', String(options.limit));
-  const response = await apiFetch(`${API_BASE_URL}/api/roteiros?${params}`);
+  const response = await apiFetch(`${API_BASE_URL}/api/roteiros?${params}`, { cache: 'no-store' });
   if (!response.ok) throw await responseError(response);
   const data = await response.json() as { items?: VisitRouteSummary[]; nextCursor?: string | null };
   return { items: Array.isArray(data.items) ? data.items : [], nextCursor: data.nextCursor ?? null };
@@ -103,14 +153,63 @@ export async function fetchRouteHistory(options: {
 
 export async function fetchRouteSummary(from: string, to: string): Promise<VisitRouteSupervisionSummary[]> {
   const params = new URLSearchParams({ from, to });
-  const response = await apiFetch(`${API_BASE_URL}/api/roteiros/resumo?${params}`);
+  const response = await apiFetch(`${API_BASE_URL}/api/roteiros/resumo?${params}`, { cache: 'no-store' });
   if (!response.ok) throw await responseError(response);
   const data = await response.json() as { items?: VisitRouteSupervisionSummary[] };
   return Array.isArray(data.items) ? data.items : [];
 }
 
+export async function fetchDailyRouteMap(
+  date: string,
+  supervisionKeys: number[],
+  signal?: AbortSignal
+): Promise<VisitRouteDailyMapResponse> {
+  const params = new URLSearchParams({ date });
+  for (const key of supervisionKeys) params.append('chaveSupervisao', String(key));
+  const response = await apiFetch(`${API_BASE_URL}/api/roteiros/mapa/dia?${params}`, {
+    cache: 'no-store',
+    signal,
+  });
+  if (!response.ok) throw await responseError(response);
+  const data = await response.json() as Partial<VisitRouteDailyMapResponse>;
+  return {
+    date: String(data.date ?? date),
+    routes: Array.isArray(data.routes) ? data.routes : [],
+    missingSupervisionKeys: Array.isArray(data.missingSupervisionKeys)
+      ? data.missingSupervisionKeys.map(Number).filter(Number.isFinite)
+      : [],
+  };
+}
+
+export async function fetchHistoricalRouteMap(
+  from: string,
+  to: string,
+  chaveSupervisao: number,
+  signal?: AbortSignal
+): Promise<VisitRouteHistoricalMapResponse> {
+  const params = new URLSearchParams({
+    from,
+    to,
+    chaveSupervisao: String(chaveSupervisao),
+  });
+  const response = await apiFetch(`${API_BASE_URL}/api/roteiros/mapa/historico?${params}`, {
+    cache: 'no-store',
+    signal,
+  });
+  if (!response.ok) throw await responseError(response);
+  const data = await response.json() as VisitRouteHistoricalMapResponse;
+  return {
+    ...data,
+    routes: Array.isArray(data.routes) ? data.routes : [],
+    weeklySeries: Array.isArray(data.weeklySeries) ? data.weeklySeries : [],
+  };
+}
+
 export async function fetchSavedRoute(id: string): Promise<VisitRoute> {
-  const response = await apiFetch(`${API_BASE_URL}/api/roteiros/${encodeURIComponent(id)}`);
+  const response = await apiFetch(
+    `${API_BASE_URL}/api/roteiros/${encodeURIComponent(id)}`,
+    { cache: 'no-store' }
+  );
   if (!response.ok) throw await responseError(response);
   const data = await response.json() as { route: VisitRoute };
   return data.route;

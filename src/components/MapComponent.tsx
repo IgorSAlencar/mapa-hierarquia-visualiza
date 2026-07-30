@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import mapboxgl, { type FilterSpecification } from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
 import {
+  Building2,
   LayoutGrid,
   Layers,
   MapPinOff,
@@ -90,9 +91,14 @@ import { fetchExpressoStateMetrics } from '@/lib/expressoApi';
 import { loadSupervisionAreas } from '@/lib/supervisionAreas';
 import {
   getVisitRouteBounds,
+  getVisitRoutesBounds,
   removeVisitRouteFromMap,
   syncVisitRouteOnMap,
+  syncVisitRoutesOnMap,
+  type VisitRouteMapFeatureClick,
+  type VisitRouteMapItem,
 } from '@/lib/visitRouteMapLayer';
+
 import { fetchDrivingGeometry } from '@/lib/mapboxDirections';
 import {
   addPlannerPriorityBadgeLayers,
@@ -127,6 +133,7 @@ import type { VisitRoute } from '@/data/visitRoutes';
 import type { DistanceAnalysisMapPoint } from '@/lib/distanceAnalysis';
 
 /** Malha nacional IBGE (serviço de malhas → arquivo em `public/geo`). */
+const EMPTY_VISIT_ROUTE_MAP_ITEMS: VisitRouteMapItem[] = [];
 const BRAZIL_BOUNDARY_GEOJSON = '/geo/brasil-limite-ibge.geojson';
 const BRAZIL_STATES_GEOJSON =
   'https://raw.githubusercontent.com/codeforamerica/click_that_hood/master/public/data/brazil-states.geojson';
@@ -818,7 +825,11 @@ function ensureCustomBrazilPlaceLabels(m: mapboxgl.Map) {
   }
 }
 
-function applyStandardThemeBasemap(m: mapboxgl.Map, theme: 'warm' | 'cool') {
+function applyStandardThemeBasemap(
+  m: mapboxgl.Map,
+  theme: 'warm' | 'cool',
+  buildings3dEnabled = !REDUCE_MAP_VISUAL_LOAD
+) {
   const tryTheme = (t: string) => {
     try {
       m.setConfigProperty('basemap', 'theme', t);
@@ -829,7 +840,7 @@ function applyStandardThemeBasemap(m: mapboxgl.Map, theme: 'warm' | 'cool') {
   };
   if (!tryTheme(theme)) tryTheme('default');
   try {
-    m.setConfigProperty('basemap', 'show3dObjects', !REDUCE_MAP_VISUAL_LOAD);
+    m.setConfigProperty('basemap', 'show3dObjects', buildings3dEnabled);
     m.setConfigProperty('basemap', 'lightPreset', 'day');
     // No Standard os rótulos ficam num import inacessível via setFilter;
     // desliga todos os place labels e usa camadas próprias (sem "Brazil").
@@ -841,6 +852,47 @@ function applyStandardThemeBasemap(m: mapboxgl.Map, theme: 'warm' | 'cool') {
   ensureCustomBrazilPlaceLabels(m);
   scheduleBrazilBasemapLabelTweaks(m);
   repositionBrazilCutoutLayers(m);
+}
+
+const BUILDINGS_3D_LAYER_ID = 'map-buildings-3d';
+
+function syncMapBuildings3d(m: mapboxgl.Map, styleUrl: string, enabled: boolean) {
+  if (isStandardStyleUrl(styleUrl)) {
+    try {
+      m.setConfigProperty('basemap', 'show3dObjects', enabled);
+    } catch {
+      /* estilo ainda carregando */
+    }
+    return;
+  }
+
+  if (m.getLayer(BUILDINGS_3D_LAYER_ID)) {
+    m.setLayoutProperty(BUILDINGS_3D_LAYER_ID, 'visibility', enabled ? 'visible' : 'none');
+    return;
+  }
+  if (!enabled || !m.getSource('composite')) return;
+
+  try {
+    m.addLayer(
+      {
+        id: BUILDINGS_3D_LAYER_ID,
+        source: 'composite',
+        'source-layer': 'building',
+        type: 'fill-extrusion',
+        minzoom: 14,
+        filter: ['==', ['get', 'extrude'], 'true'],
+        paint: {
+          'fill-extrusion-color': '#d6d3d1',
+          'fill-extrusion-height': ['coalesce', ['get', 'height'], 5],
+          'fill-extrusion-base': ['coalesce', ['get', 'min_height'], 0],
+          'fill-extrusion-opacity': 0.82,
+        },
+      },
+      firstSymbolLayerId(m)
+    );
+  } catch {
+    /* layout sem a camada building do Mapbox Streets */
+  }
 }
 
 function syncMapTerrain(m: mapboxgl.Map) {
@@ -2009,6 +2061,12 @@ interface MapComponentProps {
   visitRoute?: VisitRoute | null;
   selectedVisitStopId?: number | null;
   onVisitStopSelect?: (stopId: number) => void;
+  /** Comparação operacional ou histórica, separada da rota individual editável. */
+  visitRouteMapItems?: VisitRouteMapItem[];
+  selectedVisitRouteId?: string | null;
+  selectedVisitRouteStopKey?: string | null;
+  onVisitRouteMapFeatureSelect?: (feature: VisitRouteMapFeatureClick) => void;
+  visitRouteMapFitTick?: number;
   /** Comando de foco da câmera: `stopId` null enquadra o roteiro inteiro. */
   visitFocus?: { tick: number; stopId: number | null } | null;
   /** Modo "Comparar áreas das supervisões" (controlado pelo pai, ex. painel Navegar). */
@@ -2059,6 +2117,8 @@ interface MapComponentProps {
   plannerStoreClassifications?: Record<string, 'alta' | 'media' | 'baixa'>;
   plannerResultsPanelExpanded?: boolean;
   treatmentPanelOpen?: boolean;
+  /** Sidebar de gestão aberta à esquerda; desloca a busca do mapa no desktop. */
+  leftManagementPanelExpanded?: boolean;
   onPlannerStoresChange?: (points: SqlMapPoint[]) => void;
   onPlannerStoresLoadingChange?: (loading: boolean) => void;
   distanceAnalysisMode?: boolean;
@@ -2255,6 +2315,11 @@ const MapComponent: React.FC<MapComponentProps> = ({
   visitRoute = null,
   selectedVisitStopId = null,
   onVisitStopSelect,
+  visitRouteMapItems = EMPTY_VISIT_ROUTE_MAP_ITEMS,
+  selectedVisitRouteId = null,
+  selectedVisitRouteStopKey = null,
+  onVisitRouteMapFeatureSelect,
+  visitRouteMapFitTick = 0,
   visitFocus = null,
   compareSupervisionAreas: compareSupervisionAreasProp = false,
   onCompareSupervisionAreasChange,
@@ -2272,6 +2337,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
   plannerStoreClassifications = {},
   plannerResultsPanelExpanded = false,
   treatmentPanelOpen = false,
+  leftManagementPanelExpanded = false,
   onPlannerStoresChange,
   onPlannerStoresLoadingChange,
   distanceAnalysisMode = false,
@@ -2303,6 +2369,8 @@ const MapComponent: React.FC<MapComponentProps> = ({
   mapMarkersRef.current = mapMarkers;
   const onVisitStopSelectRef = useRef(onVisitStopSelect);
   onVisitStopSelectRef.current = onVisitStopSelect;
+  const onVisitRouteMapFeatureSelectRef = useRef(onVisitRouteMapFeatureSelect);
+  onVisitRouteMapFeatureSelectRef.current = onVisitRouteMapFeatureSelect;
   const onPlannerTerritorySelectRef = useRef(onPlannerTerritorySelect);
   onPlannerTerritorySelectRef.current = onPlannerTerritorySelect;
   const distanceAnalysisModeRef = useRef(distanceAnalysisMode);
@@ -2381,13 +2449,15 @@ const MapComponent: React.FC<MapComponentProps> = ({
     setMapBoxZoomEnabled(m, !distanceAnalysisMode);
   }, [distanceAnalysisMode]);
   const visitRouteFitIdRef = useRef<string | null>(null);
+  const visitRoutesFitSignatureRef = useRef<string | null>(null);
   const visibleVisitRoute = useMemo(() => {
+    if (visitRouteMapItems.length > 0) return null;
     if (!visitRoute) return null;
     const temporaryPlannerRoute =
       visitRoute.id.startsWith('planner-preview-') ||
       visitRoute.id.startsWith('planejado-');
     return !plannerMode && temporaryPlannerRoute ? null : visitRoute;
-  }, [plannerMode, visitRoute]);
+  }, [plannerMode, visitRoute, visitRouteMapItems.length]);
   const { toast } = useToast();
   const clickHandlerRef = useRef<((e: mapboxgl.MapLayerMouseEvent) => void) | null>(null);
   const stateClickHandlerRef = useRef<((e: mapboxgl.MapLayerMouseEvent) => void) | null>(null);
@@ -2651,6 +2721,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
   const [storeSearchLoading, setStoreSearchLoading] = useState(false);
   const [allMunicipalityNames, setAllMunicipalityNames] = useState<string[]>([]);
   const [mapStyleMode, setMapStyleMode] = useState<MapStyleMode>('standardWarm');
+  const [buildings3dEnabled, setBuildings3dEnabled] = useState(false);
   /** Abre o seletor de layout ao clicar (útil sem hover, ex.: touch). Combinado com hover no botão Layers. */
   const [mapLayoutMenuPinned, setMapLayoutMenuPinned] = useState(false);
   const [mapLayoutFlyoutHover, setMapLayoutFlyoutHover] = useState(false);
@@ -2704,6 +2775,12 @@ const MapComponent: React.FC<MapComponentProps> = ({
   const activeBaseStyle = MAP_STYLE_URL[mapStyleMode];
   const activeStandardTheme: 'warm' | 'cool' | null =
     mapStyleMode === 'standardCool' ? 'cool' : mapStyleMode === 'standardWarm' ? 'warm' : null;
+
+  useEffect(() => {
+    const m = map.current;
+    if (!m?.isStyleLoaded()) return;
+    syncMapBuildings3d(m, activeBaseStyle, buildings3dEnabled);
+  }, [activeBaseStyle, buildings3dEnabled, mapReadyVersion]);
 
   useEffect(() => {
     if (!mapLayoutMenuPinned) return;
@@ -3883,16 +3960,17 @@ const MapComponent: React.FC<MapComponentProps> = ({
     };
   }, [mapReadyVersion, plannerMode]);
 
-  /** Remove a camada do roteiro só quando não há rota ativa (não compete com o sync ao abrir). */
+  /** Remove a camada só quando não há rota individual nem comparação ativa. */
   useEffect(() => {
-    if (visibleVisitRoute) return;
+    if (visibleVisitRoute || visitRouteMapItems.length > 0) return;
     const mapInstance = map.current;
     if (!mapInstance) return;
     visitRouteFitIdRef.current = null;
+    visitRoutesFitSignatureRef.current = null;
     return runWhenMapStyleReady(mapInstance, () => {
       removeVisitRouteFromMap(mapInstance);
     });
-  }, [mapReadyVersion, visibleVisitRoute]);
+  }, [mapReadyVersion, visibleVisitRoute, visitRouteMapItems.length]);
 
   useEffect(() => {
     onPlannerStoresChange?.(plannerMode ? plannerStorePoints : []);
@@ -4874,7 +4952,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
         mapInit.config = {
           basemap: {
             theme: activeStandardTheme,
-            show3dObjects: !REDUCE_MAP_VISUAL_LOAD,
+            show3dObjects: buildings3dEnabled,
             lightPreset: 'day',
             showClouds: MAPBOX_CONFIG.standardBasemap.showClouds,
             // Standard não permite esconder só o rótulo de país ("Brazil");
@@ -4901,8 +4979,9 @@ const MapComponent: React.FC<MapComponentProps> = ({
         const m = map.current!;
         setMapBoxZoomEnabled(m, !distanceAnalysisModeRef.current);
         if (activeStandardTheme) {
-          applyStandardThemeBasemap(m, activeStandardTheme);
+          applyStandardThemeBasemap(m, activeStandardTheme, buildings3dEnabled);
         }
+        syncMapBuildings3d(m, activeBaseStyle, buildings3dEnabled);
         try {
           m.setProjection(MAPBOX_CONFIG.projection);
         } catch {
@@ -7725,7 +7804,14 @@ const MapComponent: React.FC<MapComponentProps> = ({
               left: 80,
               right: rightPadding,
             }
-          : 120,
+          : {
+              top: 90,
+              bottom: 90,
+              left: leftManagementPanelExpanded && containerWidth >= 768
+                ? Math.min(470, Math.max(120, containerWidth - 360))
+                : 120,
+              right: 120,
+            },
         maxZoom: plannerPreview ? 9.5 : 11.5,
         duration,
         easing: (progress: number) => 1 - Math.pow(1 - progress, 3),
@@ -7735,12 +7821,13 @@ const MapComponent: React.FC<MapComponentProps> = ({
     } catch {
       return false;
     }
-  }, [plannerMode, plannerResultsPanelExpanded]);
+  }, [leftManagementPanelExpanded, plannerMode, plannerResultsPanelExpanded]);
 
   /** Camada do roteiro de visitas (linha + paradas numeradas por status). */
   useEffect(() => {
     const m = map.current;
     if (!m) return;
+    if (visitRouteMapItems.length > 0) return;
 
     const doSync = () => {
       syncVisitRouteOnMap(m, visibleVisitRoute, selectedVisitStopId, (stopId) => {
@@ -7778,7 +7865,72 @@ const MapComponent: React.FC<MapComponentProps> = ({
     }
 
     return cancelSync;
-  }, [fitVisitRouteInAvailableViewport, visibleVisitRoute, selectedVisitStopId, mapReadyVersion]);
+  }, [
+    fitVisitRouteInAvailableViewport,
+    visibleVisitRoute,
+    selectedVisitStopId,
+    mapReadyVersion,
+    visitRouteMapItems.length,
+  ]);
+
+  /** Coleção comparativa: várias rotas do dia ou histórico do mesmo gerente. */
+  useEffect(() => {
+    const m = map.current;
+    if (!m) return;
+    if (visitRouteMapItems.length === 0) {
+      visitRoutesFitSignatureRef.current = null;
+      return;
+    }
+
+    const doSync = () => {
+      syncVisitRoutesOnMap(
+        m,
+        visitRouteMapItems,
+        selectedVisitRouteId,
+        selectedVisitRouteStopKey,
+        (feature) => onVisitRouteMapFeatureSelectRef.current?.(feature)
+      );
+    };
+    const cancelSync = runWhenMapStyleReady(m, doSync);
+
+    const dataSignature = visitRouteMapItems.map(({ route }) => route.id).join('|');
+    const fitSignature = `${dataSignature}::${visitRouteMapFitTick}`;
+    if (visitRoutesFitSignatureRef.current !== fitSignature) {
+      visitRoutesFitSignatureRef.current = fitSignature;
+      const bounds = getVisitRoutesBounds(visitRouteMapItems);
+      if (bounds) {
+        const containerWidth = m.getContainer().clientWidth;
+        try {
+          m.stop();
+          m.fitBounds(bounds, {
+            padding: {
+              top: 90,
+              bottom: 110,
+              left: leftManagementPanelExpanded && containerWidth >= 768
+                ? Math.min(470, Math.max(120, containerWidth - 360))
+                : 120,
+              right: 120,
+            },
+            maxZoom: 11,
+            duration: 700,
+            easing: (progress: number) => 1 - Math.pow(1 - progress, 3),
+            essential: true,
+          });
+        } catch {
+          /* estilo trocando durante o enquadramento */
+        }
+      }
+    }
+
+    return cancelSync;
+  }, [
+    leftManagementPanelExpanded,
+    mapReadyVersion,
+    selectedVisitRouteId,
+    selectedVisitRouteStopKey,
+    visitRouteMapFitTick,
+    visitRouteMapItems,
+  ]);
 
   /** Foco de câmera pedido pelos painéis ("Abrir no mapa"). */
   useEffect(() => {
@@ -7856,7 +8008,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
       {navigatorOverlays ? (
         <div className={cn(
           'pointer-events-none absolute inset-0 overflow-visible',
-          treatmentPanelOpen ? 'z-[30]' : 'z-[15]'
+          treatmentPanelOpen ? 'z-[30]' : 'z-auto'
         )}>
           {navigatorOverlays}
         </div>
@@ -7876,9 +8028,16 @@ const MapComponent: React.FC<MapComponentProps> = ({
           </div>
         </div>
       )}
-      <div className="absolute top-4 left-4 z-20 w-[min(95vw,380px)]">
+      <div
+        className={cn(
+          'absolute top-4 z-20 w-[min(95vw,380px)] transition-[left,opacity] duration-300',
+          leftManagementPanelExpanded
+            ? 'hidden lg:block lg:left-[426px]'
+            : 'left-4'
+        )}
+      >
         <div>
-          <div className="relative h-10 rounded-full border border-slate-200/90 bg-white/95 shadow-md shadow-slate-900/5 backdrop-blur-sm">
+          <div className="relative h-10 rounded-full border border-slate-200 bg-white shadow-md shadow-slate-900/5">
             <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <Input
               value={searchQuery}
@@ -7940,10 +8099,10 @@ const MapComponent: React.FC<MapComponentProps> = ({
               aria-pressed={overlayAgencias}
               onClick={handleToggleAgencias}
               disabled={loadingAgencyPoints}
-              className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full border text-[10px] font-bold shadow-sm backdrop-blur-sm transition-colors disabled:opacity-60 ${
+              className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full border text-[10px] font-bold shadow-sm transition-colors disabled:opacity-60 ${
                 overlayAgencias
                   ? 'border-slate-600 bg-slate-700 text-white shadow-slate-900/15'
-                  : 'border-slate-200/90 bg-white/95 text-slate-600 hover:border-slate-300 hover:bg-slate-50'
+                  : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:bg-slate-50'
               }`}
             >
               {loadingAgencyPoints ? '…' : 'AG'}
@@ -7958,10 +8117,10 @@ const MapComponent: React.FC<MapComponentProps> = ({
                 aria-pressed={overlaySupervisores}
                 disabled={loadingSeatPoints}
                 onClick={handleToggleCommercialTeamOverlay}
-                className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full border shadow-sm backdrop-blur-sm transition-colors disabled:opacity-60 ${
+                className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full border shadow-sm transition-colors disabled:opacity-60 ${
                   overlaySupervisores
                     ? 'border-slate-600 bg-slate-700 text-white shadow-slate-900/15'
-                    : 'border-slate-200/90 bg-white/95 text-slate-600 hover:border-slate-300 hover:bg-slate-50'
+                    : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:bg-slate-50'
                 }`}
               >
                 {loadingSeatPoints ? <span className="text-xs">…</span> : <Users className="h-4 w-4" />}
@@ -8012,10 +8171,10 @@ const MapComponent: React.FC<MapComponentProps> = ({
                 aria-pressed={overlayLojas}
                 disabled={loadingStorePoints}
                 onClick={handleToggleLojas}
-                className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full border shadow-sm backdrop-blur-sm transition-colors disabled:opacity-60 ${
+                className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full border shadow-sm transition-colors disabled:opacity-60 ${
                   overlayLojas
                     ? 'border-slate-600 bg-slate-700 text-white shadow-slate-900/15'
-                    : 'border-slate-200/90 bg-white/95 text-slate-600 hover:border-slate-300 hover:bg-slate-50'
+                    : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:bg-slate-50'
                 }`}
               >
                 <Store className="h-4 w-4" />
@@ -8070,10 +8229,10 @@ const MapComponent: React.FC<MapComponentProps> = ({
               aria-pressed={compareSupervisionAreas}
               disabled={!canCompareSupervisionAreas}
               onClick={() => setCompareSupervisionAreas((v) => !v)}
-              className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full border shadow-sm backdrop-blur-sm transition-colors disabled:opacity-60 disabled:cursor-not-allowed ${
+              className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full border shadow-sm transition-colors disabled:opacity-60 disabled:cursor-not-allowed ${
                 compareSupervisionAreas
                   ? 'border-slate-600 bg-slate-700 text-white shadow-slate-900/15'
-                  : 'border-slate-200/90 bg-white/95 text-slate-600 hover:border-slate-300 hover:bg-slate-50'
+                  : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:bg-slate-50'
               }`}
             >
               <Layers className="h-4 w-4" />
@@ -8096,11 +8255,12 @@ const MapComponent: React.FC<MapComponentProps> = ({
         data-map-top-controls
         className={cn(
           'absolute top-4 z-20 flex-col items-end gap-2 overflow-visible transition-[right,opacity] duration-500 ease-out',
+          leftManagementPanelExpanded ? 'hidden md:flex' : 'flex',
           treatmentPanelOpen
-            ? 'right-4 flex'
+            ? 'right-4'
             : rightSidePanelExpanded
-              ? 'right-[calc(min(96vw,480px)+0.75rem)] flex'
-              : 'right-4 flex'
+              ? 'right-[calc(min(96vw,480px)+0.75rem)]'
+              : 'right-4'
         )}
       >
         <div className="flex items-start gap-2">
@@ -8117,7 +8277,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
               }}
             />
           ) : null}
-          <div className="rounded-3xl border border-slate-200/90 bg-white/95 p-2 shadow-lg shadow-slate-900/10 backdrop-blur-sm">
+          <div className="rounded-3xl border border-slate-200 bg-white p-2 shadow-lg shadow-slate-900/10">
             <div className="flex flex-col items-center gap-2">
               <div ref={mapLayoutPickerRef} className="relative z-[60] h-10 w-10 shrink-0">
                 <div
@@ -8125,7 +8285,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
                   aria-label="Estilo do mapa"
                   onMouseEnter={openLayoutFlyoutHover}
                   onMouseLeave={scheduleLayoutHoverEnd}
-                  className={`absolute right-full top-1/2 z-10 mr-4 flex w-max -translate-y-1/2 flex-row items-center gap-1.5 rounded-2xl border border-slate-200/90 bg-white/95 p-1.5 shadow-lg shadow-slate-900/10 backdrop-blur-sm transition duration-200 ease-out ${
+                  className={`absolute right-full top-1/2 z-10 mr-4 flex w-max -translate-y-1/2 flex-row items-center gap-1.5 rounded-2xl border border-slate-200 bg-white p-1.5 shadow-lg shadow-slate-900/10 transition duration-200 ease-out ${
                     showLayoutFlyout
                       ? 'pointer-events-auto translate-x-0 opacity-100'
                       : 'pointer-events-none -translate-x-3 opacity-0'
@@ -8187,6 +8347,22 @@ const MapComponent: React.FC<MapComponentProps> = ({
                   <Layers className="h-4 w-4" />
                 </Button>
               </div>
+              <Button
+                type="button"
+                size="icon"
+                aria-pressed={buildings3dEnabled}
+                onClick={() => setBuildings3dEnabled((enabled) => !enabled)}
+                title={buildings3dEnabled ? 'Desabilitar construções 3D' : 'Habilitar construções 3D'}
+                aria-label={buildings3dEnabled ? 'Desabilitar construções 3D' : 'Habilitar construções 3D'}
+                className={cn(
+                  'h-10 w-10 rounded-full border shadow-sm',
+                  buildings3dEnabled
+                    ? 'border-blue-600 bg-blue-600 text-white hover:bg-blue-700'
+                    : 'border-slate-200/90 bg-white text-slate-600 hover:bg-slate-50 hover:text-slate-900'
+                )}
+              >
+                <Building2 className="h-4 w-4" />
+              </Button>
               <div className="my-1 h-px w-8 bg-slate-200/90" />
               <Button
                 type="button"
@@ -8222,11 +8398,12 @@ const MapComponent: React.FC<MapComponentProps> = ({
         data-map-bottom-controls
         className={cn(
           'absolute bottom-4 z-20 max-w-[min(96vw,calc(100%-2rem))] items-end gap-3 overflow-visible pb-[env(safe-area-inset-bottom,0px)] transition-[right,opacity] duration-500 ease-out',
+          leftManagementPanelExpanded ? 'hidden md:flex' : 'flex',
           treatmentPanelOpen
-            ? 'right-4 flex'
+            ? 'right-4'
             : rightSidePanelExpanded
-              ? 'right-[calc(min(96vw,480px)+0.75rem)] flex'
-              : 'right-4 flex'
+              ? 'right-[calc(min(96vw,480px)+0.75rem)]'
+              : 'right-4'
         )}
       >
         {canShowCommercialTeamOverlay &&
@@ -8236,7 +8413,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
           seatLegendGc3Detail ||
           seatLegendGgDetail ||
           seatLegendEntries.length > 0) ? (
-          <div className="pointer-events-auto min-w-0 max-w-[min(280px,calc(100vw-7rem))] shrink rounded-lg border border-slate-200/60 bg-white/90 px-2.5 py-2 text-[10px] text-slate-600 shadow-md shadow-slate-900/5 backdrop-blur-sm">
+          <div className="pointer-events-auto min-w-0 max-w-[min(280px,calc(100vw-7rem))] shrink rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-[10px] text-slate-600 shadow-md shadow-slate-900/5">
             <div className="mb-1 flex items-center gap-1.5">
               {seatLegendCanGoBack ? (
                 <button
@@ -8428,7 +8605,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
           selectedStoreCount={visibleSelectedPlannerStoreCount}
         /> : null}
         {compareSupervisionAreas && compareSupervisionsList.length > 0 ? (
-          <div className="pointer-events-auto min-w-0 w-[min(280px,60vw)] shrink rounded-xl border border-slate-200/70 bg-white/90 shadow-lg shadow-slate-900/10 backdrop-blur-sm">
+          <div className="pointer-events-auto min-w-0 w-[min(280px,60vw)] shrink rounded-xl border border-slate-200 bg-white shadow-lg shadow-slate-900/10">
             <div className="flex items-start justify-between gap-2 px-3 pt-2.5 pb-1.5">
               <div className="min-w-0">
                 <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
@@ -8468,7 +8645,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
             </div>
           </div>
         ) : null}
-        <div className="shrink-0 rounded-3xl border border-slate-200/90 bg-white/95 p-2 shadow-lg shadow-slate-900/10 backdrop-blur-sm">
+        <div className="shrink-0 rounded-3xl border border-slate-200 bg-white p-2 shadow-lg shadow-slate-900/10">
           <div className="flex flex-col items-center gap-2">
             <Button
               type="button"
@@ -8522,7 +8699,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
         </div>
       </div>
       {mapMarkers.length > 0 && (
-        <div className="absolute left-4 top-[152px] z-10 max-w-[240px] rounded-lg border border-border/60 bg-map-surface/95 p-3 shadow-lg backdrop-blur-sm">
+        <div className="absolute left-4 top-[152px] z-10 max-w-[240px] rounded-lg border border-border/60 bg-map-surface p-3 shadow-lg">
           <p className="text-sm font-medium">Camada comercial</p>
           <p className="mt-1 text-xs text-muted-foreground">
             {mapMarkers.filter((x) => x.kind === 'pessoa').length} correspondentes no mapa
@@ -8686,7 +8863,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
                 />
               </div>
               {legendBody ? (
-                <div className="pointer-events-none mx-4 max-w-[220px] self-start rounded-lg border border-slate-200/90 bg-white/95 px-3 py-2 shadow-md backdrop-blur-sm">
+                <div className="pointer-events-none mx-4 max-w-[220px] self-start rounded-lg border border-slate-200 bg-white px-3 py-2 shadow-md">
                   {legendBody}
                 </div>
               ) : null}
@@ -8695,7 +8872,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
         }
 
         return legendBody ? (
-          <div className="pointer-events-none absolute bottom-4 left-4 z-20 max-w-[220px] rounded-lg border border-slate-200/90 bg-white/95 px-3 py-2 shadow-md backdrop-blur-sm">
+          <div className="pointer-events-none absolute bottom-4 left-4 z-20 max-w-[220px] rounded-lg border border-slate-200 bg-white px-3 py-2 shadow-md">
             {legendBody}
           </div>
         ) : null;

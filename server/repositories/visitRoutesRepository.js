@@ -32,6 +32,10 @@ function routeScopeSql(request, user, routeAlias = 'r', entityAlias = 'route_ent
   `;
 }
 
+function activeRouteSql(routeAlias = 'r') {
+  return FEATURES.visits ? `AND ${routeAlias}.STATUS_GESTAO = 'ATIVO'` : '';
+}
+
 export async function fetchAuthorizedRouteOwners(user, { storeKeys = [] } = {}) {
   const request = pool.request();
   const accessSql = applyAccessScope(request, user, 'ent', 'ownersAuthCodFunc');
@@ -289,30 +293,49 @@ export async function fetchVisitRouteSummaries({ user, from, to, chaveSupervisao
   const supervisionSql = chaveSupervisao
     ? (() => {
         request.input('filterSupervision', chaveSupervisao);
-        return ' AND r.CHAVE_SUPERVISAO = @filterSupervision';
+        return ' AND latest.CHAVE_SUPERVISAO = @filterSupervision';
       })()
     : '';
   const scopeSql = routeScopeSql(request, user, 'r', 'list_ent');
   const result = await request.query(`
+    WITH latest AS (
+      SELECT
+        r.*,
+        ROW_NUMBER() OVER (
+          PARTITION BY r.COD_FUNC_RESPONSAVEL, r.DATA_ROTEIRO
+          ORDER BY r.VERSAO DESC, r.CRIADO_EM DESC, r.ID DESC
+        ) AS rn
+      FROM TESTE..ROTEIROS_MAPA AS r
+      WHERE r.DATA_ROTEIRO BETWEEN @fromDate AND @toDate
+        ${scopeSql}
+    )
     SELECT
-      r.ID, r.COD_FUNC_RESPONSAVEL, r.NOME_RESPONSAVEL, r.CHAVE_SUPERVISAO,
-      r.DESC_SUPERVISAO, r.COD_FUNC_CRIADOR, r.NOME_CRIADOR, r.DATA_ROTEIRO,
-      r.VERSAO, r.NOME, r.DISTANCIA_METROS, r.DESLOCAMENTO_MINUTOS,
-      r.VISITAS_MINUTOS, r.MINUTOS_POR_VISITA, r.CRIADO_EM,
+      latest.ID, latest.COD_FUNC_RESPONSAVEL, latest.NOME_RESPONSAVEL,
+      latest.CHAVE_SUPERVISAO, latest.DESC_SUPERVISAO,
+      latest.COD_FUNC_CRIADOR, latest.NOME_CRIADOR, latest.DATA_ROTEIRO,
+      latest.VERSAO, latest.NOME, latest.DISTANCIA_METROS,
+      latest.DESLOCAMENTO_MINUTOS, latest.VISITAS_MINUTOS,
+      latest.MINUTOS_POR_VISITA,
+      CAST(
+        (latest.CRIADO_EM AT TIME ZONE 'E. South America Standard Time') AT TIME ZONE 'UTC'
+        AS DATETIME2(3)
+      ) AS CRIADO_EM_UTC,
       COUNT(p.ID) AS TOTAL_PARADAS
-    FROM TESTE..ROTEIROS_MAPA AS r
+    FROM latest
     LEFT JOIN TESTE..ROTEIRO_PARADAS_MAPA AS p
-      ON p.ROTEIRO_ID = r.ID
+      ON p.ROTEIRO_ID = latest.ID
      ${FEATURES.visits ? 'AND p.ATIVO = 1' : ''}
-    WHERE r.DATA_ROTEIRO BETWEEN @fromDate AND @toDate
+    WHERE latest.rn = 1
+      ${activeRouteSql('latest')}
       ${supervisionSql}
-      ${scopeSql}
     GROUP BY
-      r.ID, r.COD_FUNC_RESPONSAVEL, r.NOME_RESPONSAVEL, r.CHAVE_SUPERVISAO,
-      r.DESC_SUPERVISAO, r.COD_FUNC_CRIADOR, r.NOME_CRIADOR, r.DATA_ROTEIRO,
-      r.VERSAO, r.NOME, r.DISTANCIA_METROS, r.DESLOCAMENTO_MINUTOS,
-      r.VISITAS_MINUTOS, r.MINUTOS_POR_VISITA, r.CRIADO_EM
-    ORDER BY r.DATA_ROTEIRO DESC, r.CRIADO_EM DESC, r.ID
+      latest.ID, latest.COD_FUNC_RESPONSAVEL, latest.NOME_RESPONSAVEL,
+      latest.CHAVE_SUPERVISAO, latest.DESC_SUPERVISAO,
+      latest.COD_FUNC_CRIADOR, latest.NOME_CRIADOR, latest.DATA_ROTEIRO,
+      latest.VERSAO, latest.NOME, latest.DISTANCIA_METROS,
+      latest.DESLOCAMENTO_MINUTOS, latest.VISITAS_MINUTOS,
+      latest.MINUTOS_POR_VISITA, latest.CRIADO_EM
+    ORDER BY latest.DATA_ROTEIRO DESC, latest.CRIADO_EM DESC, latest.ID
     OFFSET @offsetRows ROWS FETCH NEXT @limitRows ROWS ONLY
   `);
   return result.recordset;
@@ -347,9 +370,153 @@ export async function fetchVisitRouteSummaryBySupervision({ user, from, to }) {
       SUM(latest.TOTAL_VISITAS) AS TOTAL_VISITAS
     FROM latest
     WHERE latest.rn = 1
+      ${activeRouteSql('latest')}
     GROUP BY latest.CHAVE_SUPERVISAO
   `);
   return result.recordset;
+}
+
+/**
+ * Busca em lote as versões mais recentes dos roteiros para o mapa.
+ *
+ * A tabela temporária mantém cabeçalhos e paradas em recordsets separados para
+ * que a geometria (potencialmente grande) não seja repetida em cada parada.
+ */
+export async function fetchVisitRoutesForMap({
+  user,
+  from,
+  to,
+  chaveSupervisoes,
+  ownerFuncional = null,
+}) {
+  const request = pool.request();
+  request.input('fromDate', sql.Date, from);
+  request.input('toDate', sql.Date, to);
+  const supervisionParams = chaveSupervisoes.map((key, index) => {
+    request.input(`mapSupervision${index}`, key);
+    return `@mapSupervision${index}`;
+  });
+  const ownerSql = ownerFuncional == null
+    ? ''
+    : (() => {
+        request.input('mapOwnerFuncional', Number(ownerFuncional));
+        return 'AND r.COD_FUNC_RESPONSAVEL = @mapOwnerFuncional';
+      })();
+  const scopeSql = routeScopeSql(request, user, 'r', 'map_routes_ent');
+  const stopActiveSql = FEATURES.visits ? 'AND p.ATIVO = 1' : '';
+  const visitFields = FEATURES.visits
+    ? `,
+      visita.ID AS VISITA_ID,
+      visita.STATUS AS VISITA_STATUS`
+    : `,
+      CAST(NULL AS BIGINT) AS VISITA_ID,
+      CAST(NULL AS VARCHAR(20)) AS VISITA_STATUS`;
+  const visitJoin = FEATURES.visits
+    ? `
+    OUTER APPLY (
+      SELECT TOP (1) current_visit.ID, current_visit.STATUS
+      FROM TESTE..TB_VISITA_TRATATIVA AS current_visit
+      WHERE current_visit.PARADA_ROTEIRO_ID = p.ID
+        AND current_visit.EH_ATUAL = 1
+      ORDER BY current_visit.ID DESC
+    ) AS visita`
+    : '';
+
+  const result = await request.query(`
+    CREATE TABLE #MAP_SELECTED_ROUTES (
+      ID UNIQUEIDENTIFIER NOT NULL PRIMARY KEY
+    );
+
+    ;WITH ranked AS (
+      SELECT
+        r.ID,
+        r.CHAVE_SUPERVISAO,
+        ${FEATURES.visits ? 'r.STATUS_GESTAO,' : ''}
+        ROW_NUMBER() OVER (
+          PARTITION BY r.COD_FUNC_RESPONSAVEL, r.DATA_ROTEIRO
+          ORDER BY r.VERSAO DESC, r.CRIADO_EM DESC, r.ID DESC
+        ) AS rn
+      FROM TESTE..ROTEIROS_MAPA AS r
+      WHERE r.DATA_ROTEIRO BETWEEN @fromDate AND @toDate
+        ${ownerSql}
+        ${scopeSql}
+    )
+    INSERT INTO #MAP_SELECTED_ROUTES (ID)
+    SELECT ranked.ID
+    FROM ranked
+    WHERE ranked.rn = 1
+      ${activeRouteSql('ranked')}
+      AND ranked.CHAVE_SUPERVISAO IN (${supervisionParams.join(', ')});
+
+    SELECT
+      r.ID,
+      r.COD_FUNC_RESPONSAVEL,
+      r.NOME_RESPONSAVEL,
+      r.CHAVE_SUPERVISAO,
+      r.DESC_SUPERVISAO,
+      r.COD_FUNC_CRIADOR,
+      r.NOME_CRIADOR,
+      r.DATA_ROTEIRO,
+      r.VERSAO,
+      r.NOME,
+      r.PRIORIDADE,
+      r.STATUS_GESTAO,
+      r.VERSAO_LINHA,
+      r.DISTANCIA_METROS,
+      r.DESLOCAMENTO_MINUTOS,
+      r.VISITAS_MINUTOS,
+      r.MINUTOS_POR_VISITA,
+      CAST(
+        (r.CRIADO_EM AT TIME ZONE 'E. South America Standard Time') AT TIME ZONE 'UTC'
+        AS DATETIME2(3)
+      ) AS CRIADO_EM_UTC,
+      r.ORIGEM_NOME,
+      r.ORIGEM_LAT,
+      r.ORIGEM_LNG,
+      r.DESTINO_NOME,
+      r.DESTINO_LAT,
+      r.DESTINO_LNG,
+      r.GEOMETRIA_JSON
+    FROM TESTE..ROTEIROS_MAPA AS r
+    INNER JOIN #MAP_SELECTED_ROUTES AS selected
+      ON selected.ID = r.ID
+    ORDER BY r.DATA_ROTEIRO, r.NOME_RESPONSAVEL, r.ID;
+
+    SELECT
+      p.ROTEIRO_ID,
+      p.ID,
+      p.ORDEM,
+      p.CHAVE_LOJA,
+      p.COD_AG,
+      p.NOME,
+      p.HORARIO,
+      p.STATUS,
+      p.ENDERECO,
+      p.CEP_CONTEXTO,
+      p.PRODUTO_FOCO,
+      p.FOCOS_JSON,
+      p.OPORTUNIDADES_JSON,
+      p.ULTIMA_VISITA,
+      p.PROXIMA_ACAO,
+      p.LAT,
+      p.LNG,
+      ${FEATURES.visits ? 'p.ATIVO' : 'CAST(1 AS BIT) AS ATIVO'}
+      ${visitFields}
+    FROM TESTE..ROTEIRO_PARADAS_MAPA AS p
+    INNER JOIN #MAP_SELECTED_ROUTES AS selected
+      ON selected.ID = p.ROTEIRO_ID
+    ${visitJoin}
+    WHERE 1 = 1
+      ${stopActiveSql}
+    ORDER BY p.ROTEIRO_ID, p.ORDEM, p.ID;
+
+    DROP TABLE #MAP_SELECTED_ROUTES;
+  `);
+
+  return {
+    headers: result.recordsets[0] ?? [],
+    stops: result.recordsets[1] ?? [],
+  };
 }
 
 export async function fetchVisitRouteById(id, user) {
@@ -357,9 +524,15 @@ export async function fetchVisitRouteById(id, user) {
   request.input('routeId', sql.UniqueIdentifier, id);
   const scopeSql = routeScopeSql(request, user, 'r', 'detail_ent');
   const header = await request.query(`
-    SELECT TOP (1) *
+    SELECT TOP (1)
+      r.*,
+      CAST(
+        (r.CRIADO_EM AT TIME ZONE 'E. South America Standard Time') AT TIME ZONE 'UTC'
+        AS DATETIME2(3)
+      ) AS CRIADO_EM_UTC
     FROM TESTE..ROTEIROS_MAPA AS r
     WHERE r.ID = @routeId
+      ${activeRouteSql('r')}
       ${scopeSql}
   `);
   if (!header.recordset[0]) return null;
@@ -451,6 +624,7 @@ export async function deleteVisitRouteById(id, user) {
       FROM TESTE..ROTEIROS_MAPA AS r
       ${FEATURES.visits ? 'WITH (UPDLOCK, HOLDLOCK)' : ''}
       WHERE r.ID = @routeId
+        ${activeRouteSql('r')}
         ${scopeSql}
     `);
     if (!existing.recordset[0]) {
@@ -570,6 +744,7 @@ export async function patchVisitRouteById(id, user, payload) {
       SELECT TOP (1) *
       FROM TESTE..ROTEIROS_MAPA AS r WITH (UPDLOCK, HOLDLOCK)
       WHERE r.ID = @routeId
+        ${activeRouteSql('r')}
         ${scopeSql}
     `);
     const route = routeResult.recordset[0];

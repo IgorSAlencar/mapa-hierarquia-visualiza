@@ -28,8 +28,23 @@ const ROUTE_LAYER_IDS = [
   STOP_CIRCLE_LAYER_ID,
   STOP_NUMBER_LAYER_ID,
 ] as const;
+const INTERACTIVE_LAYER_IDS = [STOP_CIRCLE_LAYER_ID, LINE_LAYER_ID] as const;
 
 type StopClickHandler = (stopId: number) => void;
+
+export interface VisitRouteMapItem {
+  route: VisitRoute;
+  color: string;
+}
+
+export interface VisitRouteMapFeatureClick {
+  kind: 'route' | 'stop';
+  routeId: string;
+  stopId: number | null;
+  stopKey: string | null;
+}
+
+export type VisitRouteMapFeatureClickHandler = (feature: VisitRouteMapFeatureClick) => void;
 
 const registeredHandlers = new WeakMap<
   mapboxgl.Map,
@@ -41,6 +56,7 @@ const registeredHandlers = new WeakMap<
 >();
 
 const stopClickCallbacks = new WeakMap<mapboxgl.Map, StopClickHandler>();
+const featureClickCallbacks = new WeakMap<mapboxgl.Map, VisitRouteMapFeatureClickHandler>();
 
 /** Id do roteiro exibido em cada mapa, para descartar respostas atrasadas da Directions API. */
 const activeRouteIds = new WeakMap<mapboxgl.Map, string>();
@@ -73,11 +89,23 @@ function normalizeRouteGeometry(
   return coordinates.length >= 2 ? coordinates : null;
 }
 
-function buildFeatureCollection(
+function normalizedRouteColor(color: string | null | undefined): string {
+  return typeof color === 'string' && color.trim() ? color.trim() : ROUTE_LINE_COLOR;
+}
+
+function buildRouteFeatures(
   route: VisitRoute,
-  lineCoordinates?: [number, number][]
-): GeoJSON.FeatureCollection {
+  color: string,
+  lineCoordinates?: [number, number][],
+  useRouteColorForStops = false
+): GeoJSON.Feature[] {
   const isDistanceAnalysis = route.id.startsWith('analise-distancia-');
+  const commonProperties = {
+    routeId: route.id,
+    chaveSupervisao: route.chaveSupervisao,
+    plannedDate: route.plannedDate ?? route.data,
+    color: normalizedRouteColor(color),
+  };
   const stopCoordinates = route.stops.map((stop) => [stop.lng, stop.lat] as [number, number]);
   const coordinates = lineCoordinates ?? [
     ...(route.origin ? [[route.origin.lng, route.origin.lat] as [number, number]] : []),
@@ -87,16 +115,19 @@ function buildFeatureCollection(
   const line: GeoJSON.Feature = {
     type: 'Feature',
     geometry: { type: 'LineString', coordinates },
-    properties: { kind: 'route-line' },
+    properties: { ...commonProperties, kind: 'route-line' },
   };
   const points: GeoJSON.Feature[] = route.stops.map((stop) => ({
     type: 'Feature',
     geometry: { type: 'Point', coordinates: [stop.lng, stop.lat] },
     properties: {
+      ...commonProperties,
       kind: 'route-stop',
       stopId: stop.id,
+      stopKey: `${route.id}:${stop.id}`,
       ordem: String(stop.ordem),
       status: stop.status,
+      markerColor: useRouteColorForStops ? normalizedRouteColor(color) : null,
     },
   }));
   if (route.origin) {
@@ -104,7 +135,9 @@ function buildFeatureCollection(
       type: 'Feature',
       geometry: { type: 'Point', coordinates: [route.origin.lng, route.origin.lat] },
       properties: {
+        ...commonProperties,
         kind: 'route-origin',
+        stopKey: null,
         ordem: isDistanceAnalysis ? 'A' : 'I',
         status: 'origem',
         nome: route.origin.nome,
@@ -116,16 +149,41 @@ function buildFeatureCollection(
       type: 'Feature',
       geometry: { type: 'Point', coordinates: [route.destination.lng, route.destination.lat] },
       properties: {
+        ...commonProperties,
         kind: 'route-destination',
+        stopKey: null,
         ordem: isDistanceAnalysis ? 'B' : 'F',
         status: 'destino',
         nome: route.destination.nome,
       },
     });
   }
+  return [...(coordinates.length >= 2 ? [line] : []), ...points];
+}
+
+function buildFeatureCollection(
+  route: VisitRoute,
+  lineCoordinates?: [number, number][]
+): GeoJSON.FeatureCollection {
   return {
     type: 'FeatureCollection',
-    features: [...(coordinates.length >= 2 ? [line] : []), ...points],
+    features: buildRouteFeatures(route, ROUTE_LINE_COLOR, lineCoordinates),
+  };
+}
+
+/**
+ * Gera um GeoJSON para várias rotas. Snapshots sem geometria persistida usam
+ * a ligação direta entre os pontos; esta visão nunca recalcula Directions.
+ */
+export function buildVisitRoutesFeatureCollection(
+  items: readonly VisitRouteMapItem[]
+): GeoJSON.FeatureCollection {
+  return {
+    type: 'FeatureCollection',
+    features: items.flatMap(({ route, color }) => {
+      const persistedGeometry = normalizeRouteGeometry(route.routeGeometry);
+      return buildRouteFeatures(route, color, persistedGeometry ?? undefined, true);
+    }),
   };
 }
 
@@ -148,7 +206,7 @@ function ensureLayers(m: mapboxgl.Map): void {
       filter: ['==', ['geometry-type'], 'LineString'],
       layout: { 'line-join': 'round', 'line-cap': 'round' },
       paint: {
-        'line-color': ROUTE_LINE_COLOR,
+        'line-color': ['coalesce', ['get', 'color'], ROUTE_LINE_COLOR],
         'line-width': 3,
         'line-opacity': 0.9,
       },
@@ -165,20 +223,24 @@ function ensureLayers(m: mapboxgl.Map): void {
       paint: {
         'circle-radius': 10,
         'circle-color': [
-          'match',
-          ['get', 'kind'],
-          'route-origin',
-          '#2563eb',
-          'route-destination',
-          '#10b981',
+          'coalesce',
+          ['get', 'markerColor'],
           [
             'match',
-            ['get', 'status'],
-            'concluida',
-            STATUS_COLOR.concluida,
-            'pendente',
-            STATUS_COLOR.pendente,
-            ROUTE_LINE_COLOR,
+            ['get', 'kind'],
+            'route-origin',
+            ['coalesce', ['get', 'color'], '#2563eb'],
+            'route-destination',
+            ['coalesce', ['get', 'color'], '#10b981'],
+            [
+              'match',
+              ['get', 'status'],
+              'concluida',
+              STATUS_COLOR.concluida,
+              'pendente',
+              STATUS_COLOR.pendente,
+              ['coalesce', ['get', 'color'], ROUTE_LINE_COLOR],
+            ],
           ],
         ],
         'circle-stroke-color': '#ffffff',
@@ -259,9 +321,28 @@ function ensureInteractions(m: mapboxgl.Map): void {
 
   const click = (e: mapboxgl.MapLayerMouseEvent) => {
     const feature = e.features?.[0];
+    const routeId = String(feature?.properties?.routeId ?? '');
     const stopId = Number(feature?.properties?.stopId);
-    if (!Number.isFinite(stopId)) return;
-    stopClickCallbacks.get(m)?.(stopId);
+    if (feature?.properties?.kind === 'route-stop' && Number.isFinite(stopId)) {
+      if (routeId) {
+        featureClickCallbacks.get(m)?.({
+          kind: 'stop',
+          routeId,
+          stopId,
+          stopKey: String(feature?.properties?.stopKey ?? `${routeId}:${stopId}`),
+        });
+      }
+      stopClickCallbacks.get(m)?.(stopId);
+      return;
+    }
+    if (feature?.properties?.kind === 'route-line' && routeId) {
+      featureClickCallbacks.get(m)?.({
+        kind: 'route',
+        routeId,
+        stopId: null,
+        stopKey: null,
+      });
+    }
   };
   const enter = () => {
     m.getCanvas().style.cursor = 'pointer';
@@ -270,10 +351,93 @@ function ensureInteractions(m: mapboxgl.Map): void {
     m.getCanvas().style.cursor = '';
   };
 
-  m.on('click', STOP_CIRCLE_LAYER_ID, click);
-  m.on('mouseenter', STOP_CIRCLE_LAYER_ID, enter);
-  m.on('mouseleave', STOP_CIRCLE_LAYER_ID, leave);
+  m.on('click', [...INTERACTIVE_LAYER_IDS], click);
+  m.on('mouseenter', [...INTERACTIVE_LAYER_IDS], enter);
+  m.on('mouseleave', [...INTERACTIVE_LAYER_IDS], leave);
   registeredHandlers.set(m, { click, enter, leave });
+}
+
+function removeInteractions(m: mapboxgl.Map): void {
+  const handlers = registeredHandlers.get(m);
+  if (!handlers) return;
+  try { m.off('click', [...INTERACTIVE_LAYER_IDS], handlers.click); } catch { /* mapa descartado */ }
+  try { m.off('mouseenter', [...INTERACTIVE_LAYER_IDS], handlers.enter); } catch { /* mapa descartado */ }
+  try { m.off('mouseleave', [...INTERACTIVE_LAYER_IDS], handlers.leave); } catch { /* mapa descartado */ }
+  registeredHandlers.delete(m);
+}
+
+function applyRouteSelectionStyles(
+  m: mapboxgl.Map,
+  selectedRouteId: string | null,
+  selectedStopKey: string | null,
+  multiMode = false
+): void {
+  const routeSelected = selectedRouteId != null;
+  const selectedRouteExpression: mapboxgl.ExpressionSpecification = [
+    '==',
+    ['get', 'routeId'],
+    selectedRouteId ?? '',
+  ];
+
+  m.setPaintProperty(
+    LINE_LAYER_ID,
+    'line-width',
+    routeSelected ? ['case', selectedRouteExpression, 5, 2.5] : 3
+  );
+  m.setPaintProperty(
+    LINE_LAYER_ID,
+    'line-opacity',
+    routeSelected ? ['case', selectedRouteExpression, 0.98, 0.24] : 0.9
+  );
+
+  const baseRadius: mapboxgl.ExpressionSpecification = [
+    'match',
+    ['get', 'kind'],
+    'route-origin',
+    12,
+    'route-destination',
+    12,
+    10,
+  ];
+  const stopSelected = selectedStopKey != null;
+  const selectedStopExpression: mapboxgl.ExpressionSpecification = [
+    '==',
+    ['get', 'stopKey'],
+    selectedStopKey ?? '',
+  ];
+  const multiRadius: mapboxgl.ExpressionSpecification = routeSelected
+    ? ['case', selectedRouteExpression, baseRadius, 0]
+    : baseRadius;
+  m.setPaintProperty(
+    STOP_CIRCLE_LAYER_ID,
+    'circle-radius',
+    stopSelected
+      ? ['case', selectedStopExpression, 14, multiMode ? multiRadius : baseRadius]
+      : multiMode ? multiRadius : baseRadius
+  );
+  m.setPaintProperty(
+    STOP_CIRCLE_LAYER_ID,
+    'circle-stroke-width',
+    stopSelected ? ['case', selectedStopExpression, 3.5, 2] : 2
+  );
+  m.setPaintProperty(
+    STOP_CIRCLE_LAYER_ID,
+    'circle-opacity',
+    multiMode
+      ? routeSelected
+        ? ['case', selectedRouteExpression, 1, 0]
+        : 1
+      : 1
+  );
+  m.setPaintProperty(
+    STOP_NUMBER_LAYER_ID,
+    'text-opacity',
+    multiMode
+      ? routeSelected
+        ? ['case', selectedRouteExpression, 1, 0]
+        : 1
+      : 1
+  );
 }
 
 /**
@@ -305,6 +469,9 @@ function applyStreetGeometry(m: mapboxgl.Map, route: VisitRoute): void {
 export function removeVisitRouteFromMap(m: mapboxgl.Map): void {
   activeRouteIds.delete(m);
   renderedDataKeys.delete(m);
+  stopClickCallbacks.delete(m);
+  featureClickCallbacks.delete(m);
+  removeInteractions(m);
 
   // Esvazia primeiro: isso remove linha e marcadores no mesmo frame, mesmo se
   // o Mapbox estiver trocando de estilo e ainda não aceitar remover camadas.
@@ -348,6 +515,7 @@ export function syncVisitRouteOnMap(
   onStopClick: StopClickHandler
 ): void {
   stopClickCallbacks.set(m, onStopClick);
+  featureClickCallbacks.delete(m);
 
   if (!route) {
     activeRouteIds.delete(m);
@@ -384,25 +552,49 @@ export function syncVisitRouteOnMap(
     // Sem geometria salva, a linha reta acima já cobre o "Ver rota".
     if (awaitingStreetGeometry) applyStreetGeometry(m, route);
 
-    const baseRadius: mapboxgl.ExpressionSpecification = [
-      'match',
-      ['get', 'kind'],
-      'route-origin',
-      12,
-      'route-destination',
-      12,
-      10,
-    ];
-    const highlight: number | mapboxgl.ExpressionSpecification =
-      selectedStopId == null
-        ? baseRadius
-        : ['case', ['==', ['get', 'stopId'], selectedStopId], 14, baseRadius];
-    m.setPaintProperty(STOP_CIRCLE_LAYER_ID, 'circle-radius', highlight);
-    const strokeWidth: number | mapboxgl.ExpressionSpecification =
-      selectedStopId == null
-        ? 2
-        : ['case', ['==', ['get', 'stopId'], selectedStopId], 3.5, 2];
-    m.setPaintProperty(STOP_CIRCLE_LAYER_ID, 'circle-stroke-width', strokeWidth);
+    applyRouteSelectionStyles(
+      m,
+      null,
+      selectedStopId == null ? null : `${route.id}:${selectedStopId}`
+    );
+  } catch {
+    /* estilo recarregando; o efeito reexecuta via mapReadyVersion */
+  }
+}
+
+/**
+ * Sincroniza várias rotas na mesma fonte/camada. Cada rota preserva sua cor e
+ * pode ser destacada sem remover as demais.
+ */
+export function syncVisitRoutesOnMap(
+  m: mapboxgl.Map,
+  items: readonly VisitRouteMapItem[],
+  selectedRouteId: string | null,
+  selectedStopKey: string | null,
+  onFeatureClick: VisitRouteMapFeatureClickHandler
+): void {
+  activeRouteIds.delete(m);
+  stopClickCallbacks.delete(m);
+  featureClickCallbacks.set(m, onFeatureClick);
+
+  if (items.length === 0) {
+    removeVisitRouteFromMap(m);
+    return;
+  }
+
+  try {
+    ensureLayers(m);
+    showRouteLayers(m);
+    ensureInteractions(m);
+
+    const source = m.getSource(SOURCE_ID) as mapboxgl.GeoJSONSource | undefined;
+    if (!source) return;
+    source.setData(buildVisitRoutesFeatureCollection(items));
+    renderedDataKeys.set(
+      m,
+      `multi:${items.map(({ route }) => route.id).join('|')}`
+    );
+    applyRouteSelectionStyles(m, selectedRouteId, selectedStopKey, true);
   } catch {
     /* estilo recarregando; o efeito reexecuta via mapReadyVersion */
   }
@@ -424,6 +616,36 @@ export function getVisitRouteBounds(route: VisitRoute): [[number, number], [numb
   }
   if (route.origin) { minLng = Math.min(minLng, route.origin.lng); minLat = Math.min(minLat, route.origin.lat); maxLng = Math.max(maxLng, route.origin.lng); maxLat = Math.max(maxLat, route.origin.lat); }
   if (route.destination) { minLng = Math.min(minLng, route.destination.lng); minLat = Math.min(minLat, route.destination.lat); maxLng = Math.max(maxLng, route.destination.lng); maxLat = Math.max(maxLat, route.destination.lat); }
+  return [
+    [minLng, minLat],
+    [maxLng, maxLat],
+  ];
+}
+
+/** Bounds combinados de todas as paradas/origens/destinos das rotas. */
+export function getVisitRoutesBounds(
+  items: readonly VisitRouteMapItem[]
+): [[number, number], [number, number]] | null {
+  const coordinates: [number, number][] = [];
+  for (const { route } of items) {
+    if (route.origin) coordinates.push([route.origin.lng, route.origin.lat]);
+    for (const stop of route.stops) coordinates.push([stop.lng, stop.lat]);
+    if (route.destination) coordinates.push([route.destination.lng, route.destination.lat]);
+  }
+  if (coordinates.length < 2) return null;
+
+  let minLng = Infinity;
+  let minLat = Infinity;
+  let maxLng = -Infinity;
+  let maxLat = -Infinity;
+  for (const [lng, lat] of coordinates) {
+    if (!Number.isFinite(lng) || !Number.isFinite(lat)) continue;
+    minLng = Math.min(minLng, lng);
+    minLat = Math.min(minLat, lat);
+    maxLng = Math.max(maxLng, lng);
+    maxLat = Math.max(maxLat, lat);
+  }
+  if (![minLng, minLat, maxLng, maxLat].every(Number.isFinite)) return null;
   return [
     [minLng, minLat],
     [maxLng, maxLat],

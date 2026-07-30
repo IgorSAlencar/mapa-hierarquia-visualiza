@@ -193,7 +193,7 @@ const NotificationBell: React.FC = () => {
       </PopoverTrigger>
       <PopoverContent
         align="end"
-        className="w-[min(94vw,400px)] overflow-hidden rounded-2xl border border-slate-200/90 bg-white/95 p-0 shadow-xl shadow-slate-900/10 backdrop-blur-md"
+        className="w-[min(94vw,400px)] overflow-hidden rounded-2xl border border-slate-200 bg-white p-0 shadow-xl shadow-slate-900/10"
       >
         <header className="flex items-start justify-between gap-3 border-b border-slate-200 px-4 py-3">
           <div className="flex min-w-0 items-start gap-2.5">

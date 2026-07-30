@@ -91,7 +91,7 @@ const NavigatorPanel: React.FC<NavigatorPanelProps> = ({
       <button
         type="button"
         onClick={onRestore}
-        className="pointer-events-auto absolute bottom-4 left-0 z-20 flex items-center gap-2 rounded-r-xl border border-l-0 border-slate-200/90 bg-white/95 py-3 pl-2.5 pr-3 text-slate-700 shadow-lg shadow-slate-900/10 backdrop-blur-sm transition-colors hover:bg-slate-50"
+        className="pointer-events-auto absolute bottom-4 left-0 z-20 flex items-center gap-2 rounded-r-xl border border-l-0 border-slate-200 bg-white py-3 pl-2.5 pr-3 text-slate-700 shadow-lg shadow-slate-900/10 transition-colors hover:bg-slate-50"
         aria-label="Reabrir painel Navegar"
         title="Reabrir painel Navegar"
       >
@@ -109,7 +109,7 @@ const NavigatorPanel: React.FC<NavigatorPanelProps> = ({
   return (
     <div
       style={shellStyle}
-      className="pointer-events-auto flex max-h-full w-[288px] flex-col overflow-hidden rounded-xl border border-slate-200/90 bg-white/95 shadow-lg shadow-slate-900/8 backdrop-blur-md"
+      className="pointer-events-auto flex max-h-full w-[288px] flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-lg shadow-slate-900/8"
     >
       <header
         className={header.className}

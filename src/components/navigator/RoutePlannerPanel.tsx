@@ -369,7 +369,9 @@ function createSqlSuggestedRoute({
     horario,
     status: 'pendente' as const,
     endereco: store.endereco || [store.municipio, store.uf].filter(Boolean).join('/'),
-    cep: store.codAg ? `Agência vinculada: ${store.codAg}` : 'Visita planejada',
+    cep: store.codAg
+      ? `Agência: ${store.codAg}${store.nomeAg ? ` - ${store.nomeAg}` : ''}`
+      : 'Visita planejada',
     chaveLoja: store.chaveLoja,
     codAg: store.codAg,
     nomeAg: store.nomeAg || null,
@@ -933,7 +935,7 @@ const RoutePlannerPanel: React.FC<Props> = ({
     <aside
       data-route-planner-opportunity-summary
       aria-label="Resumo das oportunidades"
-      className="pointer-events-auto absolute left-3 top-1/2 z-20 w-[180px] -translate-y-1/2 overflow-hidden rounded-2xl border border-slate-200/80 bg-white/80 font-sans text-slate-700 shadow-xl shadow-slate-900/15 backdrop-blur-xl"
+      className="pointer-events-auto absolute left-3 top-1/2 z-20 w-[180px] -translate-y-1/2 overflow-hidden rounded-2xl border border-slate-200 bg-white font-sans text-slate-700 shadow-xl shadow-slate-900/15"
     >
       <button
         type="button"
@@ -1015,9 +1017,9 @@ const RoutePlannerPanel: React.FC<Props> = ({
   const bottomDock = (
     <section
       data-route-planner-bottom-dock
-      className="pointer-events-auto absolute bottom-3 left-1/2 z-20 w-[min(900px,calc(100vw-24px))] -translate-x-1/2 overflow-hidden rounded-xl border border-slate-200/90 bg-white/95 font-sans text-slate-700 shadow-xl shadow-slate-900/15 backdrop-blur-md"
+      className="pointer-events-auto absolute bottom-3 left-1/2 z-20 w-[min(900px,calc(100vw-24px))] -translate-x-1/2 overflow-hidden rounded-xl border border-slate-200 bg-white font-sans text-slate-700 shadow-xl shadow-slate-900/15"
     >
-      <div className="border-b border-slate-200 bg-slate-50/80 px-3 py-2.5">
+      <div className="border-b border-slate-200 bg-slate-50 px-3 py-2.5">
         <div className="flex items-center justify-between gap-3">
           <div>
             <p className="text-xs font-bold text-slate-900">Distribuição das oportunidades</p>
@@ -1128,7 +1130,7 @@ const RoutePlannerPanel: React.FC<Props> = ({
       <section
         data-route-planner-summary-dock
         aria-label="Resumo do roteiro selecionado"
-        className="route-summary-dock pointer-events-auto flex w-full flex-nowrap items-center justify-start gap-2 overflow-hidden rounded-2xl border border-white/70 bg-white/90 p-2.5 font-sans text-slate-700 shadow-2xl shadow-slate-900/20 backdrop-blur-xl"
+        className="route-summary-dock pointer-events-auto flex w-full flex-nowrap items-center justify-start gap-2 overflow-hidden rounded-2xl border border-slate-200 bg-white p-2.5 font-sans text-slate-700 shadow-2xl shadow-slate-900/20"
       >
         <RouteDateTimePicker
           date={date}
@@ -1299,9 +1301,9 @@ const RoutePlannerPanel: React.FC<Props> = ({
           transform: `translate3d(${resultsPanelSize.offsetX}px, ${resultsPanelSize.offsetY}px, 0)`,
         } : null),
       }}
-      className="pointer-events-auto flex h-[min(560px,calc(100dvh-260px))] max-h-[calc(100dvh-120px)] min-h-[320px] w-[calc(100vw-24px)] min-w-[min(560px,calc(100vw-24px))] flex-col overflow-hidden rounded-2xl border border-white/55 bg-slate-50/45 font-sans text-slate-700 shadow-2xl shadow-slate-900/20 backdrop-blur-xl lg:w-[min(980px,calc(100vw-348px))]"
+      className="pointer-events-auto flex h-[min(560px,calc(100dvh-260px))] max-h-[calc(100dvh-120px)] min-h-[320px] w-[calc(100vw-24px)] min-w-[min(560px,calc(100vw-24px))] flex-col overflow-hidden rounded-2xl border border-slate-200 bg-slate-50 font-sans text-slate-700 shadow-2xl shadow-slate-900/20 lg:w-[min(980px,calc(100vw-348px))]"
     >
-      <header className={cn(header.className, 'border-white/60 bg-white/30')} style={header.dragStyle} {...header.dragHandlers} title="Arraste para mover o painel">
+      <header className={cn(header.className, 'border-slate-200 bg-white')} style={header.dragStyle} {...header.dragHandlers} title="Arraste para mover o painel">
         <button type="button" data-panel-drag-ignore onClick={onBack} className="rounded-lg p-1.5 text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-700" aria-label="Voltar">
           <ArrowLeft className="h-4 w-4" />
         </button>
@@ -1318,17 +1320,17 @@ const RoutePlannerPanel: React.FC<Props> = ({
       </header>
 
       <main className="flex min-h-0 flex-1 flex-col overflow-hidden px-4 pb-3 pt-3">
-        <section className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-white/60 bg-white/25 shadow-lg shadow-slate-900/[0.06] backdrop-blur-md">
-          <div className="flex flex-wrap items-center gap-2 border-b border-white/65 bg-white/30 p-2.5">
+        <section className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-lg shadow-slate-900/[0.06]">
+          <div className="flex flex-wrap items-center gap-2 border-b border-slate-200 bg-slate-50 p-2.5">
             <div className="mr-auto min-w-[160px]">
               <p className="text-xs font-bold text-slate-800">Oportunidades encontradas</p>
               <p className="mt-0.5 text-[10px] text-slate-500">Selecione as lojas do roteiro.</p>
             </div>
-            <label className="flex min-h-9 items-center gap-2 rounded-lg border border-white/75 bg-white/45 px-2.5 text-slate-400 shadow-sm backdrop-blur-sm transition-colors focus-within:border-violet-300 focus-within:ring-2 focus-within:ring-violet-100">
+            <label className="flex min-h-9 items-center gap-2 rounded-lg border border-slate-200 bg-white px-2.5 text-slate-400 shadow-sm transition-colors focus-within:border-violet-300 focus-within:ring-2 focus-within:ring-violet-100">
               <Search className="h-3.5 w-3.5" />
               <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Buscar loja ou município" className="w-40 bg-transparent text-[11px] text-slate-700 outline-none placeholder:text-slate-400" />
             </label>
-            <div className="inline-flex min-h-9 items-center rounded-lg border border-white/75 bg-white/45 p-0.5 shadow-sm backdrop-blur-sm" role="group" aria-label="Formato de visualização">
+            <div className="inline-flex min-h-9 items-center rounded-lg border border-slate-200 bg-white p-0.5 shadow-sm" role="group" aria-label="Formato de visualização">
               <button
                 type="button"
                 onClick={() => setOpportunityView('table')}
@@ -1354,10 +1356,10 @@ const RoutePlannerPanel: React.FC<Props> = ({
                 onClick={() => setOpportunityFiltersOpen((current) => !current)}
                 aria-expanded={opportunityFiltersOpen}
                 className={cn(
-                  'flex min-h-9 items-center gap-1.5 rounded-lg border px-2.5 text-[11px] font-semibold shadow-sm backdrop-blur-sm transition-colors',
+                  'flex min-h-9 items-center gap-1.5 rounded-lg border px-2.5 text-[11px] font-semibold shadow-sm transition-colors',
                   selectedOpportunityFilters.length > 0
                     ? 'border-violet-300 bg-violet-100/90 text-violet-800'
-                    : 'border-white/90 bg-white/55 text-slate-600 hover:border-slate-300 hover:bg-white/75'
+                    : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:bg-slate-50'
                 )}
               >
                 <SlidersHorizontal className="h-3.5 w-3.5" />
@@ -1365,7 +1367,7 @@ const RoutePlannerPanel: React.FC<Props> = ({
                 {selectedOpportunityFilters.length > 0 && <span className="rounded-full bg-violet-600 px-1.5 py-0.5 text-[9px] font-bold text-white">{selectedOpportunityFilters.length}</span>}
               </button>
               {opportunityFiltersOpen && (
-                <div className="absolute right-0 top-[calc(100%+6px)] z-50 w-60 overflow-hidden rounded-xl border border-white/80 bg-slate-50/85 text-slate-700 shadow-xl shadow-slate-900/20 backdrop-blur-xl">
+                <div className="absolute right-0 top-[calc(100%+6px)] z-50 w-60 overflow-hidden rounded-xl border border-slate-200 bg-slate-50 text-slate-700 shadow-xl shadow-slate-900/20">
                   <div className="border-b border-white/80 px-3 py-2.5">
                     <p className="text-[11px] font-bold text-slate-900">Filtrar oportunidades</p>
                     <p className="mt-0.5 text-[9px] text-slate-500">Exibe lojas com qualquer opção selecionada.</p>
@@ -1658,11 +1660,11 @@ function OpportunityCardGrid({ stores, selectedIds, onToggle, onHover }: { store
             onFocus={() => onHover?.(store.id)}
             onBlur={() => onHover?.(null)}
             className={cn(
-              'group cursor-pointer rounded-xl border p-3 outline-none backdrop-blur-md transition duration-150 ease-out',
+              'group cursor-pointer rounded-xl border p-3 outline-none transition duration-150 ease-out',
               'hover:z-10 hover:scale-[1.025] hover:border-violet-300 hover:bg-violet-50/95 hover:shadow-xl hover:shadow-violet-900/15 focus-visible:ring-2 focus-visible:ring-violet-400',
               selected
-                ? 'border-orange-300 bg-orange-50/85 shadow-md shadow-orange-900/10'
-                : 'border-white/70 bg-white/40 shadow-sm shadow-slate-900/[0.06]'
+                ? 'border-orange-300 bg-orange-50 shadow-md shadow-orange-900/10'
+                : 'border-slate-200 bg-white shadow-sm shadow-slate-900/[0.06]'
             )}
           >
             <div className="flex items-start gap-2.5">

@@ -762,7 +762,7 @@ const DistanceAnalysisPanel: React.FC<DistanceAnalysisPanelProps> = ({
     headerDragProps
   );
   const minimizedHeader = mergeHeaderDrag(
-    'pointer-events-auto flex w-[300px] max-w-[calc(100vw-32px)] items-center gap-2 rounded-2xl border border-slate-200/90 bg-white/95 px-3 py-2.5 shadow-xl shadow-slate-900/10 backdrop-blur-md',
+    'pointer-events-auto flex w-[300px] max-w-[calc(100vw-32px)] items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2.5 shadow-xl shadow-slate-900/10',
     headerDragProps
   );
 
@@ -792,7 +792,7 @@ const DistanceAnalysisPanel: React.FC<DistanceAnalysisPanelProps> = ({
     ) : (
       <section
       style={{ ...shellStyle, maxHeight: 'calc(100vh - 250px)' }}
-      className="pointer-events-auto flex max-h-[calc(100vh-110px)] w-[400px] max-w-[calc(100vw-32px)] flex-col overflow-hidden rounded-2xl border border-slate-200/90 bg-white/95 shadow-2xl shadow-slate-900/15 backdrop-blur-md"
+      className="pointer-events-auto flex max-h-[calc(100vh-110px)] w-[400px] max-w-[calc(100vw-32px)] flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl shadow-slate-900/15"
       aria-label="Análise de distância"
     >
       <header

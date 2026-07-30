@@ -33,6 +33,11 @@ const VisitStopDetailCard: React.FC<VisitStopDetailCardProps> = ({
   const style = STOP_STATUS_STYLE[stop.status];
   const isFirst = stop.ordem <= 1;
   const isLast = stop.ordem >= route.stops.length;
+  const agencyCode = String(stop.codAg ?? '').trim();
+  const agencyName = String(stop.nomeAg ?? '').trim();
+  const agencyLabel = agencyCode || agencyName
+    ? `Agência: ${agencyCode}${agencyCode && agencyName ? ' - ' : ''}${agencyName}`
+    : stop.cep;
 
   const header = mergeHeaderDrag(
     'flex items-start gap-2 border-b border-slate-200 px-3 py-3',
@@ -41,8 +46,9 @@ const VisitStopDetailCard: React.FC<VisitStopDetailCardProps> = ({
 
   return (
     <div
+      data-visit-stop-detail-card
       style={shellStyle}
-      className="pointer-events-auto w-[320px] overflow-hidden rounded-2xl border border-slate-200/90 bg-white/95 shadow-xl shadow-slate-900/10 backdrop-blur-md"
+      className="pointer-events-auto w-[320px] overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xl shadow-slate-900/10"
     >
       <header
         className={header.className}
@@ -76,7 +82,7 @@ const VisitStopDetailCard: React.FC<VisitStopDetailCardProps> = ({
           <MapPin className="mt-0.5 h-3.5 w-3.5 shrink-0 text-slate-400" aria-hidden />
           <p>
             {stop.endereco}
-            <span className="block text-[11px] text-slate-500">{stop.cep}</span>
+            <span className="block text-[11px] text-slate-500">{agencyLabel}</span>
           </p>
         </div>
 

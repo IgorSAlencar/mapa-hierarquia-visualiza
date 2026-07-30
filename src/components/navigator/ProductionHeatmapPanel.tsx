@@ -122,7 +122,7 @@ export function ProductionHeatmapTotalsCard({
 
   return (
     <aside
-      className="pointer-events-auto w-[min(260px,calc(100vw-7rem))] rounded-2xl border border-white/70 bg-white/90 p-2 font-sans text-slate-700 shadow-lg shadow-slate-900/15 backdrop-blur-xl"
+      className="pointer-events-auto w-[min(260px,calc(100vw-7rem))] rounded-2xl border border-slate-200 bg-white p-2 font-sans text-slate-700 shadow-lg shadow-slate-900/15"
       aria-label="Totais de produção"
     >
       <div className="rounded-xl border border-teal-200/80 bg-teal-50 px-3 py-2.5 shadow-sm">
@@ -276,7 +276,7 @@ export function ProductionHeatmapThermometer({
 
   return (
     <aside
-      className="pointer-events-auto flex w-[56px] flex-col items-center gap-1.5 rounded-2xl border border-white/70 bg-white/90 px-1.5 py-2.5 font-sans text-slate-700 shadow-lg shadow-slate-900/15 backdrop-blur-xl"
+      className="pointer-events-auto flex w-[56px] flex-col items-center gap-1.5 rounded-2xl border border-slate-200 bg-white px-1.5 py-2.5 font-sans text-slate-700 shadow-lg shadow-slate-900/15"
       aria-label="Legenda de intensidade — clique numa faixa para filtrar o mapa"
     >
       <p className="text-[7px] font-semibold uppercase tracking-wide text-slate-500">Int.</p>
@@ -415,7 +415,7 @@ const ProductionHeatmapPanel: React.FC<ProductionHeatmapPanelProps> = ({
       }}
     >
       <section
-        className="pointer-events-auto inline-flex max-w-full flex-nowrap items-center gap-1.5 overflow-x-auto rounded-2xl border border-white/70 bg-white/90 p-2 font-sans text-slate-700 shadow-2xl shadow-slate-900/20 backdrop-blur-xl [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        className="pointer-events-auto inline-flex max-w-full flex-nowrap items-center gap-1.5 overflow-x-auto rounded-2xl border border-slate-200 bg-white p-2 font-sans text-slate-700 shadow-2xl shadow-slate-900/20 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
         aria-label="Mapa de produção por município"
       >
         <div className="flex h-11 min-w-0 shrink-0 items-center gap-1.5 rounded-xl border border-slate-200/90 bg-slate-50/85 px-2">

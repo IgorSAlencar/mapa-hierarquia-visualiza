@@ -2,6 +2,18 @@
 @tailwind components;
 @tailwind utilities;
 
+/*
+ * O canvas WebGL do Mapbox pode deixar blocos cinza no Chromium quando um
+ * elemento com backdrop-filter é movido ou tem o hover atualizado sobre ele.
+ * O workspace do mapa usa superfícies sólidas e desativa esse tipo de filtro
+ * para todos os overlays, inclusive componentes adicionados futuramente.
+ */
+[data-map-workspace],
+[data-map-workspace] * {
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+
 /* Design system para aplicação de mapa comercial */
 
 @layer base {
@@ -130,6 +142,7 @@
 /* Popover de agência no mapa (Mapbox GL) */
 .agency-map-popup.mapboxgl-popup {
   z-index: 30;
+  will-change: auto;
 }
 
 .agency-map-popup .mapboxgl-popup-content {
@@ -141,7 +154,7 @@
 
 .agency-map-popup .mapboxgl-popup-tip {
   border-top-color: hsl(var(--card));
-  filter: drop-shadow(0 2px 4px rgb(15 23 42 / 0.08));
+  filter: none;
 }
 
 .agency-map-popup .mapboxgl-popup-close-button {
@@ -165,6 +178,7 @@
 /* Popup do município no mapa de produção */
 .production-heatmap-muni-popup.mapboxgl-popup {
   z-index: 30;
+  will-change: auto;
 }
 
 .production-heatmap-muni-popup .mapboxgl-popup-content {
@@ -176,7 +190,7 @@
 
 .production-heatmap-muni-popup .mapboxgl-popup-tip {
   border-top-color: #ffffff;
-  filter: drop-shadow(0 2px 4px rgb(15 23 42 / 0.08));
+  filter: none;
 }
 
 .production-heatmap-muni-popup .mapboxgl-popup-close-button {
@@ -341,13 +355,12 @@
   overflow: hidden;
   border: 1px solid rgb(255 255 255 / 0.9);
   border-radius: 17px;
-  background: rgb(255 255 255 / 0.97);
+  background: rgb(255 255 255);
   color: #0f172a;
   box-shadow:
     0 10px 20px -12px rgb(15 23 42 / 0.25),
     0 26px 60px -24px rgb(15 23 42 / 0.38);
   font-family: inherit;
-  backdrop-filter: blur(10px);
 }
 
 .store-popup-card svg {

@@ -78,10 +78,12 @@ const RouteDetailsPanel: React.FC<RouteDetailsPanelProps> = ({
 
   return (
     <div
+      data-route-details-panel
       style={shellStyle}
-      className="pointer-events-auto flex max-h-full w-[320px] flex-col overflow-hidden rounded-2xl border border-slate-200/90 bg-white/95 shadow-xl shadow-slate-900/10 backdrop-blur-md"
+      className="pointer-events-auto flex max-h-full w-[320px] flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xl shadow-slate-900/10"
     >
       <header
+        data-route-details-drag-handle
         className={header.className}
         style={header.dragStyle}
         {...header.dragHandlers}

@@ -4,6 +4,8 @@ import {
   defaultHistoryRange,
   deleteVisitRoute,
   getAuthorizedRouteOwners,
+  getDailyVisitRouteMap,
+  getHistoricalVisitRouteMap,
   getVisitRoute,
   getVisitRouteExportData,
   getVisitRouteSummary,
@@ -65,6 +67,27 @@ router.get('/resumo', async (req, res) => {
     const range = readRange(req.query);
     res.json({ items: await getVisitRouteSummary({ user: req.user, ...range }) });
   } catch (error) { handleError(res, error, 'Erro ao resumir roteiros:'); }
+});
+
+router.get('/mapa/dia', async (req, res) => {
+  try {
+    res.json(await getDailyVisitRouteMap({
+      user: req.user,
+      date: req.query.date,
+      chaveSupervisoes: req.query.chaveSupervisao,
+    }));
+  } catch (error) { handleError(res, error, 'Erro ao comparar roteiros do dia:'); }
+});
+
+router.get('/mapa/historico', async (req, res) => {
+  try {
+    res.json(await getHistoricalVisitRouteMap({
+      user: req.user,
+      from: req.query.from,
+      to: req.query.to,
+      chaveSupervisao: req.query.chaveSupervisao,
+    }));
+  } catch (error) { handleError(res, error, 'Erro ao analisar histórico de roteiros:'); }
 });
 
 router.get('/', async (req, res) => {

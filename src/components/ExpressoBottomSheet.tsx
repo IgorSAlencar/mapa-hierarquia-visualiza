@@ -80,7 +80,7 @@ const ExpressoBottomSheet: React.FC<ExpressoBottomSheetProps> = ({
   if (minimized && selected) {
     return (
       <div className={outerClass}>
-        <div className="pointer-events-auto w-full overflow-hidden rounded-t-2xl border border-slate-200/90 bg-slate-50/98 shadow-2xl backdrop-blur-md">
+        <div className="pointer-events-auto w-full overflow-hidden rounded-t-2xl border border-slate-200 bg-slate-50 shadow-2xl">
           <div className="flex items-center gap-2 px-3 py-2.5">
             <button
               type="button"
@@ -109,7 +109,7 @@ const ExpressoBottomSheet: React.FC<ExpressoBottomSheetProps> = ({
 
   return (
     <div className={outerClass}>
-      <div className="pointer-events-auto w-full overflow-hidden rounded-t-2xl border border-slate-200/90 bg-slate-50/98 shadow-2xl backdrop-blur-md">
+      <div className="pointer-events-auto w-full overflow-hidden rounded-t-2xl border border-slate-200 bg-slate-50 shadow-2xl">
         {!selected ? (
           <div className="p-3">
             <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500">

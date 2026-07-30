@@ -1,5 +1,5 @@
 import React from 'react';
-import { ChevronRight } from 'lucide-react';
+import { Building2, ChevronRight } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 export interface LevelCardOption {
@@ -18,10 +18,7 @@ interface HierarchyLevelCardsProps {
   emptyMessage: string;
 }
 
-/**
- * Grade de cards clicáveis usada na navegação guiada da hierarquia
- * (Gerência de Gestão → Gerente Comercial III → Gerente Comercial).
- */
+/** Lista usada na navegação guiada Gerência → GC III → Gerente Comercial. */
 const HierarchyLevelCards: React.FC<HierarchyLevelCardsProps> = ({
   options,
   onSelect,
@@ -36,7 +33,7 @@ const HierarchyLevelCards: React.FC<HierarchyLevelCardsProps> = ({
   }
 
   return (
-    <div className="grid grid-cols-2 gap-2">
+    <div className="overflow-hidden rounded-xl border border-slate-200 bg-white">
       {options.map((option) => (
         <button
           key={option.chave}
@@ -44,41 +41,48 @@ const HierarchyLevelCards: React.FC<HierarchyLevelCardsProps> = ({
           onClick={() => onSelect(option.chave)}
           disabled={option.disabled}
           className={cn(
-            'group flex min-h-[84px] flex-col justify-between rounded-xl border p-2.5 text-left transition-all',
+            'group flex min-h-[68px] w-full items-center gap-3 border-b border-slate-100 px-3.5 py-3 text-left transition-colors last:border-b-0',
             option.active
-              ? 'border-blue-300 bg-blue-50/80 shadow-sm'
-              : 'border-slate-200 bg-white',
+              ? 'bg-blue-50/80'
+              : 'bg-white',
             option.disabled
               ? 'cursor-default opacity-60'
-              : 'hover:-translate-y-0.5 hover:border-blue-300 hover:shadow-md hover:shadow-blue-100'
+              : 'hover:bg-slate-50 active:bg-slate-100'
           )}
         >
-          <span className="block text-[11px] font-semibold leading-snug text-slate-900 [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2] overflow-hidden">
-            {option.titulo}
-          </span>
-          <span className="mt-1.5 flex items-end justify-between gap-1">
-            <span className="min-w-0">
-              <span className="block truncate text-[10px] text-slate-500">{option.subtitulo}</span>
-              {option.destaque && (
-                <span
-                  className={cn(
-                    'mt-0.5 inline-block rounded-md border px-1.5 py-0.5 text-[9px] font-semibold',
-                    option.destaqueAtivo
-                      ? 'border-blue-200 bg-blue-50 text-blue-700'
-                      : 'border-slate-200 bg-slate-50 text-slate-500'
-                  )}
-                >
-                  {option.destaque}
-                </span>
-              )}
-            </span>
-            {!option.disabled && (
-              <ChevronRight
-                className="h-3.5 w-3.5 shrink-0 text-slate-300 transition-colors group-hover:text-blue-500"
-                aria-hidden
-              />
+          <span
+            className={cn(
+              'flex h-9 w-9 shrink-0 items-center justify-center rounded-lg',
+              option.active ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-500'
             )}
+          >
+            <Building2 className="h-4 w-4" aria-hidden />
           </span>
+
+          <span className="min-w-0 flex-1">
+            <span className="block truncate text-[13px] font-semibold text-slate-900">{option.titulo}</span>
+            <span className="mt-0.5 block truncate text-[11px] text-slate-500">{option.subtitulo}</span>
+          </span>
+
+          {option.destaque && (
+            <span
+              className={cn(
+                'max-w-[112px] shrink-0 rounded-full border px-2 py-1 text-right text-[10px] font-semibold leading-tight',
+                option.destaqueAtivo
+                  ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                  : 'border-slate-200 bg-slate-50 text-slate-500'
+              )}
+            >
+              {option.destaque}
+            </span>
+          )}
+
+          {!option.disabled && (
+            <ChevronRight
+              className="h-4 w-4 shrink-0 text-slate-300 transition-colors group-hover:text-blue-600"
+              aria-hidden
+            />
+          )}
         </button>
       ))}
     </div>

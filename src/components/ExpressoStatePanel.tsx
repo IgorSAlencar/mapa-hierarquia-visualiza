@@ -42,7 +42,7 @@ const ExpressoStatePanel: React.FC<ExpressoStatePanelProps> = ({
       <button
         type="button"
         onClick={onRestore}
-        className="pointer-events-auto absolute right-0 top-[68%] z-20 flex -translate-y-1/2 items-center gap-2 rounded-l-xl border border-r-0 border-slate-200/90 bg-white/95 py-3 pl-3 pr-2.5 text-slate-700 shadow-lg shadow-slate-900/10 backdrop-blur-sm transition-colors hover:bg-slate-50"
+        className="pointer-events-auto absolute right-0 top-[68%] z-20 flex -translate-y-1/2 items-center gap-2 rounded-l-xl border border-r-0 border-slate-200 bg-white py-3 pl-3 pr-2.5 text-slate-700 shadow-lg shadow-slate-900/10 transition-colors hover:bg-slate-50"
         aria-label={`Reabrir painel de ${headerTitle}`}
         title="Reabrir painel"
       >
@@ -60,8 +60,8 @@ const ExpressoStatePanel: React.FC<ExpressoStatePanelProps> = ({
       role="dialog"
       aria-labelledby="expresso-panel-title"
     >
-      <div className="flex h-full max-h-full flex-col overflow-hidden rounded-l-2xl border border-slate-200/90 bg-slate-50/98 shadow-2xl backdrop-blur-md">
-        <header className="shrink-0 border-b border-slate-200 bg-white/95 px-4 py-4">
+      <div className="flex h-full max-h-full flex-col overflow-hidden rounded-l-2xl border border-slate-200 bg-slate-50 shadow-2xl">
+        <header className="shrink-0 border-b border-slate-200 bg-white px-4 py-4">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0 flex-1">
               <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-600">

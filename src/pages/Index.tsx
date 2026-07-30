@@ -6,6 +6,7 @@ import NavigatorPanel, { type NavigatorSection } from '@/components/navigator/Na
 import CompararAreasPanel from '@/components/navigator/CompararAreasPanel';
 import { HIERARCHY_ALL } from '@/components/navigator/HierarchyScopeSelect';
 import VisitasRoteirosPanel from '@/components/navigator/VisitasRoteirosPanel';
+import MultiRouteMapLegend from '@/components/navigator/MultiRouteMapLegend';
 import VisitStopDetailCard from '@/components/navigator/VisitStopDetailCard';
 import RouteDetailsPanel from '@/components/navigator/RouteDetailsPanel';
 import RoutePlannerPanel from '@/components/navigator/RoutePlannerPanel';
@@ -39,7 +40,9 @@ import VisitTreatmentDrawer from '@/components/visits/VisitTreatmentDrawer';
 import { FEATURE_FLAGS } from '@/lib/featureFlags';
 import type { VisitTreatment } from '@/lib/visitsApi';
 import { fetchSavedRoute } from '@/lib/visitRoutesApi';
+import type { VisitRouteMapView } from '@/lib/visitRouteComparison';
 import NotificationBell from '@/components/notifications/NotificationBell';
+import { cn } from '@/lib/utils';
 
 const NAVIGATOR_PANEL_DOCK = { x: 16, y: 150 } as const;
 const DISTANCE_PANEL_TOP = 150;
@@ -118,7 +121,13 @@ const Index = () => {
 
   const [navigatorMinimized, setNavigatorMinimized] = useState(true);
   const [activeSection, setActiveSection] = useState<NavigatorSection | null>(null);
+  const [visitsPanelExpanded, setVisitsPanelExpanded] = useState(true);
   const [activeRoute, setActiveRoute] = useState<VisitRoute | null>(null);
+  const [routeMapView, setRouteMapView] = useState<VisitRouteMapView | null>(null);
+  const [selectedMapRouteId, setSelectedMapRouteId] = useState<string | null>(null);
+  const [selectedMapStopKey, setSelectedMapStopKey] = useState<string | null>(null);
+  const [isolatedMapRouteId, setIsolatedMapRouteId] = useState<string | null>(null);
+  const [routeMapFitTick, setRouteMapFitTick] = useState(0);
   const activeRouteIdRef = useRef<string | null>(null);
   const [routeDetailsOpen, setRouteDetailsOpen] = useState(false);
   const [selectedStopId, setSelectedStopId] = useState<number | null>(null);
@@ -176,11 +185,24 @@ const Index = () => {
   }));
   const routeDetailsDrag = usePanelDrag(routeDetailsInitial);
   const setRouteDetailsPosition = routeDetailsDrag.setPosition;
+  const routeDetailsPosition = routeDetailsDrag.position;
   const [stopDetailInitial] = useState(() => ({
-    x: typeof window !== 'undefined' ? Math.max(16, window.innerWidth - 400) : 16,
-    y: 96,
+    x: Math.max(16, routeDetailsInitial.x - 320 - 12),
+    y: routeDetailsInitial.y,
   }));
   const stopDetailDrag = usePanelDrag(stopDetailInitial);
+  const setStopDetailPosition = stopDetailDrag.setPosition;
+  const openStopDetails = useCallback((stopId: number) => {
+    setStopDetailPosition({
+      x: Math.max(16, routeDetailsPosition.x - 320 - 12),
+      y: Math.max(16, routeDetailsPosition.y),
+    });
+    setSelectedStopId(stopId);
+  }, [
+    routeDetailsPosition.x,
+    routeDetailsPosition.y,
+    setStopDetailPosition,
+  ]);
 
   const mapMarkers = useMemo(() => getMarcadoresParaFiltros(filters), [filters]);
 
@@ -501,6 +523,10 @@ const Index = () => {
   const clearVisitState = () => {
     activeRouteIdRef.current = null;
     setActiveRoute(null);
+    setRouteMapView(null);
+    setSelectedMapRouteId(null);
+    setSelectedMapStopKey(null);
+    setIsolatedMapRouteId(null);
     setRouteDetailsOpen(false);
     setSelectedStopId(null);
     setVisitFocus(null);
@@ -533,6 +559,7 @@ const Index = () => {
     setActiveSection(section);
     if (section === 'visitas') {
       setNavigatorMinimized(true);
+      setVisitsPanelExpanded(true);
     }
     if (section === 'heatmap') {
       navigatorDrag.setPosition(NAVIGATOR_PANEL_DOCK);
@@ -625,6 +652,12 @@ const Index = () => {
       return;
     }
     const isNewRoute = Boolean(route && activeRouteIdRef.current !== route.id);
+    if (route) {
+      setRouteMapView(null);
+      setSelectedMapRouteId(null);
+      setSelectedMapStopKey(null);
+      setIsolatedMapRouteId(null);
+    }
     activeRouteIdRef.current = route?.id ?? null;
     if (route && isNewRoute) {
       positionRouteDetails(options?.resultsPanelExpanded ?? plannerResultsPanelExpanded);
@@ -839,8 +872,20 @@ const Index = () => {
       onClose={() => handleSelectSection(null)}
       activeRoute={activeRoute}
       onRouteChange={handleRouteChange}
-      shellStyle={navigatorDrag.shellStyle}
-      headerDragProps={navigatorDrag.headerDragProps}
+      routeMapView={routeMapView}
+      onRouteMapViewChange={(view) => {
+        setRouteMapView(view);
+        setSelectedMapRouteId(null);
+        setSelectedMapStopKey(null);
+        setIsolatedMapRouteId(null);
+        if (view) {
+          handleRouteChange(null);
+          setRouteDetailsOpen(false);
+          setSelectedStopId(null);
+          setVisitFocus(null);
+        }
+      }}
+      onExpandedChange={setVisitsPanelExpanded}
     />
   ) : null;
 
@@ -857,7 +902,7 @@ const Index = () => {
         position: 'absolute',
         right: 16,
         top: 16,
-        zIndex: 30,
+        zIndex: 40,
         maxHeight: 'calc(100vh - 113px)',
       }}
     />
@@ -865,7 +910,7 @@ const Index = () => {
 
   const navigatorOverlays = (
     <>
-      {treatmentOpen ? treatmentRoutePanel : navigatorMinimized ? (
+      {treatmentOpen ? treatmentRoutePanel : activeSection === 'visitas' ? null : navigatorMinimized ? (
         <NavigatorPanel
           minimized
           onMinimize={handleNavigatorMinimize}
@@ -988,7 +1033,7 @@ const Index = () => {
         <RouteDetailsPanel
           route={activeRoute}
           selectedStopId={selectedStopId}
-          onStopSelect={setSelectedStopId}
+          onStopSelect={openStopDetails}
           onStopsReorder={activeSection === 'planejar'
             ? handlePlannerStopsReorder
             : undefined}
@@ -1011,7 +1056,7 @@ const Index = () => {
           onClose={activeSection === 'planejar'
             ? () => handleSelectSection(null)
             : () => handleRouteChange(null)}
-          shellStyle={routeDetailsDrag.shellStyle}
+          shellStyle={{ ...routeDetailsDrag.shellStyle, zIndex: 40 }}
           headerDragProps={routeDetailsDrag.headerDragProps}
         />
       )}
@@ -1027,7 +1072,7 @@ const Index = () => {
           onTreat={FEATURE_FLAGS.visits && selectedStop.currentVisitId
             ? () => openTreatment(selectedStop)
             : undefined}
-          shellStyle={stopDetailDrag.shellStyle}
+          shellStyle={{ ...stopDetailDrag.shellStyle, zIndex: 40 }}
           headerDragProps={stopDetailDrag.headerDragProps}
         />
       )}
@@ -1049,7 +1094,7 @@ const Index = () => {
 
   return (
     <div className="min-h-screen bg-background">
-      <header className="border-b bg-map-surface/50 backdrop-blur-sm">
+      <header className="border-b bg-map-surface">
         <div className="w-full px-4 py-4">
           <div className="flex items-center gap-3">
             <div className="flex shrink-0 items-center gap-3">
@@ -1070,7 +1115,7 @@ const Index = () => {
             />
             {user && (
               <div className="ml-auto flex shrink-0 items-center gap-2 md:ml-3">
-                <div className="hidden items-center gap-2 rounded-xl border bg-background/70 px-3 py-1.5 sm:flex">
+                <div className="hidden items-center gap-2 rounded-xl border bg-background px-3 py-1.5 sm:flex">
                   <UserRound className="h-4 w-4 text-map-primary" />
                   <div className="max-w-[190px] leading-tight">
                     <p className="truncate text-xs font-semibold">{user.nome}</p>
@@ -1089,7 +1134,10 @@ const Index = () => {
         </div>
       </header>
 
-      <main className="relative h-[calc(100vh-81px)] overflow-hidden">
+      <main
+        data-map-workspace
+        className="relative isolate h-[calc(100vh-81px)] overflow-hidden bg-slate-100"
+      >
         <MapComponent
           mapMarkers={mapMarkers}
           hierarchyFilter={buildSqlHierarchyFilterFromUi(filters)}
@@ -1120,7 +1168,17 @@ const Index = () => {
           onProductionStoresPanelExpandedChange={setHeatmapStoresPanelExpanded}
           visitRoute={activeRoute ?? distanceAnalysisRoute ?? plannerPreviewRoute}
           selectedVisitStopId={selectedStopId}
-          onVisitStopSelect={setSelectedStopId}
+          onVisitStopSelect={openStopDetails}
+          visitRouteMapItems={isolatedMapRouteId
+            ? routeMapView?.items.filter(({ route }) => route.id === isolatedMapRouteId)
+            : routeMapView?.items}
+          selectedVisitRouteId={selectedMapRouteId}
+          selectedVisitRouteStopKey={selectedMapStopKey}
+          onVisitRouteMapFeatureSelect={(feature) => {
+            setSelectedMapRouteId(feature.routeId);
+            setSelectedMapStopKey(feature.kind === 'stop' ? feature.stopKey : null);
+          }}
+          visitRouteMapFitTick={routeMapFitTick}
           visitFocus={visitFocus}
           plannerMode={activeSection === 'planejar'}
           onPlannerTerritorySelect={setPlannerTerritory}
@@ -1134,6 +1192,7 @@ const Index = () => {
           plannerStoreClassifications={plannerStoreClassifications}
           plannerResultsPanelExpanded={plannerResultsPanelExpanded}
           treatmentPanelOpen={treatmentOpen}
+          leftManagementPanelExpanded={activeSection === 'visitas' && visitsPanelExpanded}
           onPlannerStoresChange={setPlannerSqlStores}
           onPlannerStoresLoadingChange={setPlannerStoresLoading}
           distanceAnalysisMode={activeSection === 'distancia'}
@@ -1146,6 +1205,43 @@ const Index = () => {
           compareAllTerritory={compareAllTerritory}
           navigatorOverlays={navigatorOverlays}
         />
+        {activeSection === 'visitas' && routeMapView && routeMapView.items.length > 0 && (
+          <div
+            className={cn(
+              'absolute bottom-4 z-20 transition-[left] duration-300',
+              visitsPanelExpanded ? 'left-4 md:left-[426px]' : 'left-4'
+            )}
+          >
+            <MultiRouteMapLegend
+              view={routeMapView}
+              selectedRouteId={selectedMapRouteId}
+              isolatedRouteId={isolatedMapRouteId}
+              onSelectRoute={(routeId) => {
+                setSelectedMapRouteId(routeId);
+                setSelectedMapStopKey(null);
+              }}
+              onIsolateRoute={(routeId) => {
+                setIsolatedMapRouteId(routeId);
+                setSelectedMapRouteId(routeId);
+                setSelectedMapStopKey(null);
+                setRouteMapFitTick((tick) => tick + 1);
+              }}
+              onShowAll={() => {
+                setIsolatedMapRouteId(null);
+                setSelectedMapRouteId(null);
+                setSelectedMapStopKey(null);
+                setRouteMapFitTick((tick) => tick + 1);
+              }}
+              onFitRoutes={() => setRouteMapFitTick((tick) => tick + 1)}
+              onClear={() => {
+                setRouteMapView(null);
+                setSelectedMapRouteId(null);
+                setSelectedMapStopKey(null);
+                setIsolatedMapRouteId(null);
+              }}
+            />
+          </div>
+        )}
       </main>
     </div>
   );

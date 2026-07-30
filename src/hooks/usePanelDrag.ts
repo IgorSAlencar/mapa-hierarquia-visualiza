@@ -1,5 +1,6 @@
 import {
   useCallback,
+  useEffect,
   useRef,
   useState,
   type CSSProperties,
@@ -32,6 +33,23 @@ export function usePanelDrag(initial: PanelPosition) {
     originX: number;
     originY: number;
   } | null>(null);
+  const pendingPositionRef = useRef<PanelPosition | null>(null);
+  const animationFrameRef = useRef<number | null>(null);
+
+  const flushPendingPosition = useCallback(() => {
+    animationFrameRef.current = null;
+    const nextPosition = pendingPositionRef.current;
+    pendingPositionRef.current = null;
+    if (!nextPosition) return;
+    positionRef.current = nextPosition;
+    setPosition(nextPosition);
+  }, []);
+
+  useEffect(() => () => {
+    if (animationFrameRef.current !== null) {
+      window.cancelAnimationFrame(animationFrameRef.current);
+    }
+  }, []);
 
   const onHeaderPointerDown = useCallback((e: ReactPointerEvent<HTMLElement>) => {
     if ((e.target as HTMLElement).closest('[data-panel-drag-ignore]')) return;
@@ -49,14 +67,27 @@ export function usePanelDrag(initial: PanelPosition) {
     if (!dragRef.current) return;
     const dx = e.clientX - dragRef.current.startX;
     const dy = e.clientY - dragRef.current.startY;
-    setPosition({
+    pendingPositionRef.current = {
       x: dragRef.current.originX + dx,
       y: dragRef.current.originY + dy,
-    });
-  }, []);
+    };
+    if (animationFrameRef.current === null) {
+      animationFrameRef.current = window.requestAnimationFrame(flushPendingPosition);
+    }
+  }, [flushPendingPosition]);
 
   const endDrag = useCallback((e: ReactPointerEvent<HTMLElement>) => {
     dragRef.current = null;
+    if (animationFrameRef.current !== null) {
+      window.cancelAnimationFrame(animationFrameRef.current);
+      animationFrameRef.current = null;
+    }
+    const finalPosition = pendingPositionRef.current;
+    pendingPositionRef.current = null;
+    if (finalPosition) {
+      positionRef.current = finalPosition;
+      setPosition(finalPosition);
+    }
     try {
       e.currentTarget.releasePointerCapture(e.pointerId);
     } catch {

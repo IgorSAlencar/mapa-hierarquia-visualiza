@@ -6,6 +6,7 @@ import {
   fetchVisitRouteById,
   fetchVisitRouteSummaries,
   fetchVisitRouteSummaryBySupervision,
+  fetchVisitRoutesForMap,
   insertVisitRoute,
   deleteVisitRouteById,
   patchVisitRouteById,
@@ -27,6 +28,8 @@ const SQL_GUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const MAX_STOPS = 200;
 const MAX_GEOMETRY_POINTS = 100_000;
+const MAX_DAILY_ROUTE_OWNERS = 15;
+const MAX_HISTORY_DAYS = 90;
 
 export class VisitRouteError extends Error {
   constructor(message, status = 400, code = 'INVALID_ROUTE') {
@@ -169,6 +172,17 @@ function normalizeGeometry(value) {
     .filter(([lng, lat]) => Number.isFinite(lng) && Number.isFinite(lat));
 }
 
+function visitStopStatus(row) {
+  return ({
+    EM_ANDAMENTO: 'em_andamento',
+    REALIZADA: 'concluida',
+    NAO_REALIZADA: 'nao_realizada',
+    REAGENDADA: 'reagendada',
+    CANCELADA: 'cancelada',
+  })[String(row.VISITA_STATUS ?? '').trim().toUpperCase()]
+    ?? (row.STATUS === 'concluida' ? 'concluida' : 'pendente');
+}
+
 function ownerDto(row) {
   return {
     funcional: String(row.COD_FUNC).padStart(7, '0'),
@@ -274,7 +288,7 @@ function summaryDto(row) {
     nome: String(row.NOME),
     plannedDate,
     version: Number(row.VERSAO),
-    savedAt: new Date(row.CRIADO_EM).toISOString(),
+    savedAt: new Date(row.CRIADO_EM_UTC).toISOString(),
     owner: {
       funcional: String(row.COD_FUNC_RESPONSAVEL).padStart(7, '0'),
       nome: String(row.NOME_RESPONSAVEL),
@@ -317,6 +331,325 @@ export async function getVisitRouteSummary({ user, from, to }) {
   }));
 }
 
+function validCivilDate(value) {
+  const raw = String(value ?? '');
+  if (!DATE_PATTERN.test(raw)) return false;
+  const [year, month, day] = raw.split('-').map(Number);
+  const parsed = new Date(Date.UTC(year, month - 1, day));
+  return parsed.getUTCFullYear() === year
+    && parsed.getUTCMonth() === month - 1
+    && parsed.getUTCDate() === day;
+}
+
+function civilDateValue(value) {
+  const [year, month, day] = String(value).split('-').map(Number);
+  return Date.UTC(year, month - 1, day);
+}
+
+function addCivilDays(value, amount) {
+  const date = new Date(civilDateValue(value));
+  date.setUTCDate(date.getUTCDate() + amount);
+  return date.toISOString().slice(0, 10);
+}
+
+function inclusiveDayCount(from, to) {
+  return Math.floor((civilDateValue(to) - civilDateValue(from)) / 86_400_000) + 1;
+}
+
+function normalizeMapDate(value, fieldName = 'data') {
+  const normalized = String(value ?? '');
+  if (!validCivilDate(normalized)) {
+    throw new VisitRouteError(
+      `${fieldName} inválida.`,
+      400,
+      'INVALID_MAP_DATE'
+    );
+  }
+  return normalized;
+}
+
+function normalizeSupervisionKeys(values, max = MAX_DAILY_ROUTE_OWNERS) {
+  const raw = Array.isArray(values) ? values : [values];
+  const parsed = raw.map(Number);
+  if (
+    parsed.length === 0
+    || parsed.some((value) => !Number.isInteger(value) || value <= 0)
+  ) {
+    throw new VisitRouteError(
+      'Informe ao menos uma supervisão válida.',
+      400,
+      'INVALID_SUPERVISION'
+    );
+  }
+  const unique = [...new Set(parsed)];
+  if (unique.length > max) {
+    throw new VisitRouteError(
+      `Selecione no máximo ${max} Gerentes Comerciais.`,
+      400,
+      'TOO_MANY_ROUTE_OWNERS'
+    );
+  }
+  return unique;
+}
+
+async function authorizedOwners(user, supervisionKeys) {
+  const owners = await getAuthorizedRouteOwners(user);
+  const bySupervision = new Map(
+    owners.map((owner) => [Number(owner.chaveSupervisao), owner])
+  );
+  const unauthorized = supervisionKeys.filter((key) => !bySupervision.has(key));
+  if (unauthorized.length > 0) {
+    throw new VisitRouteError(
+      'Um ou mais Gerentes Comerciais estão fora do escopo autorizado.',
+      403,
+      'FORBIDDEN_OWNER'
+    );
+  }
+  return supervisionKeys.map((key) => bySupervision.get(key));
+}
+
+function mapRouteRows({ headers, stops }) {
+  const stopsByRoute = new Map();
+  for (const stop of stops) {
+    const routeId = String(stop.ROTEIRO_ID).toLowerCase();
+    const items = stopsByRoute.get(routeId) ?? [];
+    items.push({
+      id: Number(stop.ID),
+      ordem: Number(stop.ORDEM),
+      nome: String(stop.NOME ?? ''),
+      chaveLoja: String(stop.CHAVE_LOJA ?? ''),
+      codAg: String(stop.COD_AG ?? ''),
+      horario: String(stop.HORARIO ?? ''),
+      endereco: String(stop.ENDERECO ?? ''),
+      cep: String(stop.CEP_CONTEXTO ?? ''),
+      produtoFoco: String(stop.PRODUTO_FOCO ?? ''),
+      focos: parseJson(stop.FOCOS_JSON, []),
+      oportunidades: parseJson(stop.OPORTUNIDADES_JSON, {}),
+      ultimaVisita: String(stop.ULTIMA_VISITA ?? ''),
+      proximaAcao: String(stop.PROXIMA_ACAO ?? ''),
+      lat: Number(stop.LAT),
+      lng: Number(stop.LNG),
+      status: visitStopStatus(stop),
+      currentVisitId: stop.VISITA_ID == null ? null : String(stop.VISITA_ID),
+      visitStatus: stop.VISITA_STATUS == null ? null : String(stop.VISITA_STATUS),
+      active: stop.ATIVO == null ? true : Boolean(stop.ATIVO),
+    });
+    stopsByRoute.set(routeId, items);
+  }
+
+  return headers.map((header) => {
+    const id = String(header.ID);
+    const plannedDate = isoDate(header.DATA_ROTEIRO);
+    const travelMinutes = Number(header.DESLOCAMENTO_MINUTOS);
+    const visitMinutes = Number(header.VISITAS_MINUTOS);
+    const durationMinutes = travelMinutes + visitMinutes;
+    const distanceMeters = Number(header.DISTANCIA_METROS);
+    const savedAt = new Date(header.CRIADO_EM_UTC).toISOString();
+    const routeStops = stopsByRoute.get(id.toLowerCase()) ?? [];
+    const owner = {
+      funcional: String(header.COD_FUNC_RESPONSAVEL).padStart(7, '0'),
+      nome: String(header.NOME_RESPONSAVEL ?? ''),
+      chaveSupervisao: Number(header.CHAVE_SUPERVISAO),
+      descricaoSupervisao: String(header.DESC_SUPERVISAO ?? '') || null,
+    };
+    return {
+      id,
+      nome: String(header.NOME ?? ''),
+      plannedDate,
+      version: Number(header.VERSAO),
+      savedAt,
+      owner,
+      stopCount: routeStops.length,
+      distanceMeters,
+      durationMinutes,
+      routeGeometry: normalizeGeometry(header.GEOMETRIA_JSON),
+      origin: {
+        nome: String(header.ORIGEM_NOME ?? ''),
+        lat: Number(header.ORIGEM_LAT),
+        lng: Number(header.ORIGEM_LNG),
+      },
+      destination: header.DESTINO_NOME
+        ? {
+            nome: String(header.DESTINO_NOME),
+            lat: Number(header.DESTINO_LAT),
+            lng: Number(header.DESTINO_LNG),
+          }
+        : undefined,
+      stops: routeStops,
+      // Aliases mantidos para integração direta com o VisitRoute já usado no mapa.
+      chaveSupervisao: owner.chaveSupervisao,
+      gerenteComercial: owner.nome,
+      data: displayDate(plannedDate),
+      distanciaKm: Math.max(1, Math.round(distanceMeters / 1000)),
+      duracaoEstimada: formatDuration(durationMinutes),
+      durationBreakdown: {
+        travelMinutes,
+        visitMinutes,
+        minutesPerVisit: Number(header.MINUTOS_POR_VISITA),
+        source: 'calculated',
+      },
+      saved: {
+        version: Number(header.VERSAO),
+        savedAt,
+        createdByFuncional: String(header.COD_FUNC_CRIADOR).padStart(7, '0'),
+        createdByName: String(header.NOME_CRIADOR ?? ''),
+      },
+      managementStatus: String(header.STATUS_GESTAO ?? 'ATIVO'),
+      priority: String(header.PRIORIDADE ?? 'NORMAL'),
+      rowVersion: header.VERSAO_LINHA
+        ? Buffer.from(header.VERSAO_LINHA).toString('base64')
+        : null,
+    };
+  });
+}
+
+function workingDaysBetween(from, to) {
+  let count = 0;
+  for (let current = from; current <= to; current = addCivilDays(current, 1)) {
+    const day = new Date(civilDateValue(current)).getUTCDay();
+    if (day !== 0 && day !== 6) count += 1;
+  }
+  return count;
+}
+
+function mondayOfWeek(value) {
+  const date = new Date(civilDateValue(value));
+  const offset = (date.getUTCDay() + 6) % 7;
+  date.setUTCDate(date.getUTCDate() - offset);
+  return date.toISOString().slice(0, 10);
+}
+
+function percentage(numerator, denominator) {
+  if (!denominator) return 0;
+  return Math.round((numerator / denominator) * 1000) / 10;
+}
+
+function statusCounts(routes) {
+  const stops = routes.flatMap((route) => route.stops.filter((stop) => stop.active));
+  return {
+    plannedVisits: stops.length,
+    completedVisits: stops.filter((stop) => stop.status === 'concluida').length,
+    notCompletedVisits: stops.filter((stop) => stop.status === 'nao_realizada').length,
+    rescheduledVisits: stops.filter((stop) => stop.status === 'reagendada').length,
+    pendingVisits: stops.filter((stop) =>
+      stop.status === 'pendente' || stop.status === 'em_andamento'
+    ).length,
+  };
+}
+
+function buildWeeklySeries(routes, from, to) {
+  const buckets = new Map();
+  for (
+    let weekStart = mondayOfWeek(from);
+    weekStart <= to;
+    weekStart = addCivilDays(weekStart, 7)
+  ) {
+    buckets.set(weekStart, []);
+  }
+  for (const route of routes) {
+    const weekStart = mondayOfWeek(route.plannedDate);
+    const bucket = buckets.get(weekStart);
+    if (bucket) bucket.push(route);
+  }
+  return [...buckets.entries()].map(([weekStart, weekRoutes]) => {
+    const counts = statusCounts(weekRoutes);
+    return {
+      weekStart,
+      routeDays: new Set(weekRoutes.map((route) => route.plannedDate)).size,
+      routes: weekRoutes.length,
+      distanceMeters: weekRoutes.reduce((total, route) => total + route.distanceMeters, 0),
+      plannedVisits: counts.plannedVisits,
+      completedVisits: counts.completedVisits,
+      completionRate: percentage(counts.completedVisits, counts.plannedVisits),
+    };
+  });
+}
+
+export function buildHistoricalRouteAnalysis(routes, from, to) {
+  const counts = statusCounts(routes);
+  const routeDates = new Set(routes.map((route) => route.plannedDate));
+  const weekdayRouteDays = [...routeDates].filter((date) => {
+    const day = new Date(civilDateValue(date)).getUTCDay();
+    return day !== 0 && day !== 6;
+  }).length;
+  const workingDays = workingDaysBetween(from, to);
+  const totalDistanceMeters = routes.reduce(
+    (total, route) => total + Number(route.distanceMeters || 0),
+    0
+  );
+  return {
+    metrics: {
+      routeDays: routeDates.size,
+      workingRouteDays: weekdayRouteDays,
+      workingDays,
+      frequencyRate: percentage(weekdayRouteDays, workingDays),
+      totalRoutes: routes.length,
+      totalDistanceMeters,
+      averageDistanceMeters: routes.length
+        ? Math.round(totalDistanceMeters / routes.length)
+        : 0,
+      ...counts,
+      completionRate: percentage(counts.completedVisits, counts.plannedVisits),
+    },
+    weeklySeries: buildWeeklySeries(routes, from, to),
+  };
+}
+
+export async function getDailyVisitRouteMap({ user, date, chaveSupervisoes }) {
+  const normalizedDate = normalizeMapDate(date, 'Data');
+  const supervisionKeys = normalizeSupervisionKeys(chaveSupervisoes);
+  await authorizedOwners(user, supervisionKeys);
+  const routes = mapRouteRows(await fetchVisitRoutesForMap({
+    user,
+    from: normalizedDate,
+    to: normalizedDate,
+    chaveSupervisoes: supervisionKeys,
+  }));
+  const found = new Set(routes.map((route) => route.owner.chaveSupervisao));
+  return {
+    date: normalizedDate,
+    routes,
+    missingSupervisionKeys: supervisionKeys.filter((key) => !found.has(key)),
+  };
+}
+
+export async function getHistoricalVisitRouteMap({
+  user,
+  from,
+  to,
+  chaveSupervisao,
+}) {
+  const normalizedFrom = normalizeMapDate(from, 'Data inicial');
+  const normalizedTo = normalizeMapDate(to, 'Data final');
+  if (normalizedFrom > normalizedTo) {
+    throw new VisitRouteError('Período da análise inválido.', 400, 'INVALID_MAP_RANGE');
+  }
+  if (inclusiveDayCount(normalizedFrom, normalizedTo) > MAX_HISTORY_DAYS) {
+    throw new VisitRouteError(
+      `A análise histórica aceita no máximo ${MAX_HISTORY_DAYS} dias.`,
+      400,
+      'HISTORY_RANGE_TOO_LARGE'
+    );
+  }
+  const [supervisionKey] = normalizeSupervisionKeys([chaveSupervisao], 1);
+  const [owner] = await authorizedOwners(user, [supervisionKey]);
+  const routes = mapRouteRows(await fetchVisitRoutesForMap({
+    user,
+    from: normalizedFrom,
+    to: normalizedTo,
+    chaveSupervisoes: [supervisionKey],
+    ownerFuncional: owner.funcional,
+  }));
+  const analysis = buildHistoricalRouteAnalysis(routes, normalizedFrom, normalizedTo);
+  return {
+    from: normalizedFrom,
+    to: normalizedTo,
+    owner,
+    routes,
+    ...analysis,
+  };
+}
+
 export async function getVisitRoute(id, user) {
   if (!SQL_GUID_PATTERN.test(String(id ?? ''))) throw new VisitRouteError('Roteiro inválido.');
   const result = await fetchVisitRouteById(id, user);
@@ -349,7 +682,7 @@ export async function getVisitRoute(id, user) {
     },
     saved: {
       version: Number(header.VERSAO),
-      savedAt: new Date(header.CRIADO_EM).toISOString(),
+      savedAt: new Date(header.CRIADO_EM_UTC).toISOString(),
       createdByFuncional: String(header.COD_FUNC_CRIADOR).padStart(7, '0'),
       createdByName: String(header.NOME_CRIADOR),
     },
@@ -368,14 +701,7 @@ export async function getVisitRoute(id, user) {
       ordem: Number(stop.ORDEM),
       nome: String(stop.NOME),
       horario: String(stop.HORARIO),
-      status: ({
-        EM_ANDAMENTO: 'em_andamento',
-        REALIZADA: 'concluida',
-        NAO_REALIZADA: 'nao_realizada',
-        REAGENDADA: 'reagendada',
-        CANCELADA: 'cancelada',
-      })[String(stop.VISITA_STATUS ?? '')]
-        ?? (stop.STATUS === 'concluida' ? 'concluida' : 'pendente'),
+      status: visitStopStatus(stop),
       endereco: String(stop.ENDERECO ?? ''),
       cep: String(stop.CEP_CONTEXTO ?? ''),
       produtoFoco: String(stop.PRODUTO_FOCO),

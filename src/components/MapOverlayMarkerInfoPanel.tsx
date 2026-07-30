@@ -82,7 +82,7 @@ function CommercialSeatInfoCard({
 
   return (
     <section
-      className="mt-2 overflow-hidden rounded-xl border border-slate-200/90 bg-white/95 shadow-md shadow-slate-900/5 backdrop-blur-sm"
+      className="mt-2 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-md shadow-slate-900/5"
       role="region"
       aria-label={`Detalhes de ${fullName}`}
     >
@@ -256,7 +256,7 @@ function AgencySelectedInfoCard({
 
   return (
     <section
-      className="mt-2 overflow-hidden rounded-xl border border-slate-200/90 bg-white/95 shadow-md shadow-slate-900/5 backdrop-blur-sm"
+      className="mt-2 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-md shadow-slate-900/5"
       role="region"
       aria-label={`Detalhes da agência ${codAg} - ${displayName}`}
     >
@@ -394,7 +394,7 @@ const MapOverlayMarkerInfoPanel: React.FC<MapOverlayMarkerInfoPanelProps> = ({
   if (storeSelection) {
     return (
       <div
-        className="mt-2 rounded-xl border border-slate-200/90 bg-white/95 shadow-md shadow-slate-900/5 backdrop-blur-sm"
+        className="mt-2 rounded-xl border border-slate-200 bg-white shadow-md shadow-slate-900/5"
         role="region"
         aria-label={`Produção da loja ${storeSelection.nome}`}
       >
@@ -470,7 +470,7 @@ const MapOverlayMarkerInfoPanel: React.FC<MapOverlayMarkerInfoPanelProps> = ({
 
   return (
     <div
-      className="mt-2 rounded-xl border border-slate-200/90 bg-white/95 p-3 shadow-md shadow-slate-900/5 backdrop-blur-sm"
+      className="mt-2 rounded-xl border border-slate-200 bg-white p-3 shadow-md shadow-slate-900/5"
       role="region"
       aria-label="Detalhes do ponto selecionado no mapa"
     >

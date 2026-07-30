@@ -175,7 +175,7 @@ const RouteOpportunitiesSidePanel: React.FC<Props> = ({
       <button
         type="button"
         onClick={onRestore}
-        className="pointer-events-auto absolute right-0 top-[62%] z-30 flex -translate-y-1/2 items-center gap-2 rounded-l-xl border border-r-0 border-violet-200/90 bg-white/95 py-3 pl-3 pr-2.5 text-slate-700 shadow-lg shadow-slate-900/10 backdrop-blur-sm transition-colors hover:bg-violet-50"
+        className="pointer-events-auto absolute right-0 top-[62%] z-30 flex -translate-y-1/2 items-center gap-2 rounded-l-xl border border-r-0 border-violet-200 bg-white py-3 pl-3 pr-2.5 text-slate-700 shadow-lg shadow-slate-900/10 transition-colors hover:bg-violet-50"
         aria-label="Reabrir oportunidades do roteiro"
         title="Reabrir oportunidades do roteiro"
       >
@@ -207,8 +207,8 @@ const RouteOpportunitiesSidePanel: React.FC<Props> = ({
       role="dialog"
       aria-labelledby="route-opportunities-title"
     >
-      <div className="flex h-full max-h-full flex-col overflow-hidden rounded-l-2xl border border-slate-200/90 bg-slate-50/95 font-sans text-slate-700 shadow-2xl shadow-slate-900/20 backdrop-blur-xl">
-        <header className="shrink-0 border-b border-slate-200/80 bg-white/90 px-4 py-3.5">
+      <div className="flex h-full max-h-full flex-col overflow-hidden rounded-l-2xl border border-slate-200 bg-slate-50 font-sans text-slate-700 shadow-2xl shadow-slate-900/20">
+        <header className="shrink-0 border-b border-slate-200 bg-white px-4 py-3.5">
           <div className="flex items-start gap-3">
             <span className="mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-violet-600 to-blue-600 text-white shadow-md shadow-violet-200">
               <Navigation className="h-5 w-5" />
@@ -320,7 +320,7 @@ const RouteOpportunitiesSidePanel: React.FC<Props> = ({
 
           <section className="min-h-0 flex-1 space-y-2.5 overflow-y-auto overscroll-contain p-3 pb-40 lg:pb-3" aria-label="Lojas encontradas">
             {loading && (
-              <div className="sticky top-0 z-10 flex items-center gap-2 rounded-xl border border-violet-100 bg-violet-50/95 px-3 py-2 text-[10px] font-semibold text-violet-700 shadow-sm backdrop-blur-sm">
+              <div className="sticky top-0 z-10 flex items-center gap-2 rounded-xl border border-violet-100 bg-violet-50 px-3 py-2 text-[10px] font-semibold text-violet-700 shadow-sm">
                 <LoaderCircle className="h-3.5 w-3.5 shrink-0 animate-spin" />
                 <span className="truncate">
                   {stores.length > 0
@@ -371,7 +371,7 @@ const RouteOpportunitiesSidePanel: React.FC<Props> = ({
           </section>
         </div>
 
-        {showRouteSummaryFooter && <footer className="shrink-0 border-t border-slate-200 bg-white/95 px-4 py-3 shadow-[0_-10px_30px_-24px_rgba(15,23,42,0.55)]">
+        {showRouteSummaryFooter && <footer className="shrink-0 border-t border-slate-200 bg-white px-4 py-3 shadow-[0_-10px_30px_-24px_rgba(15,23,42,0.55)]">
           <div className="flex items-center gap-2.5">
             <RouteDateTimePicker
               date={date}
