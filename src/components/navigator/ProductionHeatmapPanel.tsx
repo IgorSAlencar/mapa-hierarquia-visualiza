@@ -122,6 +122,7 @@ export function ProductionHeatmapTotalsCard({
 
   return (
     <aside
+      data-tutorial="production-summary"
       className="pointer-events-auto w-[min(260px,calc(100vw-7rem))] rounded-2xl border border-slate-200 bg-white p-2 font-sans text-slate-700 shadow-lg shadow-slate-900/15"
       aria-label="Totais de produção"
     >
@@ -276,6 +277,7 @@ export function ProductionHeatmapThermometer({
 
   return (
     <aside
+      data-tutorial="production-legend"
       className="pointer-events-auto flex w-[56px] flex-col items-center gap-1.5 rounded-2xl border border-slate-200 bg-white px-1.5 py-2.5 font-sans text-slate-700 shadow-lg shadow-slate-900/15"
       aria-label="Legenda de intensidade — clique numa faixa para filtrar o mapa"
     >
@@ -403,6 +405,7 @@ const ProductionHeatmapPanel: React.FC<ProductionHeatmapPanelProps> = ({
 
   return (
     <div
+      data-tutorial="production-panel"
       className="pointer-events-none fixed z-30 flex -translate-x-1/2 justify-center transition-[left,max-width] duration-500 ease-out"
       style={{
         bottom: 'calc(16px + env(safe-area-inset-bottom, 0px))',
@@ -415,6 +418,7 @@ const ProductionHeatmapPanel: React.FC<ProductionHeatmapPanelProps> = ({
       }}
     >
       <section
+        data-tutorial="production-filters"
         className="pointer-events-auto inline-flex max-w-full flex-nowrap items-center gap-1.5 overflow-x-auto rounded-2xl border border-slate-200 bg-white p-2 font-sans text-slate-700 shadow-2xl shadow-slate-900/20 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
         aria-label="Mapa de produção por município"
       >

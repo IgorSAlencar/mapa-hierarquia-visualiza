@@ -91,6 +91,7 @@ const NavigatorPanel: React.FC<NavigatorPanelProps> = ({
       <button
         type="button"
         onClick={onRestore}
+        data-tutorial="main-navigation"
         className="pointer-events-auto absolute bottom-4 left-0 z-20 flex items-center gap-2 rounded-r-xl border border-l-0 border-slate-200 bg-white py-3 pl-2.5 pr-3 text-slate-700 shadow-lg shadow-slate-900/10 transition-colors hover:bg-slate-50"
         aria-label="Reabrir painel Navegar"
         title="Reabrir painel Navegar"
@@ -109,6 +110,7 @@ const NavigatorPanel: React.FC<NavigatorPanelProps> = ({
   return (
     <div
       style={shellStyle}
+      data-tutorial="main-navigation"
       className="pointer-events-auto flex max-h-full w-[288px] flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-lg shadow-slate-900/8"
     >
       <header
@@ -141,6 +143,7 @@ const NavigatorPanel: React.FC<NavigatorPanelProps> = ({
                 <button
                   key={product.id}
                   type="button"
+                  data-tutorial={product.section === 'heatmap' ? 'navigation-production' : undefined}
                   onClick={isClickable ? () => onSelectSection(isActive ? null : product.section!) : undefined}
                   aria-pressed={isClickable ? isActive : undefined}
                   className={cn(
@@ -173,6 +176,15 @@ const NavigatorPanel: React.FC<NavigatorPanelProps> = ({
               <button
                 key={subject.id}
                 type="button"
+                data-tutorial={
+                  subject.section === 'planejar'
+                    ? 'navigation-route-builder'
+                    : subject.section === 'visitas'
+                      ? 'navigation-visits'
+                      : subject.section === 'distancia'
+                        ? 'navigation-distance'
+                        : undefined
+                }
                 onClick={
                   isClickable
                     ? () => onSelectSection(isActive ? null : subject.section!)

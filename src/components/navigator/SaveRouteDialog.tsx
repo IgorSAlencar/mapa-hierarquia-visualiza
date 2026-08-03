@@ -205,6 +205,7 @@ const SaveRouteDialog: React.FC<Props> = ({ route, onSaved }) => {
     return (
       <button
         type="button"
+        data-tutorial="routes-save-button"
         onClick={() => void saveDirectlyForCommercialManager()}
         disabled={!canPersist || saving}
         className="flex min-h-11 flex-1 items-center justify-center gap-2 rounded-xl bg-emerald-600 px-4 text-xs font-bold text-white shadow-sm transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-45"
@@ -227,6 +228,7 @@ const SaveRouteDialog: React.FC<Props> = ({ route, onSaved }) => {
       <DialogTrigger asChild>
         <button
           type="button"
+          data-tutorial="routes-save-button"
           disabled={!canPersist}
           className="flex min-h-11 flex-1 items-center justify-center gap-2 rounded-xl bg-emerald-600 px-4 text-xs font-bold text-white shadow-sm transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-45"
           title={canPersist ? 'Salvar e atribuir roteiro' : 'Aguarde o cálculo da rota viária'}

@@ -771,6 +771,7 @@ const DistanceAnalysisPanel: React.FC<DistanceAnalysisPanelProps> = ({
     {minimized ? (
       <div
         style={{ ...shellStyle, ...minimizedHeader.dragStyle }}
+        data-tutorial="distance-panel"
         className={minimizedHeader.className}
         {...minimizedHeader.dragHandlers}
         aria-label="Análise de distância minimizada"
@@ -792,6 +793,7 @@ const DistanceAnalysisPanel: React.FC<DistanceAnalysisPanelProps> = ({
     ) : (
       <section
       style={{ ...shellStyle, maxHeight: 'calc(100vh - 250px)' }}
+      data-tutorial="distance-panel"
       className="pointer-events-auto flex max-h-[calc(100vh-110px)] w-[400px] max-w-[calc(100vw-32px)] flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl shadow-slate-900/15"
       aria-label="Análise de distância"
     >
@@ -838,7 +840,7 @@ const DistanceAnalysisPanel: React.FC<DistanceAnalysisPanelProps> = ({
       </header>
 
       <div className="min-h-0 flex-1 overflow-y-auto bg-slate-50/65">
-        <div className="space-y-3 p-3.5">
+        <div className="space-y-3 p-3.5" data-tutorial="distance-filters">
           <div className="space-y-2">
             <EndpointField
               role="partida"
@@ -911,6 +913,7 @@ const DistanceAnalysisPanel: React.FC<DistanceAnalysisPanelProps> = ({
                 maxHeight: 'calc(100vh - 120px)',
               }}
               aria-labelledby="distance-mode-title"
+              data-tutorial="distance-results"
               className="pointer-events-auto flex w-[430px] max-w-[calc(100vw-32px)] animate-in flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl shadow-slate-950/20 fade-in slide-in-from-right-4 duration-300"
             >
               <header className="flex shrink-0 items-center gap-3 border-b border-slate-200 px-4 py-3">

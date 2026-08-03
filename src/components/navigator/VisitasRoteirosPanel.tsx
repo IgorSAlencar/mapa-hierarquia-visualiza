@@ -610,6 +610,7 @@ const VisitasRoteirosPanel: React.FC<VisitasRoteirosPanelProps> = ({
         type="button"
         onClick={() => setMinimized(false)}
         data-visits-sidebar-rail
+        data-tutorial="visits-panel"
         className="pointer-events-auto absolute left-0 top-1/2 z-30 flex w-14 -translate-y-1/2 flex-col items-center gap-2 rounded-r-2xl border border-l-0 border-slate-200 bg-white px-2 py-3 text-slate-700 shadow-xl shadow-slate-900/10 transition-colors hover:bg-blue-50"
         aria-label="Reabrir gestão de visitas e roteiros"
         title="Reabrir visitas e roteiros"
@@ -628,6 +629,7 @@ const VisitasRoteirosPanel: React.FC<VisitasRoteirosPanelProps> = ({
   return (
     <aside
       data-visits-sidebar
+      data-tutorial="visits-panel"
       className="pointer-events-auto absolute inset-y-0 left-0 z-30 flex w-[min(94vw,410px)] flex-col overflow-hidden border-r border-slate-200 bg-white shadow-2xl shadow-slate-950/20"
       role="dialog"
       aria-labelledby="visitas-roteiros-title"
@@ -682,7 +684,7 @@ const VisitasRoteirosPanel: React.FC<VisitasRoteirosPanelProps> = ({
       </div>
 
       {user?.role !== 'supervisor' && (
-        <nav className="grid shrink-0 grid-cols-2 gap-1 border-b border-slate-200 bg-white px-3 py-2" aria-label="Modo de gestão de rotas">
+        <nav data-tutorial="visits-filters" className="grid shrink-0 grid-cols-2 gap-1 border-b border-slate-200 bg-white px-3 py-2" aria-label="Modo de gestão de rotas">
           <button
             type="button"
             onClick={() => {
@@ -724,7 +726,7 @@ const VisitasRoteirosPanel: React.FC<VisitasRoteirosPanelProps> = ({
         </nav>
       )}
 
-      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain bg-slate-50">
+      <div data-tutorial="visits-list" className="min-h-0 flex-1 overflow-y-auto overscroll-contain bg-slate-50">
         {ownerSel ? (
           <div>
             <section className="border-b border-slate-200 bg-white px-4 py-4">
@@ -744,7 +746,7 @@ const VisitasRoteirosPanel: React.FC<VisitasRoteirosPanelProps> = ({
               </div>
             </section>
 
-            <section className="border-b border-slate-200 bg-slate-50 px-4 py-4">
+            <section data-tutorial="visits-filters" className="border-b border-slate-200 bg-slate-50 px-4 py-4">
               <div className="flex items-center justify-between gap-3">
                 <div>
                   <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-500">Período do histórico</p>
@@ -982,7 +984,7 @@ const VisitasRoteirosPanel: React.FC<VisitasRoteirosPanelProps> = ({
             )}
 
             <div className="space-y-5 px-4 py-4">
-              <section>
+              <section data-tutorial="visits-summary">
                 <div className="mb-2.5 flex items-end justify-between gap-3">
                   <div>
                     <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-blue-600">Visão geral</p>

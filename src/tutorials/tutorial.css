@@ -1,0 +1,511 @@
+:root {
+  --tutorial-overlay-z: 2000;
+  --tutorial-target-z: 2001;
+  --tutorial-card-z: 2002;
+  --tutorial-overlay-fill: rgb(2 6 23 / 0.72);
+}
+
+.driver-overlay {
+  z-index: var(--tutorial-overlay-z) !important;
+}
+
+/* Troca de etapa: esconde o buraco do foco antigo e cobre com véu sólido
+   até o próximo alvo existir e o Driver pintar o recorte novo. */
+html.mapa-tutorial--repositioning .driver-overlay {
+  opacity: 0 !important;
+  transition: none !important;
+}
+
+html.mapa-tutorial--repositioning::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: var(--tutorial-overlay-z);
+  background: var(--tutorial-overlay-fill);
+  pointer-events: none;
+}
+
+html.mapa-tutorial--repositioning .driver-popover,
+html.mapa-tutorial--repositioning .tutorial-store-hud {
+  opacity: 0 !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
+  transition: none !important;
+}
+
+html.mapa-tutorial--repositioning .driver-active-element,
+html.mapa-tutorial--repositioning .driver-active-element * {
+  z-index: auto !important;
+}
+
+/* Só o alvo sobe acima do overlay. Não forçar position em * —
+   isso quebra dropdowns absolute (origem/destino do roteiro). */
+.driver-active-element {
+  position: relative;
+  z-index: var(--tutorial-target-z) !important;
+}
+
+/* Painel do roteiro precisa receber clique nas ChoiceRows/buscas. */
+.driver-active .route-planning-journey.driver-active-element,
+.driver-active .route-planning-journey.driver-active-element *,
+.driver-active [data-tutorial='routes-origin-selector'],
+.driver-active [data-tutorial='routes-origin-selector'] *,
+.driver-active [data-tutorial='routes-destination-selector'],
+.driver-active [data-tutorial='routes-destination-selector'] *,
+.driver-active [data-tutorial='routes-priority-selector'],
+.driver-active [data-tutorial='routes-priority-selector'] * {
+  pointer-events: auto !important;
+}
+
+.driver-active .route-planning-inline-control [role='listbox'],
+.driver-active .route-planning-inline-control [role='listbox'] * {
+  pointer-events: auto !important;
+  z-index: calc(var(--tutorial-overlay-z) + 20) !important;
+}
+
+.driver-popover.mapa-tutorial-popover {
+  z-index: var(--tutorial-card-z) !important;
+  width: min(390px, calc(100vw - 24px));
+  max-width: min(390px, calc(100vw - 24px));
+  border: 1px solid rgb(203 213 225);
+  border-radius: 18px;
+  padding: 18px;
+  background: linear-gradient(145deg, #fff 0%, #f8fafc 100%);
+  color: #334155;
+  box-shadow: 0 24px 60px -18px rgb(15 23 42 / 0.45);
+  font-family: inherit;
+}
+
+.driver-popover.mapa-tutorial-popover--transitioning-to-hud {
+  visibility: hidden;
+  opacity: 0;
+  transition: opacity 160ms ease;
+}
+
+.driver-popover.mapa-tutorial-popover--hud {
+  display: none !important;
+}
+
+.mapa-tutorial-popover .driver-popover-title {
+  padding-right: 26px;
+  color: #0f172a;
+  font-size: 16px;
+  font-weight: 750;
+  line-height: 1.3;
+}
+
+.mapa-tutorial-popover .driver-popover-description {
+  margin-top: 8px;
+  color: #475569;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.mapa-tutorial-popover .driver-popover-progress-text {
+  color: #64748b;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.mapa-tutorial-popover .driver-popover-footer {
+  margin-top: 16px;
+  gap: 8px;
+}
+
+.mapa-tutorial-popover .driver-popover-navigation-btns {
+  gap: 7px;
+}
+
+.mapa-tutorial-popover .driver-popover-prev-btn,
+.mapa-tutorial-popover .driver-popover-next-btn {
+  min-height: 36px;
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  padding: 7px 12px;
+  background: #fff;
+  color: #334155;
+  text-shadow: none;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.mapa-tutorial-popover .driver-popover-next-btn {
+  border-color: #2563eb;
+  background: #2563eb;
+  color: #fff;
+}
+
+.mapa-tutorial-popover .driver-popover-prev-btn:hover {
+  background: #f1f5f9;
+}
+
+.mapa-tutorial-popover .driver-popover-next-btn:hover {
+  background: #1d4ed8;
+}
+
+.mapa-tutorial-popover .driver-popover-close-btn {
+  top: 11px;
+  right: 12px;
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+  color: #64748b;
+  font-size: 22px;
+}
+
+.mapa-tutorial-popover .driver-popover-close-btn:hover {
+  background: #e2e8f0;
+  color: #0f172a;
+}
+
+.mapa-tutorial-skip {
+  min-height: 34px;
+  border-radius: 9px;
+  padding: 6px 8px;
+  color: #64748b;
+  font-size: 10px;
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.mapa-tutorial-skip:hover {
+  background: #f1f5f9;
+  color: #334155;
+}
+
+.mapa-tutorial-popover button:focus-visible {
+  outline: 3px solid rgb(59 130 246 / 0.45);
+  outline-offset: 2px;
+}
+
+.tutorial-store-hud {
+  position: fixed;
+  inset: 0;
+  z-index: 1000000001;
+  pointer-events: none;
+  color: #f8fafc;
+  font-family: inherit;
+}
+
+.tutorial-store-hud-lines {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.tutorial-store-hud-lines line {
+  stroke: rgb(125 211 252 / 0.95);
+  stroke-width: 1.5;
+  stroke-dasharray: 3 4;
+  filter: drop-shadow(0 0 5px rgb(14 165 233 / 0.7));
+}
+
+.tutorial-store-hud-lines circle {
+  fill: #e0f2fe;
+  stroke: #0284c7;
+  stroke-width: 1.5;
+}
+
+.tutorial-store-hud-label {
+  position: absolute;
+  display: flex;
+  width: var(--tutorial-hud-label-width, min(205px, 38vw));
+  align-items: center;
+  gap: 8px;
+  color: #f8fafc;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.35;
+  letter-spacing: 0.01em;
+  text-shadow: 0 1px 5px #020617, 0 0 12px #020617;
+  transform: translateY(-50%);
+}
+
+.tutorial-store-hud-actions {
+  position: absolute;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  /* Driver aplica `.driver-active * { pointer-events: none }` no body;
+     precisa vencer essa regra para Voltar/Próximo receberem clique. */
+  pointer-events: auto !important;
+  transform: translateX(-50%);
+}
+
+.driver-active .tutorial-store-hud-actions,
+.driver-active .tutorial-store-hud-actions * {
+  pointer-events: auto !important;
+}
+
+.tutorial-store-hud-prev,
+.tutorial-store-hud-next {
+  min-height: 36px;
+  border-radius: 10px;
+  padding: 7px 14px;
+  font-size: 11px;
+  font-weight: 700;
+  box-shadow: 0 10px 28px -10px rgb(15 23 42 / 0.65);
+  cursor: pointer;
+  pointer-events: auto !important;
+}
+
+.tutorial-store-hud-prev {
+  border: 1px solid #cbd5e1;
+  background: #fff;
+  color: #334155;
+}
+
+.tutorial-store-hud-prev:hover {
+  background: #f1f5f9;
+}
+
+.tutorial-store-hud-next {
+  border: 1px solid #2563eb;
+  background: #2563eb;
+  color: #fff;
+}
+
+.tutorial-store-hud-next:hover {
+  background: #1d4ed8;
+}
+
+.tutorial-store-hud-prev:focus-visible,
+.tutorial-store-hud-next:focus-visible {
+  outline: 3px solid rgb(59 130 246 / 0.45);
+  outline-offset: 2px;
+}
+
+.tutorial-store-demo-popup .store-popup-card {
+  width: min(390px, calc(100vw - 56px));
+}
+
+.tutorial-store-demo-popup .mapboxgl-popup-content {
+  transform-origin: bottom center;
+  animation: tutorial-store-popup-reveal 420ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.tutorial-store-hud-label--right {
+  justify-content: flex-end;
+  text-align: right;
+  transform: translate(-100%, -50%);
+}
+
+.tutorial-store-hud-label--left {
+  text-align: left;
+}
+
+.tutorial-store-hud-label > span {
+  display: inline-flex;
+  width: 24px;
+  height: 18px;
+  flex: 0 0 24px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgb(125 211 252 / 0.8);
+  border-radius: 3px;
+  background: rgb(2 132 199 / 0.28);
+  color: #bae6fd;
+  font-size: 8px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.1em;
+  box-shadow: 0 0 14px rgb(14 165 233 / 0.25);
+}
+
+.tutorial-map-focus-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 18;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.tutorial-map-focus-ring {
+  fill: none;
+  stroke: #7dd3fc;
+  stroke-width: 2;
+  filter: drop-shadow(0 0 7px rgb(14 165 233 / 0.9));
+  animation: tutorial-map-focus-pulse 1.8s ease-in-out infinite;
+}
+
+.tutorial-map-cursor-stage {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.tutorial-map-cursor-target {
+  position: absolute;
+  z-index: 1;
+  width: 0;
+  height: 0;
+  transform: translate(-50%, -50%);
+}
+
+.tutorial-map-cursor-target-ring {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 38px;
+  height: 38px;
+  border: 2px solid #7dd3fc;
+  border-radius: 999px;
+  transform: translate(-50%, -50%);
+  box-shadow: 0 0 0 7px rgb(14 165 233 / 0.18);
+  animation: tutorial-map-cursor-target-pulse 1.4s ease-in-out infinite;
+}
+
+.tutorial-map-cursor-target-dot {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 11px;
+  height: 11px;
+  border-radius: 999px;
+  background: #38bdf8;
+  border: 2px solid #fff;
+  transform: translate(-50%, -50%);
+  box-shadow: 0 0 10px rgb(14 165 233 / 0.85);
+}
+
+.tutorial-map-cursor-target-label {
+  position: absolute;
+  top: calc(50% + 24px);
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgb(2 6 23 / 0.82);
+  color: #e0f2fe;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.tutorial-map-cursor-beam {
+  position: absolute;
+  z-index: 2;
+  border-radius: 999px;
+  box-shadow: 0 0 0 9999px rgb(2 6 23 / 0.55);
+  background: radial-gradient(
+    circle at center,
+    rgb(125 211 252 / 0.18) 0%,
+    rgb(125 211 252 / 0.06) 42%,
+    transparent 70%
+  );
+}
+
+.tutorial-map-cursor {
+  position: absolute;
+  z-index: 3;
+  width: 34px;
+  height: 34px;
+  color: #f8fafc;
+  filter:
+    drop-shadow(0 2px 2px rgb(2 6 23 / 0.9))
+    drop-shadow(0 0 8px rgb(14 165 233 / 0.7));
+}
+
+.tutorial-map-cursor--pressed {
+  transform: scale(0.9);
+}
+
+.tutorial-map-cursor-icon {
+  position: relative;
+  z-index: 2;
+  width: 28px;
+  height: 28px;
+  fill: #0f172a;
+  stroke: #fff;
+  stroke-width: 2.25;
+}
+
+.tutorial-map-cursor-ripple {
+  position: absolute;
+  top: -10px;
+  left: -10px;
+  width: 28px;
+  height: 28px;
+  border: 2px solid #7dd3fc;
+  border-radius: 999px;
+  animation: tutorial-map-cursor-ripple 0.55s ease-out both;
+}
+
+@keyframes tutorial-store-popup-reveal {
+  0% { opacity: 0; transform: translateY(8px) scale(0.97); }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes tutorial-map-cursor-target-pulse {
+  0%, 100% { opacity: 0.55; transform: translate(-50%, -50%) scale(1); }
+  50% { opacity: 1; transform: translate(-50%, -50%) scale(1.12); }
+}
+
+@keyframes tutorial-map-cursor-ripple {
+  0% { opacity: 0; transform: scale(0.4); }
+  30% { opacity: 0.95; }
+  100% { opacity: 0; transform: scale(1.55); }
+}
+
+@keyframes tutorial-map-focus-pulse {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 1; }
+}
+
+@media (max-width: 640px) {
+  .driver-popover.mapa-tutorial-popover {
+    position: fixed !important;
+    inset: auto 12px 12px 12px !important;
+    width: auto;
+    max-height: min(70vh, 520px);
+    overflow-y: auto;
+    transform: none !important;
+  }
+
+  .mapa-tutorial-popover .driver-popover-arrow {
+    display: none;
+  }
+
+  .mapa-tutorial-popover .driver-popover-footer {
+    flex-wrap: wrap;
+  }
+
+  .tutorial-store-hud-label {
+    max-width: 44vw;
+    font-size: 9px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .driver-overlay,
+  .driver-popover,
+  .driver-active-element {
+    transition: none !important;
+    animation: none !important;
+  }
+
+  .tutorial-map-focus-ring {
+    animation: none;
+  }
+
+  .tutorial-map-cursor-target-ring {
+    animation: none;
+  }
+
+  .tutorial-map-cursor-ripple {
+    animation: none;
+  }
+}

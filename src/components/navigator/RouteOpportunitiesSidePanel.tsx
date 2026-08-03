@@ -200,6 +200,7 @@ const RouteOpportunitiesSidePanel: React.FC<Props> = ({
   return (
     <aside
       data-route-planner-results
+      data-tutorial="routes-opportunities"
       className={cn(
         'pointer-events-auto absolute inset-y-0 right-0 z-30 w-[min(96vw,480px)] transform transition-all duration-500 ease-out',
         animateIn ? 'translate-x-0 opacity-100' : 'translate-x-8 opacity-0'
@@ -257,7 +258,7 @@ const RouteOpportunitiesSidePanel: React.FC<Props> = ({
             </div>
           </section>}
 
-          <section ref={filtersContainerRef} className="shrink-0 border-b border-slate-200/80 bg-white/80 px-4 py-3" aria-label="Busca e filtros">
+          <section ref={filtersContainerRef} data-tutorial="routes-opportunity-filters" className="shrink-0 border-b border-slate-200/80 bg-white/80 px-4 py-3" aria-label="Busca e filtros">
             <div className="flex gap-2">
               <label className="flex min-h-10 min-w-0 flex-1 items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 text-slate-400 shadow-sm transition focus-within:border-violet-300 focus-within:ring-2 focus-within:ring-violet-100">
                 <Search className="h-4 w-4 shrink-0" />

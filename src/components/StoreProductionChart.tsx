@@ -635,12 +635,15 @@ type StoreProductionChartProps = {
   chaveLoja: string;
   cieloM0: boolean | null;
   propostaValor: boolean | null;
+  /** Dispara quando o conteúdo final substituiu o skeleton e o layout estabilizou. */
+  onContentStable?: () => void;
 };
 
 const StoreProductionChart: React.FC<StoreProductionChartProps> = ({
   chaveLoja,
   cieloM0,
   propostaValor,
+  onContentStable,
 }) => {
   const [history, setHistory] = useState<StoreProductionPoint[]>([]);
   const [businessDaily, setBusinessDaily] = useState<StoreBusinessDailyPoint[]>([]);
@@ -687,6 +690,14 @@ const StoreProductionChart: React.FC<StoreProductionChartProps> = ({
     setMetricKey(DEFAULT_METRIC);
     setShowMonthlyHistory(false);
   }, [chaveLoja]);
+
+  // Driver só pode medir o card depois do swap skeleton → conteúdo final.
+  useEffect(() => {
+    if (loading || !onContentStable) return;
+    const settleMs = window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 50 : 180;
+    const timer = window.setTimeout(() => onContentStable(), settleMs);
+    return () => window.clearTimeout(timer);
+  }, [loading, chaveLoja, onContentStable]);
 
   const metric = useMemo(
     () => METRICS.find((item) => item.key === metricKey) ?? null,

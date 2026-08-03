@@ -181,6 +181,7 @@ const NotificationBell: React.FC = () => {
           variant="ghost"
           size="icon"
           className="relative"
+          data-tutorial="header-notifications"
           aria-label={`${unread} notificações não lidas`}
         >
           <Bell className={cn('h-4 w-4', unread > 0 && 'fill-amber-400 text-amber-600')} />

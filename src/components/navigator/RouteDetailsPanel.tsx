@@ -79,6 +79,7 @@ const RouteDetailsPanel: React.FC<RouteDetailsPanelProps> = ({
   return (
     <div
       data-route-details-panel
+      data-tutorial="routes-summary"
       style={shellStyle}
       className="pointer-events-auto flex max-h-full w-[320px] flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xl shadow-slate-900/10"
     >

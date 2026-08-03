@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import mapboxgl, { type FilterSpecification } from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
 import {
@@ -6,6 +7,7 @@ import {
   LayoutGrid,
   Layers,
   MapPinOff,
+  MousePointer2,
   Search,
   ChevronLeft,
   Store,
@@ -118,6 +120,14 @@ import {
   PLANNER_TRANSIENT_SOURCE_IDS,
 } from '@/lib/plannerMapArtifacts';
 import RouteLegend from '@/components/navigator/RouteLegend';
+import { StoreTutorialHud } from '@/tutorials/StoreTutorialHud';
+import {
+  TUTORIAL_MAP_DEMO_EVENT,
+  reportTutorialAction,
+  requestTutorialNav,
+  type TutorialMapDemoEventDetail,
+} from '@/tutorials/tutorialEvents';
+import type { TutorialMapDemo } from '@/tutorials/tutorialTypes';
 import {
   ProductionHeatmapThermometer,
   ProductionHeatmapTotalsCard,
@@ -132,9 +142,12 @@ import {
 import type { VisitRoute } from '@/data/visitRoutes';
 import type { DistanceAnalysisMapPoint } from '@/lib/distanceAnalysis';
 
-/** Malha nacional IBGE (serviço de malhas → arquivo em `public/geo`). */
+/** Limite nacional dissolvido da malha municipal do IBGE (arquivo local). */
 const EMPTY_VISIT_ROUTE_MAP_ITEMS: VisitRouteMapItem[] = [];
 const BRAZIL_BOUNDARY_GEOJSON = '/geo/brasil-limite-ibge.geojson';
+const BRAZIL_BOUNDARY_OVERVIEW_GEOJSON = '/geo/brasil-limite-ibge-overview.geojson';
+const BRAZIL_MASK_FALLBACK_GEOJSON = '/geo/brasil-limite-ibge-fallback.geojson';
+const BRAZIL_BOUNDARY_DETAIL_MIN_ZOOM = 6;
 const BRAZIL_STATES_GEOJSON =
   'https://raw.githubusercontent.com/codeforamerica/click_that_hood/master/public/data/brazil-states.geojson';
 const GEODATA_BR_BASE =
@@ -170,22 +183,72 @@ const UF_TO_IBGE_CODE: Record<string, string> = {
 };
 
 type Bounds = [[number, number], [number, number]];
+type BrazilBoundaryDetail = 'overview' | 'integral';
 
-let cachedBrazilBoundaryFeature: GeoJSON.Feature | null = null;
+const cachedBrazilBoundaryFeatures: Partial<Record<BrazilBoundaryDetail, GeoJSON.Feature>> = {};
+const loadingBrazilBoundaryFeatures: Partial<
+  Record<BrazilBoundaryDetail, Promise<GeoJSON.Feature>>
+> = {};
+const brazilBoundaryDetailByMap = new WeakMap<mapboxgl.Map, BrazilBoundaryDetail>();
+let cachedBrazilMaskFallbackFeature: GeoJSON.Feature | null = null;
+let loadingBrazilMaskFallbackFeature: Promise<GeoJSON.Feature> | null = null;
 
-/** Contorno nacional exatamente como em `BRAZIL_BOUNDARY_GEOJSON` (lon/lat, sem simplificar). */
-async function loadBrazilBoundaryFeature(): Promise<GeoJSON.Feature> {
-  if (cachedBrazilBoundaryFeature) return cachedBrazilBoundaryFeature;
+function brazilBoundaryDetailForZoom(zoom: number): BrazilBoundaryDetail {
+  return zoom >= BRAZIL_BOUNDARY_DETAIL_MIN_ZOOM ? 'integral' : 'overview';
+}
 
-  const res = await fetch(BRAZIL_BOUNDARY_GEOJSON);
-  if (!res.ok) throw new Error(`GeoJSON Brasil: ${res.status}`);
-  const fc = (await res.json()) as GeoJSON.FeatureCollection;
-  const br =
-    fc.features.find((f) => String(f.properties?.codarea ?? '').toUpperCase() === 'BR') ??
-    fc.features[0];
-  if (!br?.geometry) throw new Error('Brasil não encontrado no GeoJSON');
-  cachedBrazilBoundaryFeature = br;
-  return br;
+/** Carrega a visão geral na abertura e a malha integral somente em zoom costeiro. */
+async function loadBrazilBoundaryFeature(
+  detail: BrazilBoundaryDetail
+): Promise<GeoJSON.Feature> {
+  const cached = cachedBrazilBoundaryFeatures[detail];
+  if (cached) return cached;
+
+  const pending = loadingBrazilBoundaryFeatures[detail];
+  if (pending) return pending;
+
+  const url =
+    detail === 'integral' ? BRAZIL_BOUNDARY_GEOJSON : BRAZIL_BOUNDARY_OVERVIEW_GEOJSON;
+  const request = (async () => {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`GeoJSON Brasil (${detail}): ${res.status}`);
+    const fc = (await res.json()) as GeoJSON.FeatureCollection;
+    const br =
+      fc.features.find((f) => String(f.properties?.codarea ?? '').toUpperCase() === 'BR') ??
+      fc.features[0];
+    if (!br?.geometry) throw new Error('Brasil não encontrado no GeoJSON');
+    cachedBrazilBoundaryFeatures[detail] = br;
+    return br;
+  })();
+
+  loadingBrazilBoundaryFeatures[detail] = request;
+  try {
+    return await request;
+  } finally {
+    delete loadingBrazilBoundaryFeatures[detail];
+  }
+}
+
+/** Geometria expandida usada apenas atrás da máscara exata para cobrir tiles em trânsito. */
+async function loadBrazilMaskFallbackFeature(): Promise<GeoJSON.Feature> {
+  if (cachedBrazilMaskFallbackFeature) return cachedBrazilMaskFallbackFeature;
+  if (loadingBrazilMaskFallbackFeature) return loadingBrazilMaskFallbackFeature;
+
+  loadingBrazilMaskFallbackFeature = (async () => {
+    const res = await fetch(BRAZIL_MASK_FALLBACK_GEOJSON);
+    if (!res.ok) throw new Error(`GeoJSON Brasil (máscara fixa): ${res.status}`);
+    const fc = (await res.json()) as GeoJSON.FeatureCollection;
+    const br = fc.features[0];
+    if (!br?.geometry) throw new Error('Buffer de segurança do Brasil não encontrado');
+    cachedBrazilMaskFallbackFeature = br;
+    return br;
+  })();
+
+  try {
+    return await loadingBrazilMaskFallbackFeature;
+  } finally {
+    loadingBrazilMaskFallbackFeature = null;
+  }
 }
 
 function brazilBoundaryFeatureCollection(
@@ -251,42 +314,23 @@ function resolveOutsideBrazilMaskColor(m: mapboxgl.Map, styleUrl: string): strin
 }
 
 const BRAZIL_OUTLINE_LINE = '#7b8590';
-const BRAZIL_OUTLINE_HALO = '#ffffff';
 
 function ensureBrazilBoundaryOutlineLayers(
   m: mapboxgl.Map,
   styleUrl: string,
   beforeId?: string
 ): void {
-  const haloPaint = linePaintForStandard(styleUrl, {
-    'line-color': BRAZIL_OUTLINE_HALO,
-    'line-width': 5,
-    'line-opacity': 0.92,
-    'line-blur': 0.35,
-  });
   const linePaint = linePaintForStandard(styleUrl, {
     'line-color': BRAZIL_OUTLINE_LINE,
-    'line-width': 2,
+    // Hairline centralizada no limite. O antigo halo de 5 px avançava para
+    // dentro do território e parecia recortar ilhas e trechos costeiros.
+    'line-width': 1,
     'line-opacity': 1,
   });
 
-  if (!m.getLayer('brazil-boundary-halo')) {
-    m.addLayer(
-      {
-        id: 'brazil-boundary-halo',
-        type: 'line',
-        source: 'brazil-boundary',
-        paint: haloPaint,
-      },
-      beforeId
-    );
-  } else {
+  if (m.getLayer('brazil-boundary-halo')) {
     try {
-      m.setPaintProperty('brazil-boundary-halo', 'line-color', BRAZIL_OUTLINE_HALO);
-      m.setPaintProperty('brazil-boundary-halo', 'line-width', 5);
-      if (isStandardStyleUrl(styleUrl)) {
-        m.setPaintProperty('brazil-boundary-halo', 'line-emissive-strength', 1);
-      }
+      m.removeLayer('brazil-boundary-halo');
     } catch {
       /* estilo recarregando */
     }
@@ -305,7 +349,7 @@ function ensureBrazilBoundaryOutlineLayers(
   } else {
     try {
       m.setPaintProperty('brazil-boundary-line', 'line-color', BRAZIL_OUTLINE_LINE);
-      m.setPaintProperty('brazil-boundary-line', 'line-width', 2);
+      m.setPaintProperty('brazil-boundary-line', 'line-width', 1);
       if (isStandardStyleUrl(styleUrl)) {
         m.setPaintProperty('brazil-boundary-line', 'line-emissive-strength', 1);
       }
@@ -335,8 +379,8 @@ function findMaskInsertBeforeLayerId(m: mapboxgl.Map): string | undefined {
 
 const BRAZIL_CUTOUT_LAYER_IDS = [
   'brazil-outside-clip',
+  'brazil-outside-mask-fallback-fill',
   'brazil-outside-mask-fill',
-  'brazil-boundary-halo',
   'brazil-boundary-line',
 ] as const;
 
@@ -397,6 +441,43 @@ function ensureBrazilOutsideClipLayer(m: mapboxgl.Map, beforeId?: string): void 
   }
 }
 
+function ensureBrazilOutsideFallbackLayer(
+  m: mapboxgl.Map,
+  styleUrl: string,
+  maskColor: string,
+  beforeId?: string
+): void {
+  if (!m.getLayer('brazil-outside-mask-fallback-fill')) {
+    m.addLayer(
+      {
+        id: 'brazil-outside-mask-fallback-fill',
+        type: 'fill',
+        source: 'brazil-outside-mask-fallback',
+        paint: fillPaintForStandard(styleUrl, {
+          'fill-color': maskColor,
+          'fill-opacity': 1,
+          'fill-antialias': false,
+        }),
+      },
+      beforeId
+    );
+    return;
+  }
+
+  try {
+    m.setPaintProperty('brazil-outside-mask-fallback-fill', 'fill-color', maskColor);
+    m.setPaintProperty('brazil-outside-mask-fallback-fill', 'fill-opacity', 1);
+    m.setPaintProperty('brazil-outside-mask-fallback-fill', 'fill-antialias', false);
+    m.setPaintProperty(
+      'brazil-outside-mask-fallback-fill',
+      'fill-emissive-strength',
+      isStandardStyleUrl(styleUrl) ? 1 : 0
+    );
+  } catch {
+    /* estilo recarregando */
+  }
+}
+
 async function ensureBrazilOutsideMask(
   m: mapboxgl.Map,
   styleUrl: string,
@@ -407,16 +488,27 @@ async function ensureBrazilOutsideMask(
   const stackBeforeId = findFirstAppDataLayerId(m);
 
   const maskColor = resolveOutsideBrazilMaskColor(m, styleUrl);
-  const existingMaskFill = m.getLayer('brazil-outside-mask-fill');
 
   try {
-    const br = await loadBrazilBoundaryFeature();
+    const detail = brazilBoundaryDetailForZoom(m.getZoom());
+    const [br, fallbackBrazil] = await Promise.all([
+      loadBrazilBoundaryFeature(detail),
+      loadBrazilMaskFallbackFeature(),
+    ]);
+    // Evita aplicar a visão geral caso o usuário tenha aproximado o mapa
+    // enquanto o arquivo menor ainda estava em trânsito.
+    if (detail === 'overview' && brazilBoundaryDetailForZoom(m.getZoom()) === 'integral') {
+      return ensureBrazilOutsideMask(m, styleUrl);
+    }
     const boundaryFc = brazilBoundaryFeatureCollection(br);
     const mask = buildOutsideBrazilMaskFeature(br);
+    const fallbackMask = buildOutsideBrazilMaskFeature(fallbackBrazil);
+    const currentDetail = brazilBoundaryDetailByMap.get(m);
 
     const boundarySrc = m.getSource('brazil-boundary') as mapboxgl.GeoJSONSource | undefined;
-    if (boundarySrc) boundarySrc.setData(boundaryFc);
-    else {
+    if (boundarySrc) {
+      if (currentDetail !== detail) boundarySrc.setData(boundaryFc);
+    } else {
       m.addSource('brazil-boundary', {
         type: 'geojson',
         data: boundaryFc,
@@ -425,8 +517,9 @@ async function ensureBrazilOutsideMask(
     }
 
     const maskSrc = m.getSource('brazil-outside-mask') as mapboxgl.GeoJSONSource | undefined;
-    if (maskSrc) maskSrc.setData(mask);
-    else {
+    if (maskSrc) {
+      if (currentDetail !== detail) maskSrc.setData(mask);
+    } else {
       m.addSource('brazil-outside-mask', {
         type: 'geojson',
         data: mask,
@@ -434,8 +527,22 @@ async function ensureBrazilOutsideMask(
       });
     }
 
-    ensureBrazilOutsideClipLayer(m, stackBeforeId);
+    if (!m.getSource('brazil-outside-mask-fallback')) {
+      m.addSource('brazil-outside-mask-fallback', {
+        type: 'geojson',
+        data: fallbackMask,
+        // Um único tile mundial, sempre reutilizado em qualquer zoom. A área
+        // transparente tem buffer externo e nunca encobre território brasileiro.
+        maxzoom: 0,
+        tolerance: 0,
+        buffer: 0,
+      });
+    }
 
+    ensureBrazilOutsideClipLayer(m, stackBeforeId);
+    ensureBrazilOutsideFallbackLayer(m, styleUrl, maskColor, stackBeforeId);
+
+    const existingMaskFill = m.getLayer('brazil-outside-mask-fill');
     if (!existingMaskFill) {
       m.addLayer(
         {
@@ -445,6 +552,9 @@ async function ensureBrazilOutsideMask(
           paint: fillPaintForStandard(styleUrl, {
             'fill-color': maskColor,
             'fill-opacity': 1,
+            // A borda deve terminar na coordenada do IBGE, sem misturar pixels
+            // da máscara com o lado interno do litoral.
+            'fill-antialias': false,
           }),
         },
         stackBeforeId
@@ -453,6 +563,7 @@ async function ensureBrazilOutsideMask(
       try {
         m.setPaintProperty('brazil-outside-mask-fill', 'fill-color', maskColor);
         m.setPaintProperty('brazil-outside-mask-fill', 'fill-opacity', 1);
+        m.setPaintProperty('brazil-outside-mask-fill', 'fill-antialias', false);
         if (isStandardStyleUrl(styleUrl)) {
           m.setPaintProperty('brazil-outside-mask-fill', 'fill-emissive-strength', 1);
         } else {
@@ -466,6 +577,7 @@ async function ensureBrazilOutsideMask(
     ensureBrazilBoundaryOutlineLayers(m, styleUrl, stackBeforeId ?? findMaskInsertBeforeLayerId(m));
     repositionBrazilCutoutLayers(m);
     scheduleBrazilBasemapLabelTweaks(m);
+    brazilBoundaryDetailByMap.set(m, detail);
     return true;
   } catch (e) {
     console.warn('Máscara fora do Brasil não aplicada:', e);
@@ -2032,6 +2144,433 @@ function hierarchyFilterSignature(filter: SqlHierarchyFilter | null | undefined)
     .join('|');
 }
 
+function tutorialStoreScore(point: SqlMapPoint): number {
+  return [
+    point.chaveLoja,
+    point.codAg,
+    point.nomeAg,
+    point.descSupervisao,
+    point.gerenteComercial,
+    point.statusTablet,
+    point.tipoPosto,
+    point.segmento,
+    point.dataUltimaTransacao,
+    point.checklist,
+  ].filter((value) => value != null && String(value).trim() !== '').length;
+}
+
+function tutorialPointCluster(
+  points: SqlMapPoint[],
+  anchor: SqlMapPoint | null,
+  limit = 7,
+): SqlMapPoint[] {
+  if (points.length <= limit) return points;
+  const center = anchor ?? points[0];
+  return [...points]
+    .sort((a, b) => {
+      const distanceA =
+        (a.lngLat[0] - center.lngLat[0]) ** 2 + (a.lngLat[1] - center.lngLat[1]) ** 2;
+      const distanceB =
+        (b.lngLat[0] - center.lngLat[0]) ** 2 + (b.lngLat[1] - center.lngLat[1]) ** 2;
+      return distanceA - distanceB;
+    })
+    .slice(0, limit);
+}
+
+/** Escolhe uma loja que realmente está desenhada/visível no viewport do mapa. */
+function pickVisibleTutorialStore(
+  mapInstance: mapboxgl.Map,
+  points: SqlMapPoint[],
+  preferred: SqlMapPoint | null,
+): SqlMapPoint | null {
+  if (points.length === 0) return null;
+  const byId = new Map(points.map((point) => [point.id, point]));
+  const byChave = new Map(
+    points.flatMap((point) => {
+      const chave = String(point.chaveLoja ?? '').trim();
+      return chave ? [[chave, point] as const] : [];
+    }),
+  );
+
+  const width = mapInstance.getContainer().clientWidth;
+  const height = mapInstance.getContainer().clientHeight;
+  const pad = 56;
+  let visible: SqlMapPoint[] = [];
+  const layerId = 'region-overlay-lojas-cir';
+  if (mapInstance.getLayer(layerId) && width > pad * 2 && height > pad * 2) {
+    const hits = mapInstance.queryRenderedFeatures(
+      [
+        [pad, pad],
+        [width - pad, height - pad],
+      ],
+      { layers: [layerId] },
+    );
+    const seen = new Set<string>();
+    for (const feature of hits) {
+      const id = String(feature.properties?.id ?? '');
+      const chave = String(feature.properties?.chave_loja ?? '').trim();
+      const match = (id ? byId.get(id) : null) ?? (chave ? byChave.get(chave) : null);
+      if (!match || seen.has(match.id)) continue;
+      seen.add(match.id);
+      visible.push(match);
+    }
+  }
+
+  if (visible.length === 0) {
+    visible = points.filter((point) => {
+      const projected = mapInstance.project(point.lngLat);
+      return (
+        Number.isFinite(projected.x)
+        && Number.isFinite(projected.y)
+        && projected.x >= pad
+        && projected.y >= pad
+        && projected.x <= width - pad
+        && projected.y <= height - pad
+      );
+    });
+  }
+
+  if (visible.length === 0) return preferred ?? points[0] ?? null;
+
+  if (preferred) {
+    const preferredVisible = visible.find(
+      (point) =>
+        point.id === preferred.id
+        || (
+          String(point.chaveLoja ?? '').trim() !== ''
+          && String(point.chaveLoja ?? '').trim() === String(preferred.chaveLoja ?? '').trim()
+        ),
+    );
+    if (preferredVisible) return preferredVisible;
+  }
+
+  return [...visible].sort((a, b) => tutorialStoreScore(b) - tutorialStoreScore(a))[0] ?? null;
+}
+
+function waitForMapIdle(mapInstance: mapboxgl.Map, timeoutMs = 1400): Promise<void> {
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      mapInstance.off('idle', finish);
+      resolve();
+    };
+    mapInstance.once('idle', finish);
+    window.setTimeout(finish, timeoutMs);
+  });
+}
+
+interface TutorialMapFocusOverlayProps {
+  mapInstance: mapboxgl.Map | null;
+  points: SqlMapPoint[];
+  kind: 'agency' | 'store';
+}
+
+const TutorialMapFocusOverlay: React.FC<TutorialMapFocusOverlayProps> = ({
+  mapInstance,
+  points,
+  kind,
+}) => {
+  const [screenPoints, setScreenPoints] = useState<Array<{ id: string; x: number; y: number }>>([]);
+  const [size, setSize] = useState({ width: 1, height: 1 });
+
+  useEffect(() => {
+    if (!mapInstance || points.length === 0) {
+      setScreenPoints([]);
+      return;
+    }
+    const update = () => {
+      const container = mapInstance.getContainer();
+      setSize({ width: container.clientWidth || 1, height: container.clientHeight || 1 });
+      setScreenPoints(points.map((point) => {
+        const projected = mapInstance.project(point.lngLat);
+        return { id: point.id, x: projected.x, y: projected.y };
+      }));
+    };
+    mapInstance.on('move', update);
+    mapInstance.on('resize', update);
+    update();
+    return () => {
+      mapInstance.off('move', update);
+      mapInstance.off('resize', update);
+    };
+  }, [mapInstance, points]);
+
+  if (screenPoints.length === 0) return null;
+  const radius = kind === 'store' ? 30 : 34;
+  return (
+    <svg
+      className="tutorial-map-focus-overlay"
+      viewBox={`0 0 ${size.width} ${size.height}`}
+      preserveAspectRatio="none"
+      aria-hidden="true"
+    >
+      <defs>
+        <mask id="tutorial-map-focus-mask">
+          <rect width={size.width} height={size.height} fill="white" />
+          {screenPoints.map((point) => (
+            <circle key={point.id} cx={point.x} cy={point.y} r={radius} fill="black" />
+          ))}
+        </mask>
+      </defs>
+      <rect
+        width={size.width}
+        height={size.height}
+        fill="#020617"
+        fillOpacity={kind === 'store' ? 0.74 : 0.58}
+        mask="url(#tutorial-map-focus-mask)"
+      />
+      {screenPoints.map((point) => (
+        <circle
+          key={point.id}
+          className="tutorial-map-focus-ring"
+          cx={point.x}
+          cy={point.y}
+          r={radius + 3}
+        />
+      ))}
+    </svg>
+  );
+};
+
+interface TutorialMapCursorProps {
+  mapInstance: mapboxgl.Map | null;
+  point: SqlMapPoint;
+  run: number;
+  label?: string;
+}
+
+/** Ponta do ícone MousePointer2 (aprox.). */
+const TUTORIAL_CURSOR_TIP_X = 6;
+const TUTORIAL_CURSOR_TIP_Y = 4;
+const TUTORIAL_CURSOR_BEAM_RADIUS = 100;
+const TUTORIAL_CURSOR_HOLD_START_MS = 900;
+const TUTORIAL_CURSOR_TRAVEL_MS = 5200;
+const TUTORIAL_CURSOR_SETTLE_MS = 500;
+
+function tutorialCursorEase(t: number) {
+  // smootherstep — acelera/desacelera bem suave
+  return t * t * t * (t * (t * 6 - 15) + 10);
+}
+
+/** Curva cúbica de Bézier (mais curvilínea que a quadrática). */
+function tutorialCursorCubic(
+  p0: number,
+  p1: number,
+  p2: number,
+  p3: number,
+  t: number,
+) {
+  const u = 1 - t;
+  return (
+    u * u * u * p0
+    + 3 * u * u * t * p1
+    + 3 * u * t * t * p2
+    + t * t * t * p3
+  );
+}
+
+type TutorialCursorFrame = {
+  tipX: number;
+  tipY: number;
+  targetX: number;
+  targetY: number;
+  opacity: number;
+  pressed: boolean;
+};
+
+const TutorialMapCursor: React.FC<TutorialMapCursorProps> = ({ mapInstance, point, run, label }) => {
+  const [frame, setFrame] = useState<TutorialCursorFrame | null>(null);
+  const host = mapInstance?.getContainer() ?? null;
+  const targetLabel = (label ?? point.nome ?? 'Loja').trim() || 'Loja';
+
+  useEffect(() => {
+    if (!mapInstance) {
+      setFrame(null);
+      return;
+    }
+
+    let cancelled = false;
+    let raf = 0;
+    let tries = 0;
+    const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const holdMs = reducedMotion ? 250 : TUTORIAL_CURSOR_HOLD_START_MS;
+    const travelMs = reducedMotion ? 1400 : TUTORIAL_CURSOR_TRAVEL_MS;
+    const totalMs = holdMs + travelMs + (reducedMotion ? 160 : TUTORIAL_CURSOR_SETTLE_MS);
+
+    const measure = () => {
+      const container = mapInstance.getContainer();
+      const width = container.clientWidth;
+      const height = container.clientHeight;
+      if (width < 120 || height < 120) return null;
+      const projected = mapInstance.project(point.lngLat);
+      if (!Number.isFinite(projected.x) || !Number.isFinite(projected.y)) return null;
+      // Fora da área útil = loja ainda não projetada direito.
+      if (
+        projected.x < -40
+        || projected.y < -40
+        || projected.x > width + 40
+        || projected.y > height + 40
+      ) {
+        return null;
+      }
+      return { width, height, targetX: projected.x, targetY: projected.y };
+    };
+
+    const startCorner = (width: number, height: number, targetX: number, targetY: number) => {
+      const inset = 40;
+      // Sempre um canto real da tela do mapa — nunca perto do centro.
+      const corners = [
+        { x: inset, y: height - inset, id: 'bl' },
+        { x: width - inset, y: height - inset, id: 'br' },
+        { x: inset, y: inset, id: 'tl' },
+        { x: width - inset, y: inset, id: 'tr' },
+      ] as const;
+      return corners.reduce((best, corner) => {
+        const dist = (corner.x - targetX) ** 2 + (corner.y - targetY) ** 2;
+        const bestDist = (best.x - targetX) ** 2 + (best.y - targetY) ** 2;
+        return dist > bestDist ? corner : best;
+      });
+    };
+
+    const runAnimation = (initial: NonNullable<ReturnType<typeof measure>>) => {
+      const start = startCorner(
+        initial.width,
+        initial.height,
+        initial.targetX,
+        initial.targetY,
+      );
+      const dx = initial.targetX - start.x;
+      const dy = initial.targetY - start.y;
+      const len = Math.hypot(dx, dy) || 1;
+      // Normal perpendicular → arco bem marcado no caminho.
+      const nx = -dy / len;
+      const ny = dx / len;
+      const bulge = Math.min(168, Math.max(72, len * 0.38));
+      const c1 = {
+        x: start.x + dx * 0.25 + nx * bulge,
+        y: start.y + dy * 0.25 + ny * bulge,
+      };
+      const c2 = {
+        x: start.x + dx * 0.7 + nx * bulge * 0.45,
+        y: start.y + dy * 0.7 + ny * bulge * 0.45,
+      };
+
+      // Primeiro frame JÁ no canto — sem depender de ref/rAF posterior.
+      setFrame({
+        tipX: start.x,
+        tipY: start.y,
+        targetX: initial.targetX,
+        targetY: initial.targetY,
+        opacity: 1,
+        pressed: false,
+      });
+
+      const startedAt = performance.now();
+      const tick = (now: number) => {
+        if (cancelled) return;
+        const live = measure();
+        const targetX = live?.targetX ?? initial.targetX;
+        const targetY = live?.targetY ?? initial.targetY;
+        const elapsed = now - startedAt;
+
+        if (elapsed <= holdMs) {
+          setFrame({
+            tipX: start.x,
+            tipY: start.y,
+            targetX,
+            targetY,
+            opacity: 1,
+            pressed: false,
+          });
+          raf = window.requestAnimationFrame(tick);
+          return;
+        }
+
+        const travelElapsed = elapsed - holdMs;
+        const travelT = Math.min(1, travelElapsed / travelMs);
+        const eased = tutorialCursorEase(travelT);
+        setFrame({
+          tipX: tutorialCursorCubic(start.x, c1.x, c2.x, targetX, eased),
+          tipY: tutorialCursorCubic(start.y, c1.y, c2.y, targetY, eased),
+          targetX,
+          targetY,
+          opacity: 1,
+          pressed: travelT >= 1 && travelElapsed < travelMs + 280,
+        });
+
+        if (elapsed < totalMs) {
+          raf = window.requestAnimationFrame(tick);
+        }
+      };
+
+      raf = window.requestAnimationFrame(tick);
+    };
+
+    const boot = () => {
+      if (cancelled) return;
+      const initial = measure();
+      if (!initial) {
+        if (tries < 50) {
+          tries += 1;
+          window.setTimeout(boot, 60);
+        }
+        return;
+      }
+      runAnimation(initial);
+    };
+
+    // Garante que o easeTo do mapa já estabilizou antes de medir.
+    window.setTimeout(boot, 80);
+
+    return () => {
+      cancelled = true;
+      window.cancelAnimationFrame(raf);
+      setFrame(null);
+    };
+  }, [mapInstance, point.lngLat[0], point.lngLat[1], point.id, run]);
+
+  if (!host || !frame) return null;
+
+  return createPortal(
+    <div className="tutorial-map-cursor-stage" aria-hidden="true">
+      <div
+        className="tutorial-map-cursor-target"
+        style={{ left: frame.targetX, top: frame.targetY }}
+      >
+        <span className="tutorial-map-cursor-target-ring" />
+        <span className="tutorial-map-cursor-target-dot" />
+        <span className="tutorial-map-cursor-target-label">{targetLabel}</span>
+      </div>
+
+      <div
+        className="tutorial-map-cursor-beam"
+        style={{
+          left: frame.tipX - TUTORIAL_CURSOR_BEAM_RADIUS,
+          top: frame.tipY - TUTORIAL_CURSOR_BEAM_RADIUS,
+          width: TUTORIAL_CURSOR_BEAM_RADIUS * 2,
+          height: TUTORIAL_CURSOR_BEAM_RADIUS * 2,
+          opacity: frame.opacity,
+        }}
+      />
+
+      <div
+        className={`tutorial-map-cursor${frame.pressed ? ' tutorial-map-cursor--pressed' : ''}`}
+        style={{
+          left: frame.tipX - TUTORIAL_CURSOR_TIP_X,
+          top: frame.tipY - TUTORIAL_CURSOR_TIP_Y,
+          opacity: frame.opacity,
+        }}
+      >
+        <MousePointer2 className="tutorial-map-cursor-icon" />
+        {frame.pressed ? <span className="tutorial-map-cursor-ripple" /> : null}
+      </div>
+    </div>,
+    host,
+  );
+};
+
 interface MapComponentProps {
   mapMarkers: MarcadorMapa[];
   hierarchyFilter?: SqlHierarchyFilter | null;
@@ -2515,6 +3054,15 @@ const MapComponent: React.FC<MapComponentProps> = ({
     gerente_area: true,
   });
   const [overlayLojas, setOverlayLojas] = useState(false);
+  const [tutorialMapDemoMode, setTutorialMapDemoMode] = useState<TutorialMapDemo>('clear');
+  const [tutorialFocusPoints, setTutorialFocusPoints] = useState<SqlMapPoint[]>([]);
+  const tutorialDemoStoreRef = useRef<SqlMapPoint | null>(null);
+  const tutorialHoverPopupRef = useRef<mapboxgl.Popup | null>(null);
+  const tutorialMapDemoGenerationRef = useRef(0);
+  const [tutorialCursor, setTutorialCursor] = useState<{
+    point: SqlMapPoint;
+    run: number;
+  } | null>(null);
   /** Modo "Comparar áreas das supervisões": pinta as áreas de todas as supervisões filhas da GA/Coord ativa. */
   const [compareSupervisionAreasLocal, setCompareSupervisionAreasLocal] = useState(false);
   const compareSupervisionAreas = onCompareSupervisionAreasChange
@@ -4641,6 +5189,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
       }
       setSearchQuery(option.label);
       setSearchOpen(false);
+      window.setTimeout(() => reportTutorialAction('map-search-result-selected'), 0);
       return;
     }
 
@@ -4651,13 +5200,16 @@ const MapComponent: React.FC<MapComponentProps> = ({
       }
       setSearchQuery(option.label);
       setSearchOpen(false);
+      window.setTimeout(() => reportTutorialAction('map-search-result-selected'), 0);
       return;
     }
     if (option.kind === 'estado') {
       selectStateFeatureRef.current?.(option.feature);
+      window.setTimeout(() => reportTutorialAction('map-search-result-selected'), 0);
       return;
     }
     selectMunicipalityFeatureRef.current?.(option.feature);
+    window.setTimeout(() => reportTutorialAction('map-search-result-selected'), 0);
   };
 
   const handleZoomIn = () => {
@@ -4720,6 +5272,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
     const scopeSignature = hierarchyFilterSignature(activeHierarchy);
     if (loadedAgencyScopeRef.current === scopeSignature) {
       setOverlayAgencias(true);
+      window.setTimeout(() => reportTutorialAction('map-agencies-shown'), 0);
       return;
     }
     setLoadingAgencyPoints(true);
@@ -4732,6 +5285,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
       applyAgencyFetchResult(points, 'replace');
       loadedAgencyScopeRef.current = scopeSignature;
       setOverlayAgencias(true);
+      window.setTimeout(() => reportTutorialAction('map-agencies-shown'), 0);
       if (points.length === 0) {
         toast({
           title: 'Nenhuma agência nesta área',
@@ -4822,6 +5376,19 @@ const MapComponent: React.FC<MapComponentProps> = ({
       return;
     }
 
+    const shouldDefaultToVarejoOnly =
+      initialTerritoryRole === 'gerente_area' ||
+      initialTerritoryRole === 'coordenador' ||
+      initialTerritoryRole === 'supervisor';
+    if (shouldDefaultToVarejoOnly) {
+      setStoreSegmentVisibility({
+        varejo: true,
+        grandes_redes: false,
+        exclusivo: false,
+        casas_bahia: false,
+      });
+    }
+
     setStoreFilterCodAg(null);
     // Carrega o escopo completo uma única vez; mover ou dar zoom não troca o conjunto de lojas.
     setStoreSegmentMenuOpen(true);
@@ -4829,6 +5396,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
     const scopeSignature = `${hierarchyFilterSignature(activeHierarchy)}:popup`;
     if (loadedStoreScopeRef.current === scopeSignature) {
       setOverlayLojas(true);
+      window.setTimeout(() => reportTutorialAction('map-stores-shown'), 0);
       return;
     }
     setOverlayLojas(false);
@@ -4840,6 +5408,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
         popupReady: true,
       });
       setOverlayLojas(true);
+      window.setTimeout(() => reportTutorialAction('map-stores-shown'), 0);
     } catch (error) {
       console.error('Falha ao carregar lojas SQL:', error);
       setOverlayLojas(false);
@@ -4851,6 +5420,325 @@ const MapComponent: React.FC<MapComponentProps> = ({
       });
     }
   };
+
+  const tutorialAgencyPointsRef = useRef(filteredRegionAgencias);
+  tutorialAgencyPointsRef.current = filteredRegionAgencias;
+  const tutorialStorePointsRef = useRef(filteredRegionLojas);
+  tutorialStorePointsRef.current = filteredRegionLojas;
+
+  useEffect(() => {
+    let disposed = false;
+
+    const removeTutorialHover = () => {
+      tutorialHoverPopupRef.current?.remove();
+      tutorialHoverPopupRef.current = null;
+    };
+
+    const clearTutorialPresentation = () => {
+      removeTutorialHover();
+      setTutorialMapDemoMode('clear');
+      setTutorialFocusPoints([]);
+      setTutorialCursor(null);
+    };
+
+    const ensureTutorialAgencies = async (): Promise<SqlMapPoint[]> => {
+      const visible = tutorialAgencyPointsRef.current;
+      if (visible.length > 0) return visible;
+      const hierarchy = overlaySeatHierarchyRef.current ?? hierarchyFilterRef.current ?? null;
+      const points = await fetchAgencyPoints({ hierarchy });
+      if (disposed) return [];
+      applyAgencyFetchResult(points, 'replace');
+      loadedAgencyScopeRef.current = hierarchyFilterSignature(hierarchy);
+      setOverlayAgencias(true);
+      return points;
+    };
+
+    const ensureTutorialStores = async (): Promise<SqlMapPoint[]> => {
+      const visible = tutorialStorePointsRef.current;
+      if (visible.length > 0) return visible;
+      const points = await loadStoreOverlayPoints({
+        hierarchy: overlaySeatHierarchyRef.current ?? hierarchyFilterRef.current ?? null,
+        popupReady: true,
+      });
+      if (disposed) return [];
+      setOverlayLojas(true);
+      setStoreSegmentMenuOpen(false);
+      return points;
+    };
+
+    const focusTutorialPoints = (
+      points: SqlMapPoint[],
+      kind: 'agency' | 'store',
+      anchor: SqlMapPoint | null,
+    ) => {
+      const focusPoints = tutorialPointCluster(points, anchor);
+      setTutorialMapDemoMode(kind === 'store' ? 'store-focus' : 'agency-focus');
+      setTutorialFocusPoints(focusPoints);
+      fitMapToLngLatPoints(focusPoints, {
+        padding: 118,
+        maxZoom: kind === 'store' ? 13 : 11,
+        duration: 700,
+      });
+    };
+
+    const onTutorialMapDemo = (event: Event) => {
+      const { mode } = (event as CustomEvent<TutorialMapDemoEventDetail>).detail;
+      const generation = ++tutorialMapDemoGenerationRef.current;
+      if (mode === 'clear') {
+        clearTutorialPresentation();
+        return;
+      }
+      if (mode === 'prepare-agencies') {
+        clearTutorialPresentation();
+        setOverlayAgencias(false);
+        return;
+      }
+      if (mode === 'prepare-stores') {
+        clearTutorialPresentation();
+        setOverlayLojas(false);
+        setStoreSegmentMenuOpen(false);
+        return;
+      }
+
+      void (async () => {
+        try {
+          if (mode === 'agency-focus') {
+            removeTutorialHover();
+            const points = await ensureTutorialAgencies();
+            if (
+              disposed
+              || generation !== tutorialMapDemoGenerationRef.current
+              || points.length === 0
+            ) return;
+            setOverlayAgencias(true);
+            focusTutorialPoints(points, 'agency', points[0] ?? null);
+            return;
+          }
+
+          const points = await ensureTutorialStores();
+          if (
+            disposed
+            || generation !== tutorialMapDemoGenerationRef.current
+            || points.length === 0
+          ) return;
+          setOverlayLojas(true);
+          const demoStore = tutorialDemoStoreRef.current
+            ?? [...points].sort((a, b) => tutorialStoreScore(b) - tutorialStoreScore(a))[0]
+            ?? null;
+          if (!demoStore) return;
+          tutorialDemoStoreRef.current = demoStore;
+
+          if (mode === 'store-focus') {
+            removeTutorialHover();
+            storeSelectionHydrationGenerationRef.current += 1;
+            setOverlayMarkerSelection(null);
+            setSelectedStoreHighlightPoint(null);
+            focusTutorialPoints(points, 'store', demoStore);
+            return;
+          }
+
+          if (mode === 'store-hover-ready') {
+            const mapInstance = map.current;
+            if (!mapInstance) return;
+            removeTutorialHover();
+            storeSelectionHydrationGenerationRef.current += 1;
+            setOverlayMarkerSelection(null);
+            setSelectedStoreHighlightPoint(null);
+            setTutorialCursor(null);
+            setTutorialFocusPoints([]);
+            setTutorialMapDemoMode('store-hover-ready');
+            setOverlayLojas(true);
+            // Garante os círculos reais no mapa antes de mirar o cursor.
+            syncOverlayGeoJsonSource(
+              'region-overlay-lojas',
+              'region-overlay-lojas-cir',
+              true,
+              points,
+            );
+            const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+            const cluster = tutorialPointCluster(points, demoStore, 9);
+            await new Promise<void>((resolve) => {
+              let finished = false;
+              const finish = () => {
+                if (finished) return;
+                finished = true;
+                mapInstance.off('moveend', finish);
+                resolve();
+              };
+              mapInstance.once('moveend', finish);
+              window.setTimeout(finish, 1000);
+              fitMapToLngLatPoints(cluster, {
+                padding: 110,
+                maxZoom: 13,
+                duration: reducedMotion ? 220 : 750,
+              });
+            });
+            if (disposed || generation !== tutorialMapDemoGenerationRef.current) return;
+            await waitForMapIdle(mapInstance, reducedMotion ? 400 : 1200);
+            if (disposed || generation !== tutorialMapDemoGenerationRef.current) return;
+
+            const visibleStore = pickVisibleTutorialStore(mapInstance, points, demoStore);
+            if (!visibleStore) return;
+            tutorialDemoStoreRef.current = visibleStore;
+
+            // Centraliza a loja real sem “apertar” tanto a ponto de sumir as vizinhas.
+            await new Promise<void>((resolve) => {
+              let finished = false;
+              const finish = () => {
+                if (finished) return;
+                finished = true;
+                mapInstance.off('moveend', finish);
+                resolve();
+              };
+              mapInstance.once('moveend', finish);
+              window.setTimeout(finish, 900);
+              mapInstance.easeTo({
+                center: visibleStore.lngLat,
+                zoom: Math.min(12.6, Math.max(11, mapInstance.getZoom())),
+                pitch: 0,
+                bearing: mapInstance.getBearing(),
+                duration: reducedMotion ? 200 : 650,
+                essential: true,
+              });
+            });
+            if (disposed || generation !== tutorialMapDemoGenerationRef.current) return;
+            await waitForMapIdle(mapInstance, reducedMotion ? 250 : 700);
+            if (disposed || generation !== tutorialMapDemoGenerationRef.current) return;
+
+            // Confirma de novo após o ease — usa só loja ainda renderizada.
+            const aimedStore = pickVisibleTutorialStore(mapInstance, points, visibleStore)
+              ?? visibleStore;
+            tutorialDemoStoreRef.current = aimedStore;
+
+            await new Promise((resolve) => window.setTimeout(resolve, reducedMotion ? 60 : 280));
+            if (disposed || generation !== tutorialMapDemoGenerationRef.current) return;
+            setTutorialCursor({ point: aimedStore, run: generation });
+            // Animação lenta: pausa no canto + Bézier ~5.2s + settle.
+            await new Promise((resolve) => window.setTimeout(resolve, reducedMotion ? 1800 : 6800));
+            if (disposed || generation !== tutorialMapDemoGenerationRef.current) return;
+            const popup = new mapboxgl.Popup({
+              ...agencyMapPopupHoverOptions,
+              className: 'agency-map-popup tutorial-store-demo-popup',
+              anchor: 'bottom',
+              focusAfterOpen: false,
+              maxWidth: 'min(390px, calc(100vw - 56px))',
+              offset: 22,
+            });
+            tutorialHoverPopupRef.current = popup;
+            popup
+              .setLngLat(aimedStore.lngLat)
+              .setHTML(buildStorePopupHtml(storePopupInfoFromPoint(aimedStore)))
+              .addTo(mapInstance);
+            // Intro só demonstra o hover — Driver ainda foca o mapa.
+            // O atributo do tutorial entra no passo seguinte (HUD).
+            popup
+              .getElement()
+              .querySelector<HTMLElement>('[data-tutorial="map-store-hover"]')
+              ?.removeAttribute('data-tutorial');
+            // Congela cursor + holofote + popup no alvo, depois avança na hora
+            // (evita o “buraco” branco sem foco esperando o autoAdvance).
+            await new Promise((resolve) => window.setTimeout(resolve, reducedMotion ? 350 : 750));
+            if (disposed || generation !== tutorialMapDemoGenerationRef.current) return;
+            requestTutorialNav('next');
+            return;
+          }
+
+          if (mode === 'store-hover') {
+            const mapInstance = map.current;
+            if (!mapInstance) return;
+            const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+            storeSelectionHydrationGenerationRef.current += 1;
+            setOverlayMarkerSelection(null);
+            setSelectedStoreHighlightPoint(null);
+            setTutorialFocusPoints([]);
+
+            let popup = tutorialHoverPopupRef.current;
+            if (!popup) {
+              setTutorialCursor(null);
+              setTutorialMapDemoMode('store-hover-ready');
+              await new Promise<void>((resolve) => {
+                let finished = false;
+                const finish = () => {
+                  if (finished) return;
+                  finished = true;
+                  mapInstance.off('moveend', finish);
+                  resolve();
+                };
+                mapInstance.once('moveend', finish);
+                window.setTimeout(finish, 820);
+                mapInstance.easeTo({
+                  center: demoStore.lngLat,
+                  zoom: Math.min(12.2, Math.max(10.2, mapInstance.getZoom())),
+                  pitch: 0,
+                  bearing: mapInstance.getBearing(),
+                  duration: reducedMotion ? 200 : 680,
+                  essential: true,
+                });
+              });
+              if (disposed || generation !== tutorialMapDemoGenerationRef.current) return;
+              setTutorialCursor({ point: demoStore, run: generation });
+              await new Promise((resolve) => window.setTimeout(
+                resolve,
+                reducedMotion ? 1800 : 6800,
+              ));
+              if (disposed || generation !== tutorialMapDemoGenerationRef.current) return;
+              popup = new mapboxgl.Popup({
+                ...agencyMapPopupHoverOptions,
+                className: 'agency-map-popup tutorial-store-demo-popup',
+                anchor: 'bottom',
+                focusAfterOpen: false,
+                maxWidth: 'min(390px, calc(100vw - 56px))',
+                offset: 22,
+              });
+              tutorialHoverPopupRef.current = popup;
+              popup
+                .setLngLat(demoStore.lngLat)
+                .setHTML(buildStorePopupHtml(storePopupInfoFromPoint(demoStore)))
+                .addTo(mapInstance);
+            }
+
+            const tutorialHoverCard = popup
+              .getElement()
+              .querySelector<HTMLElement>('.store-popup-card');
+            // O Driver só mede depois da entrada; no fluxo contínuo o card
+            // já está estável, mas ainda seguramos um frame de layout.
+            tutorialHoverCard?.removeAttribute('data-tutorial');
+            setTutorialCursor(null);
+            await new Promise((resolve) => window.setTimeout(
+              resolve,
+              reducedMotion ? 40 : 120,
+            ));
+            if (disposed || generation !== tutorialMapDemoGenerationRef.current) return;
+            tutorialHoverCard?.setAttribute('data-tutorial', 'map-store-hover');
+            setTutorialMapDemoMode('store-hover');
+            return;
+          }
+
+          if (mode === 'store-selected') {
+            removeTutorialHover();
+            setTutorialMapDemoMode('store-selected');
+            const mapInstance = map.current;
+            if (mapInstance) animateToPointFocus(mapInstance, demoStore.lngLat);
+            selectStorePointRef.current(demoStore);
+          }
+        } catch (error) {
+          if (generation === tutorialMapDemoGenerationRef.current) {
+            clearTutorialPresentation();
+          }
+          if (import.meta.env.DEV) {
+            console.warn('[tutorial] Não foi possível preparar a demonstração do mapa.', error);
+          }
+        }
+      })();
+    };
+
+    window.addEventListener(TUTORIAL_MAP_DEMO_EVENT, onTutorialMapDemo);
+    return () => {
+      disposed = true;
+      window.removeEventListener(TUTORIAL_MAP_DEMO_EVENT, onTutorialMapDemo);
+      removeTutorialHover();
+    };
+  }, [applyAgencyFetchResult, fitMapToLngLatPoints, loadStoreOverlayPoints, syncOverlayGeoJsonSource]);
 
   const clearSelectedState = () => {
     resetAgencyStoreFilterSync();
@@ -4927,8 +5815,9 @@ const MapComponent: React.FC<MapComponentProps> = ({
       } = {
         container: mapContainer.current,
         style: resolvedStyle,
-        // Suaviza zoom/pan: evita fade de tiles que gera sensação de "piscar".
-        fadeDuration: 0,
+        // Crossfade curto mantém o tile anterior até o seguinte estar pronto,
+        // evitando flashes no basemap sem prolongar a renderização.
+        fadeDuration: 150,
         // Evita refresh automático de tiles expirados durante interação.
         refreshExpiredTiles: false,
         renderWorldCopies: false,
@@ -5447,12 +6336,14 @@ const MapComponent: React.FC<MapComponentProps> = ({
           .catch((err) => console.warn('Catálogo de estados não carregado para busca:', err));
 
         try {
-          const br = await loadBrazilBoundaryFeature();
+          const boundaryDetail = brazilBoundaryDetailForZoom(m.getZoom());
+          const br = await loadBrazilBoundaryFeature(boundaryDetail);
           m.addSource('brazil-boundary', {
             type: 'geojson',
             data: brazilBoundaryFeatureCollection(br),
             tolerance: 0,
           });
+          brazilBoundaryDetailByMap.set(m, boundaryDetail);
           m.addLayer(
             {
               id: 'brasil-context-fill',
@@ -5519,6 +6410,31 @@ const MapComponent: React.FC<MapComponentProps> = ({
             });
           });
         });
+
+        let boundaryDetailUpgradeInFlight = false;
+        const upgradeBrazilBoundaryDetail = () => {
+          if (
+            boundaryDetailUpgradeInFlight ||
+            brazilBoundaryDetailByMap.get(m) === 'integral' ||
+            m.getZoom() < BRAZIL_BOUNDARY_DETAIL_MIN_ZOOM
+          ) {
+            return;
+          }
+          boundaryDetailUpgradeInFlight = true;
+
+          void ensureBrazilOutsideMask(m, activeBaseStyle)
+            .then((applied) => {
+              if (!applied || map.current !== m) return;
+              syncOutsideMaskColorState();
+            })
+            .finally(() => {
+              boundaryDetailUpgradeInFlight = false;
+            });
+        };
+        // A malha integral é promovida uma única vez. Ao afastar, nunca fazemos
+        // setData/removeLayer: a máscara atual permanece no GPU e não pode abrir
+        // um frame mostrando o restante do mundo.
+        m.on('zoomend', upgradeBrazilBoundaryDetail);
 
         m.addSource('structure-people', {
           type: 'geojson',
@@ -8005,6 +8921,25 @@ const MapComponent: React.FC<MapComponentProps> = ({
   return (
     <div className="relative h-full rounded-lg overflow-hidden">
       <div ref={mapContainer} className="absolute inset-0" />
+      {(
+        tutorialMapDemoMode === 'agency-focus'
+        || tutorialMapDemoMode === 'store-focus'
+      ) ? (
+        <TutorialMapFocusOverlay
+          mapInstance={map.current}
+          points={tutorialFocusPoints}
+          kind={tutorialMapDemoMode === 'agency-focus' ? 'agency' : 'store'}
+        />
+      ) : null}
+      {tutorialCursor ? (
+        <TutorialMapCursor
+          mapInstance={map.current}
+          point={tutorialCursor.point}
+          run={tutorialCursor.run}
+          label={tutorialCursor.point.nome}
+        />
+      ) : null}
+      <StoreTutorialHud active={tutorialMapDemoMode === 'store-hover'} />
       {navigatorOverlays ? (
         <div className={cn(
           'pointer-events-none absolute inset-0 overflow-visible',
@@ -8037,7 +8972,10 @@ const MapComponent: React.FC<MapComponentProps> = ({
         )}
       >
         <div>
-          <div className="relative h-10 rounded-full border border-slate-200 bg-white shadow-md shadow-slate-900/5">
+          <div
+            data-tutorial="map-search"
+            className="relative h-10 rounded-full border border-slate-200 bg-white shadow-md shadow-slate-900/5"
+          >
             <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <Input
               value={searchQuery}
@@ -8093,6 +9031,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
           )}
           <div className="mt-2 flex flex-wrap gap-2">
             <button
+              data-tutorial="map-agencies-toggle"
               type="button"
               title="Mostrar agências no mapa"
               aria-label="Mostrar agências no mapa"
@@ -8164,6 +9103,7 @@ const MapComponent: React.FC<MapComponentProps> = ({
             ) : null}
             <div ref={storeSegmentPickerRef} className="relative">
               <button
+                data-tutorial="map-stores-toggle"
                 type="button"
                 title="Mostrar lojas no mapa"
                 aria-label="Mostrar lojas no mapa"

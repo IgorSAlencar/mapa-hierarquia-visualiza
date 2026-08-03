@@ -9,6 +9,7 @@ import NotFound from "./pages/NotFound";
 import NotificationsCenter from "./pages/NotificationsCenter";
 import PrivateRoute from "./components/PrivateRoute";
 import { AuthProvider } from "./context/AuthContext";
+import { TutorialProvider } from "./tutorials/TutorialContext";
 
 const queryClient = new QueryClient();
 
@@ -18,16 +19,18 @@ const App = () => (
       <Toaster />
       <Sonner />
       <BrowserRouter>
-        <AuthProvider>
-          <Routes>
-            <Route path="/login" element={<Login />} />
-            <Route path="/login=:credentials" element={<Login />} />
-            <Route path="/" element={<PrivateRoute><Index /></PrivateRoute>} />
-            <Route path="/notificacoes" element={<PrivateRoute><NotificationsCenter /></PrivateRoute>} />
-            {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
-            <Route path="*" element={<NotFound />} />
-          </Routes>
-        </AuthProvider>
+        <TutorialProvider>
+          <AuthProvider>
+            <Routes>
+              <Route path="/login" element={<Login />} />
+              <Route path="/login=:credentials" element={<Login />} />
+              <Route path="/" element={<PrivateRoute><Index /></PrivateRoute>} />
+              <Route path="/notificacoes" element={<PrivateRoute><NotificationsCenter /></PrivateRoute>} />
+              {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
+              <Route path="*" element={<NotFound />} />
+            </Routes>
+          </AuthProvider>
+        </TutorialProvider>
       </BrowserRouter>
     </TooltipProvider>
   </QueryClientProvider>

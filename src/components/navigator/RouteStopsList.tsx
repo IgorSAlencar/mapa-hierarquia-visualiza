@@ -362,6 +362,7 @@ const RouteStopsList: React.FC<RouteStopsListProps> = ({
                 <button
                   type="button"
                   onClick={() => onTreatStop(stop)}
+                  data-tutorial="visit-treatment"
                   className="m-1.5 shrink-0 rounded-lg border border-blue-200 bg-blue-50 px-2 py-1 text-[10px] font-bold text-blue-700 hover:bg-blue-100"
                 >
                   {stop.visitStatus === 'EM_ANDAMENTO' ? 'Continuar' : 'Registrar'}

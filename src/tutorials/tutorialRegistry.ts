@@ -1,0 +1,270 @@
+import { TUTORIAL_TARGETS as T } from './tutorialSelectors';
+import type { TutorialDefinition } from './tutorialTypes';
+
+const firstSteps: TutorialDefinition = {
+  id: 'first-steps',
+  type: 'onboarding',
+  title: 'Primeiros passos',
+  description: 'Uma visão rápida do mapa, da navegação e das ferramentas principais.',
+  route: '/',
+  category: 'Comece aqui',
+  version: 3,
+  recommendedOrder: 1,
+  estimatedMinutes: 5,
+  forceReplayOnVersionChange: false,
+  steps: [
+    {
+      id: 'welcome',
+      title: 'Bem-vindo ao Mapa Comercial',
+      description: 'Vamos conhecer as ferramentas que ajudam a planejar visitas, acompanhar a execução e analisar sua região.',
+      target: T.appIdentity,
+      placement: 'bottom',
+    },
+    {
+      id: 'navigation',
+      title: 'Sua central de navegação',
+      description: 'Aqui você encontra um painel de navegação para acessar produtos e jornadas comerciais. Cada módulo possui uma orientação própria.',
+      target: T.mainNavigation,
+      placement: 'right',
+    },
+    {
+      id: 'map',
+      title: 'O mapa é seu espaço de trabalho',
+      description: 'Aqui você visualiza territórios, lojas, rotas e resultados. Os painéis mantêm o contexto geográfico sempre visível.',
+      target: T.mapMain,
+      placement: 'over',
+    },
+    {
+      id: 'search',
+      title: 'Encontre qualquer ponto do mapa',
+      description: 'Este campo localiza estados, municípios, agências e lojas. Ao escolher um resultado, o mapa leva você diretamente ao ponto ou à região correspondente.',
+      target: T.mapSearch,
+      placement: 'bottom',
+    },
+    {
+      id: 'show-agencies',
+      title: 'Mostre as Agências',
+      description: 'Clique no botão de agência. Os pontos de agência do seu escopo serão carregados no mapa.',
+      target: T.mapAgenciesToggle,
+      placement: 'bottom',
+      allowInteraction: true,
+      requiresAction: 'map-agencies-shown',
+      mapDemo: 'prepare-agencies',
+    },
+    {
+      id: 'agencies-on-map',
+      title: 'Agências no mapa',
+      description: 'O mapa mostra um conjunto real de agências representadas pela cor vermelha. Cada ponto pode ser selecionado para consultar a estrutura e as lojas vinculadas.',
+      target: T.mapMain,
+      placement: 'over',
+      mapDemo: 'agency-focus',
+    },
+    {
+      id: 'show-stores',
+      title: 'Agora mostre as lojas',
+      description: 'Clique no botão de loja. Os pontos reais do seu escopo serão exibidos e você poderá escolher os segmentos visíveis.',
+      target: T.mapStoresToggle,
+      placement: 'bottom',
+      allowInteraction: true,
+      requiresAction: 'map-stores-shown',
+      mapDemo: 'prepare-stores',
+    },
+    {
+      id: 'stores-on-map',
+      title: 'Lojas no mapa',
+      description: 'O mapa irá mostrar um conjunto real de lojas representadas pela cor verde.',
+      target: T.mapMain,
+      placement: 'over',
+      mapDemo: 'store-focus',
+    },
+    {
+      id: 'store-hover-intro',
+      title: 'Passe o mouse sobre uma loja',
+      description: 'Acompanhe o cursor no mapa: ele se aproxima do marcador e a pré-visualização aparece.',
+      target: T.mapMain,
+      // Evita placement "over" — o card central cobria a animação do cursor/loja.
+      placement: 'bottom',
+      align: 'center',
+      mapDemo: 'store-hover-ready',
+      // Avanço disparado ao fim da demo (requestTutorialNav), sem gap ocioso.
+    },
+    {
+      id: 'store-hover',
+      title: 'Leitura instantânea da loja',
+      description: 'O hover revela identidade, contexto comercial, situação operacional, produção e recência.',
+      target: T.mapStoreHover,
+      presentation: 'hud',
+      autoAdvanceMs: 12000,
+      mapDemo: 'store-hover',
+      waitForTargetMs: 4000,
+    },
+    {
+      id: 'store-selected',
+      title: 'Loja selecionada',
+      description: 'Ao clicar, a loja fica marcada no mapa e este painel permanece aberto. Ele confirma nome, chave, agência vinculada e apresenta o histórico de produção para aprofundar a análise.',
+      target: T.mapStoreSelected,
+      placement: 'right',
+      mapDemo: 'store-selected',
+      // Espera o fetch do chart + swap do skeleton antes do Driver medir o card.
+      waitForTargetMs: 8000,
+    },
+    {
+      id: 'notifications',
+      title: 'Missões e pendências',
+      description: 'O sino reúne alertas de roteiros, visitas e ações que aguardam sua atenção.',
+      target: T.notifications,
+      placement: 'bottom',
+    },
+    {
+      id: 'tutorial-center',
+      title: 'Central de Tutoriais',
+      description: 'Use o livro para iniciar, continuar ou revisar qualquer tutorial quando quiser.',
+      target: T.tutorialCenter,
+      placement: 'bottom',
+    },
+    {
+      id: 'journeys',
+      title: 'Aprenda uma atividade completa',
+      description: 'As jornadas ensinam a ordem do trabalho: preparação, execução, leitura dos resultados e próximo passo.',
+    },
+    {
+      id: 'finish',
+      title: 'Pronto para explorar',
+      description: 'Comece por “Montar meu roteiro” e depois acompanhe a execução em “Visitas e Roteiros”. Você pode voltar à Central a qualquer momento.',
+    },
+  ],
+};
+
+const routeBuilder: TutorialDefinition = {
+  id: 'route-builder',
+  type: 'journey',
+  title: 'Montar meu roteiro',
+  description: 'Planeje uma rota comercial, encontre lojas no caminho e organize suas visitas.',
+  route: '/',
+  category: 'Jornadas principais',
+  version: 8,
+  recommendedOrder: 2,
+  estimatedMinutes: 6,
+  steps: [
+    { id: 'goal', title: 'Planeje sua missão comercial', description: 'Use esta área para definir o deslocamento, encontrar oportunidades e preparar uma sequência eficiente de visitas.', target: T.routePlannerStart, openSection: 'planejar', panelStep: 0, allowInteraction: true, requiresAction: 'route-started', placement: 'top' },
+    { id: 'intention', title: 'Qual é sua intenção?', description: 'Escolha o objetivo que melhor representa sua atividade e confirme em “Continuar”.', target: T.routePlanner, openSection: 'planejar', panelStep: 1, allowInteraction: true, requiresAction: 'route-intention-confirmed', placement: 'right' },
+    { id: 'origin', title: 'De onde você vai sair?', description: 'Escolha a origem: agência, endereço ou loja específica. Ao confirmar a escolha, o painel avança para o destino.', target: T.routePlannerOrigin, openSection: 'planejar', panelStep: 2, allowInteraction: true, requiresAction: 'route-origin-selected', waitForTargetMs: 2000, placement: 'right' },
+    { id: 'destination', title: 'Para onde pretende ir?', description: 'Escolha agência, município, endereço ou território por raio. Ao confirmar, o painel segue para a prioridade.', target: T.routePlannerDestination, openSection: 'planejar', panelStep: 3, allowInteraction: true, requiresAction: 'route-destination-selected', waitForTargetMs: 2000, placement: 'right' },
+    { id: 'priority', title: 'Qual é a prioridade do roteiro?', description: 'Escolha como as oportunidades devem ser ordenadas para esta missão comercial.', target: T.routePlannerPriority, openSection: 'planejar', panelStep: 4, allowInteraction: true, requiresAction: 'route-priority-selected', waitForTargetMs: 2000, placement: 'right' },
+    { id: 'generate', title: 'Gere as oportunidades', description: 'Revise sua escolha e clique no botão para consultar as lojas do recorte. Nada será salvo automaticamente.', target: T.routePlannerGenerate, openSection: 'planejar', panelStep: 4, allowInteraction: true, requiresAction: 'route-generate-requested', waitForTargetMs: 900, placement: 'top' },
+    { id: 'map-reading', title: 'Leia o trajeto no mapa', description: 'Quando houver uma rota, observe origem, destino, linha do percurso e marcadores das lojas. Sem cálculo, esta etapa permanece apenas explicativa.', target: T.mapMain, openSection: 'planejar', placement: 'over' },
+    { id: 'opportunities', title: 'Avalie lojas e oportunidades', description: 'A lista apresenta as lojas encontradas e seus sinais comerciais. Compare prioridades, tempo sem visita e desvio do trajeto.', target: T.routeOpportunities, openSection: 'planejar', placement: 'left' },
+    { id: 'organize', title: 'Organize as visitas', description: 'Selecione as lojas que fazem sentido. Na revisão da rota, você pode consultar detalhes e ajustar a ordem antes de salvar.', target: T.routeOpportunities, openSection: 'planejar', placement: 'left' },
+    { id: 'summary', title: 'Confira o resumo', description: 'Revise quantidade de lojas, distância, deslocamento, tempo de visitas e término previsto antes de prosseguir.', target: T.routeSummary, openSection: 'planejar', placement: 'top' },
+    { id: 'save', title: 'Salve somente quando estiver pronto', description: 'O salvamento registra o roteiro para acompanhamento. O tutorial apenas aponta a ação e nunca salva dados automaticamente.', target: T.routeSave, openSection: 'planejar', placement: 'left' },
+    { id: 'next', title: 'Próximo passo: acompanhar', description: 'Depois de salvar, abra “Visitas e Roteiros” para acompanhar o plano e registrar o resultado de cada atendimento.', target: T.navigationVisits, placement: 'right' },
+  ],
+};
+
+const visitsAndRoutes: TutorialDefinition = {
+  id: 'visits-and-routes',
+  type: 'journey',
+  title: 'Visitas e Roteiros',
+  description: 'Acompanhe os roteiros planejados e registre o resultado de cada visita.',
+  route: '/',
+  category: 'Jornadas principais',
+  version: 1,
+  recommendedOrder: 3,
+  estimatedMinutes: 7,
+  steps: [
+    { id: 'goal', title: 'Acompanhe a execução', description: 'Aqui você consulta roteiros, entende a cobertura diária e acompanha o andamento das visitas.', target: T.visitsPanel, openSection: 'visitas', placement: 'right' },
+    { id: 'identify', title: 'Encontre seus roteiros', description: 'A lista reúne os roteiros disponíveis no seu escopo e mostra período, responsável e situação da execução.', target: T.visitsList, openSection: 'visitas', placement: 'right' },
+    { id: 'filters', title: 'Refine a consulta', description: 'Use o período histórico, a hierarquia, o responsável e a busca para localizar rapidamente o roteiro necessário.', target: T.visitsFilters, openSection: 'visitas', placement: 'right' },
+    { id: 'summary', title: 'Leia o resumo de cobertura', description: 'Os indicadores consolidam visitas e deslocamentos do recorte selecionado antes de você abrir um roteiro.', target: T.visitsSummary, openSection: 'visitas', placement: 'right' },
+    { id: 'details', title: 'Abra os detalhes', description: 'Selecione um roteiro para ver o trajeto no mapa, a ordem das lojas e a situação de cada parada.', target: T.visitsList, openSection: 'visitas', placement: 'right' },
+    { id: 'statuses', title: 'Entenda os estados', description: 'As visitas podem estar pendentes, em andamento, realizadas, não realizadas, reagendadas ou canceladas, conforme o fluxo disponível.', target: T.visitsList, openSection: 'visitas', placement: 'right' },
+    { id: 'treatment', title: 'Inicie a tratativa', description: 'Em uma parada aberta, use a ação de tratamento para registrar o atendimento. Nenhum dado será preenchido pelo tutorial.', target: T.visitTreatment, openSection: 'visitas', placement: 'left' },
+    { id: 'completed-visit', title: 'Quando a visita for realizada', description: 'Confirme o atendimento e avance pelos produtos da visita. Registre somente informações verificadas no atendimento real.' },
+    { id: 'missed-visit', title: 'Quando não for realizada', description: 'Informe o motivo disponível e a observação necessária. Use reagendamento apenas quando fizer parte do fluxo apresentado.' },
+    { id: 'alerts', title: 'Trate pendências', description: 'Visitas sem atualização podem gerar missões no sino. Abra o alerta para retornar ao roteiro ou à visita correspondente.', target: T.notifications, placement: 'bottom' },
+    { id: 'completion', title: 'Conclua o ciclo', description: 'Acompanhe o total planejado e os resultados registrados. O roteiro evolui conforme cada visita recebe sua tratativa.', target: T.visitsSummary, openSection: 'visitas', placement: 'right' },
+    { id: 'next', title: 'Use os resultados', description: 'Revise pendências, deslocamentos e cobertura da região. Depois, use a Análise de Distância para aprofundar a leitura territorial.' },
+  ],
+};
+
+const distanceAnalysis: TutorialDefinition = {
+  id: 'distance-analysis',
+  type: 'journey',
+  title: 'Análise de Distância',
+  description: 'Entenda deslocamentos, cobertura territorial e o esforço entre pontos do mapa.',
+  route: '/',
+  category: 'Jornadas principais',
+  version: 1,
+  recommendedOrder: 4,
+  estimatedMinutes: 5,
+  steps: [
+    { id: 'goal', title: 'Entenda o esforço de deslocamento', description: 'A análise calcula distância e tempo entre pontos para apoiar decisões de cobertura e atendimento.', target: T.distancePanel, openSection: 'distancia', placement: 'right' },
+    { id: 'scenario', title: 'Escolha o tipo de trajeto', description: 'Defina o modo disponível e o cenário que deseja avaliar antes de selecionar os pontos.', target: T.distanceFilters, openSection: 'distancia', placement: 'right' },
+    { id: 'filters', title: 'Defina origem e destino', description: 'Selecione os pontos reais da análise. Ajustar essas escolhas recalcula o contexto exibido no mapa.', target: T.distanceFilters, openSection: 'distancia', placement: 'right' },
+    { id: 'map', title: 'Leia a conexão no mapa', description: 'O mapa mostra os pontos escolhidos e, quando calculado, o trajeto entre eles. Use os marcadores para confirmar o contexto.', target: T.mapMain, openSection: 'distancia', placement: 'over' },
+    { id: 'average', title: 'Interprete distância e duração', description: 'O resultado resume a extensão do trajeto e o tempo estimado para o modo selecionado.', target: T.distanceResults, openSection: 'distancia', placement: 'right' },
+    { id: 'maximum', title: 'Observe deslocamentos excessivos', description: 'Compare o resultado com a rotina operacional. Um trajeto longo pode indicar necessidade de rever origem, destino ou cobertura.', target: T.distanceResults, openSection: 'distancia', placement: 'right' },
+    { id: 'load', title: 'Considere a carga de atendimento', description: 'Distância deve ser analisada junto da quantidade de visitas, da disponibilidade e do potencial comercial.' },
+    { id: 'comparison', title: 'Compare alternativas', description: 'Repita a análise com outros pontos para entender como uma mudança afeta distância e tempo. O tutorial não executa cálculos automaticamente.' },
+    { id: 'regional-impact', title: 'Leve o contexto regional', description: 'Combine o deslocamento com o território de atuação e com os roteiros já planejados para avaliar o impacto.' },
+    { id: 'interpretation', title: 'A menor distância não decide sozinha', description: 'Considere cobertura, oportunidades, quantidade de lojas e viabilidade operacional antes de escolher um cenário.' },
+    { id: 'next', title: 'Próximo passo: desempenho', description: 'Use o Mapa de Produção para relacionar o esforço de deslocamento aos resultados comerciais da região.' },
+  ],
+};
+
+const productionMap: TutorialDefinition = {
+  id: 'production-map',
+  type: 'journey',
+  title: 'Mapa de Produção',
+  description: 'Visualize o desempenho comercial, compare regiões e encontre oportunidades.',
+  route: '/',
+  category: 'Jornadas principais',
+  version: 1,
+  recommendedOrder: 5,
+  estimatedMinutes: 5,
+  steps: [
+    { id: 'goal', title: 'Compare resultados no território', description: 'O Mapa de Produção transforma os dados do indicador escolhido em uma leitura geográfica por estado ou município.', target: T.productionPanel, openSection: 'heatmap', placement: 'right' },
+    { id: 'period', title: 'Selecione o período', description: 'Escolha um dos períodos realmente carregados pela aplicação para definir a referência da análise.', target: T.productionFilters, openSection: 'heatmap', placement: 'right' },
+    { id: 'metric', title: 'Escolha o indicador', description: 'Selecione uma produção disponível. Nome, unidade e dados vêm do serviço da aplicação.', target: T.productionFilters, openSection: 'heatmap', placement: 'right' },
+    { id: 'geography', title: 'Aprofunde a visão geográfica', description: 'Comece pelo Brasil e entre em um estado para detalhar os municípios. O painel mantém o contexto selecionado.', target: T.productionPanel, openSection: 'heatmap', placement: 'right' },
+    { id: 'colors', title: 'Entenda as cores', description: 'A legenda usa faixas calculadas com os dados atuais. Clique em uma faixa para filtrar o mapa sem inventar limites fixos.', target: T.productionLegend, openSection: 'heatmap', placement: 'top' },
+    { id: 'map', title: 'Leia estados e municípios', description: 'As áreas mais intensas concentram valores maiores dentro do recorte atual. Áreas sem dados permanecem identificáveis no contexto.', target: T.mapMain, openSection: 'heatmap', placement: 'over' },
+    { id: 'details', title: 'Consulte o detalhamento', description: 'Use os totais de lojas e municípios para abrir a visão detalhada e entender onde a produção está distribuída.', target: T.productionSummary, openSection: 'heatmap', placement: 'right' },
+    { id: 'comparison', title: 'Compare o desempenho', description: 'Troque o período ou o indicador e observe mudanças de concentração entre regiões. Faça uma comparação por vez.' },
+    { id: 'opportunities', title: 'Transforme leitura em oportunidade', description: 'Cruze baixa produção com quantidade de lojas e cobertura. O mapa aponta onde investigar; ele não substitui a análise comercial.' },
+    { id: 'next', title: 'Próximo passo: planejar ação', description: 'Depois de identificar uma região prioritária, use “Montar meu roteiro” para planejar visitas e tratar as oportunidades.' },
+  ],
+};
+
+const notifications: TutorialDefinition = {
+  id: 'notifications',
+  type: 'feature',
+  title: 'Notificações',
+  description: 'Entenda onde acompanhar missões e pendências da sua jornada.',
+  route: '/',
+  category: 'Ferramentas rápidas',
+  version: 1,
+  recommendedOrder: 6,
+  estimatedMinutes: 2,
+  isNew: true,
+  steps: [
+    { id: 'bell', title: 'Missões da jornada', description: 'O sino informa quantos alertas ainda aguardam leitura ou ação.', target: T.notifications, placement: 'bottom' },
+    { id: 'actions', title: 'Abra a ação correta', description: 'Cada notificação pode oferecer um atalho para o roteiro, a visita ou a tratativa relacionada. A ação só ocorre quando você clicar.' },
+    { id: 'center', title: 'Consulte o histórico', description: 'A Central de missões reúne mais itens e permite revisar alertas além do resumo do cabeçalho.' },
+  ],
+};
+
+export const tutorialRegistry: TutorialDefinition[] = [
+  firstSteps,
+  routeBuilder,
+  visitsAndRoutes,
+  distanceAnalysis,
+  productionMap,
+  notifications,
+].filter((tutorial) => tutorial.enabled !== false);
+
+export const onboardingTutorial = firstSteps;
+
+export function getTutorial(tutorialId: string) {
+  return tutorialRegistry.find((tutorial) => tutorial.id === tutorialId);
+}

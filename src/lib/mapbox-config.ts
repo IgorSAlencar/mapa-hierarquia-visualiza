@@ -33,10 +33,13 @@ export const MAPBOX_CONFIG = {
     min: 3.75,
     max: 22,
   },
-  /** Sensibilidade do scroll (zoom no cursor — padrão Mapbox). */
+  /**
+   * Sensibilidade nativa do Mapbox. Taxas maiores faziam um único gesto pular
+   * vários níveis e expor tiles ainda não preparados durante o zoom de saída.
+  */
   scrollZoom: {
-    wheelZoomRate: 1 / 60,
-    zoomRate: 1 / 45,
+    wheelZoomRate: 1 / 150,
+    zoomRate: 1 / 100,
   },
   /** Inclinação da câmera; relevo DEM desligado por performance. */
   interactive3d: {

@@ -738,8 +738,10 @@ export async function fetchProductionHeatmapRows({ metricId, period, user }) {
   const accessSql = applyAccessScope(request, user, 'esc', 'heatmapAuthCodFunc');
 
   const result = await request.query(`
-    -- Universo de lojas/municípios do território (independente do período/métrica).
-    SELECT
+    -- Define o território autorizado uma única vez e o reutiliza nos totais
+    -- de produção/lojas, no mapa e no painel lateral.
+    SELECT DISTINCT
+      store.CHAVE_LOJA AS sourceStoreKey,
       CASE
         WHEN store.CD_MUNIC IS NULL THEN NULL
         ELSE RIGHT(
@@ -752,10 +754,12 @@ export async function fetchProductionHeatmapRows({ metricId, period, user }) {
       LTRIM(RTRIM(CONVERT(nvarchar(100), store.CHAVE_LOJA))) AS chaveLoja
     INTO #HeatmapStoreUniverse
     FROM DATALAKE..DL_BRADESCO_EXPRESSO AS store
-    INNER JOIN MESU..CONS_DISTRIBUICAO_ENTIDADES AS esc
-      ON TRY_CONVERT(bigint, esc.COD_AG) = TRY_CONVERT(bigint, store.COD_AG_LOJA)
-    WHERE store.CD_MUNIC IS NOT NULL
-      ${accessSql};
+    WHERE EXISTS (
+      SELECT 1
+      FROM MESU..CONS_DISTRIBUICAO_ENTIDADES AS esc
+      WHERE TRY_CONVERT(bigint, esc.COD_AG) = TRY_CONVERT(bigint, store.COD_AG_LOJA)
+        ${accessSql}
+    );
 
     SELECT
       municipalityCode,
@@ -769,23 +773,15 @@ export async function fetchProductionHeatmapRows({ metricId, period, user }) {
     GROUP BY municipalityCode;
 
     SELECT DISTINCT
-      store.CHAVE_LOJA,
-      CASE
-        WHEN store.CD_MUNIC IS NULL THEN NULL
-        ELSE RIGHT(
-          REPLICATE('0', 7) + LTRIM(RTRIM(STR(ROUND(CONVERT(float, store.CD_MUNIC), 0), 20, 0))),
-          7
-        )
-      END AS municipalityCode,
-      LTRIM(RTRIM(CONVERT(nvarchar(200), store.MUNICIPIO))) AS municipalityName,
-      UPPER(LTRIM(RTRIM(CONVERT(varchar(2), store.UF)))) AS uf,
+      store.chaveLoja AS CHAVE_LOJA,
+      store.municipalityCode,
+      store.municipalityName,
+      store.uf,
       CAST(${metricExpression} AS float) AS metricValue
     INTO #ProductionHeatmapBase
     FROM DATAWAREHOUSE..TB_INDICADORES_BE AS A
-    INNER JOIN DATALAKE..DL_BRADESCO_EXPRESSO AS store
-      ON store.CHAVE_LOJA = A.CHAVE_LOJA
-    INNER JOIN MESU..CONS_DISTRIBUICAO_ENTIDADES AS esc
-      ON TRY_CONVERT(bigint, esc.COD_AG) = TRY_CONVERT(bigint, store.COD_AG_LOJA)
+    INNER JOIN #HeatmapStoreUniverse AS store
+      ON TRY_CONVERT(bigint, store.sourceStoreKey) = TRY_CONVERT(bigint, A.CHAVE_LOJA)
     LEFT JOIN (
       SELECT
         ANO_MES,
@@ -797,8 +793,7 @@ export async function fetchProductionHeatmapRows({ metricId, period, user }) {
     ) AS E
       ON TRY_CONVERT(int, E.ANO_MES) = TRY_CONVERT(int, A.PERIODO)
       AND E.CHAVE_LOJA = A.CHAVE_LOJA
-    WHERE TRY_CONVERT(int, A.PERIODO) = @period
-      ${accessSql};
+    WHERE TRY_CONVERT(int, A.PERIODO) = @period;
 
     SELECT
       prod.municipalityCode,
@@ -821,6 +816,7 @@ export async function fetchProductionHeatmapRows({ metricId, period, user }) {
     LEFT JOIN #HeatmapMunicipalityUniverse AS univ
       ON univ.municipalityCode = prod.municipalityCode
     GROUP BY prod.municipalityCode
+    HAVING COUNT(DISTINCT CASE WHEN prod.metricValue <> 0 THEN prod.CHAVE_LOJA END) > 0
     ORDER BY prod.municipalityCode;
 
     SELECT
@@ -833,7 +829,9 @@ export async function fetchProductionHeatmapRows({ metricId, period, user }) {
           AND metricValue <> 0
           THEN CHAVE_LOJA END) AS producingStores,
       COUNT(DISTINCT CASE
-        WHEN LEN(municipalityCode) = 7 AND municipalityCode NOT LIKE '%[^0-9]%'
+        WHEN LEN(municipalityCode) = 7
+          AND municipalityCode NOT LIKE '%[^0-9]%'
+          AND metricValue <> 0
           THEN municipalityCode END) AS municipalitiesWithData,
       COUNT(DISTINCT CASE
         WHEN municipalityCode IS NULL
@@ -841,7 +839,7 @@ export async function fetchProductionHeatmapRows({ metricId, period, user }) {
           OR municipalityCode LIKE '%[^0-9]%'
           THEN CHAVE_LOJA END) AS excludedStoresWithoutMunicipality,
       (SELECT ISNULL(SUM(storeCount), 0) FROM #HeatmapMunicipalityUniverse) AS storeCount,
-      -- Total oficial de municípios (IBGE), não só os que têm loja.
+      -- Total oficial de municípios (IBGE), não só os que têm loja/produção.
       (
         SELECT COUNT(*)
         FROM ibge..IBGE_POP AS ibge
@@ -937,8 +935,6 @@ export async function fetchProductionHeatmapStores({
       CAST(coord.LONGITUDE AS float) AS lon,
       CAST(coord.LATITUDE AS float) AS lat
     FROM DATALAKE..DL_BRADESCO_EXPRESSO AS store
-    INNER JOIN MESU..CONS_DISTRIBUICAO_ENTIDADES AS esc
-      ON TRY_CONVERT(bigint, esc.COD_AG) = TRY_CONVERT(bigint, store.COD_AG_LOJA)
     LEFT JOIN DATAWAREHOUSE..TB_INDICADORES_BE AS A
       ON A.CHAVE_LOJA = store.CHAVE_LOJA
       AND TRY_CONVERT(int, A.PERIODO) = @period
@@ -957,7 +953,12 @@ export async function fetchProductionHeatmapStores({
       AND E.CHAVE_LOJA = store.CHAVE_LOJA
     WHERE store.CD_MUNIC IS NOT NULL
       ${scopeFilter}
-      ${accessSql}
+      AND EXISTS (
+        SELECT 1
+        FROM MESU..CONS_DISTRIBUICAO_ENTIDADES AS esc
+        WHERE TRY_CONVERT(bigint, esc.COD_AG) = TRY_CONVERT(bigint, store.COD_AG_LOJA)
+          ${accessSql}
+      )
     ORDER BY value DESC, nome ASC
   `);
 

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { Building2, Mail, MapPin, Maximize2, Minus, Network, Store, UserRound, X } from 'lucide-react';
 import type { AgencyPopupInfo } from '@/components/AgencyInfoPopup';
 import StoreProductionChart from '@/components/StoreProductionChart';
@@ -15,6 +15,86 @@ const COMMERCIAL_LEVEL_LABEL = {
   coordenador: 'Gerente Comercial III',
   gerente_area: 'Gerente de Gestão',
 } as const;
+
+function StoreSelectedInfoCard({
+  storeSelection,
+  onDismiss,
+}: {
+  storeSelection: StorePopupInfo;
+  onDismiss: () => void;
+}) {
+  // Sem chart: card já está no tamanho final. Com chart: só libera o alvo
+  // do tutorial depois do skeleton sair e o layout estabilizar.
+  const [tutorialFocusReady, setTutorialFocusReady] = useState(!storeSelection.chaveLoja);
+
+  useEffect(() => {
+    setTutorialFocusReady(!storeSelection.chaveLoja);
+  }, [storeSelection.chaveLoja]);
+
+  const handleChartContentStable = useCallback(() => {
+    setTutorialFocusReady(true);
+  }, []);
+
+  return (
+    <div
+      data-tutorial={tutorialFocusReady ? 'map-store-selected' : undefined}
+      className="mt-2 rounded-xl border border-slate-200 bg-white shadow-md shadow-slate-900/5"
+      role="region"
+      aria-label={`Produção da loja ${storeSelection.nome}`}
+    >
+      <div className="flex items-start gap-3 p-3">
+        <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-emerald-600 text-white shadow-sm">
+          <Store className="h-5 w-5" aria-hidden />
+        </span>
+        <div className="min-w-0 flex-1">
+          <p className="text-[10px] font-semibold uppercase tracking-wide text-emerald-700">
+            Loja selecionada
+          </p>
+          <p className="mt-0.5 truncate text-sm font-semibold leading-snug text-slate-900">
+            {storeSelection.nome.trim() || 'Loja'}
+          </p>
+          <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-slate-600">
+            <span>
+              <span className="text-slate-400">Chave</span>{' '}
+              <strong className="font-semibold text-slate-700">
+                {storeSelection.chaveLoja || 'Não informada'}
+              </strong>
+            </span>
+            {storeSelection.codAg ? (
+              <span className="inline-flex items-center gap-1">
+                <Building2 className="h-3 w-3 text-slate-400" aria-hidden />
+                {storeSelection.codAg}
+                {storeSelection.nomeAg ? ` - ${storeSelection.nomeAg}` : ''}
+              </span>
+            ) : null}
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={onDismiss}
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+          aria-label="Fechar informações da loja"
+          title="Fechar informações da loja"
+        >
+          <X className="h-3.5 w-3.5" />
+        </button>
+      </div>
+
+      {storeSelection.chaveLoja ? (
+        <StoreProductionChart
+          chaveLoja={storeSelection.chaveLoja}
+          cieloM0={storeSelection.cieloM0}
+          propostaValor={storeSelection.propostaValor}
+          onContentStable={handleChartContentStable}
+        />
+      ) : (
+        <div className="border-t border-slate-100 px-3 py-4 text-xs text-slate-500">
+          A chave da loja não foi informada; não é possível consultar a produção.
+        </div>
+      )}
+    </div>
+  );
+}
 
 function CommercialSeatInfoCard({
   selection,
@@ -393,61 +473,10 @@ const MapOverlayMarkerInfoPanel: React.FC<MapOverlayMarkerInfoPanelProps> = ({
 
   if (storeSelection) {
     return (
-      <div
-        className="mt-2 rounded-xl border border-slate-200 bg-white shadow-md shadow-slate-900/5"
-        role="region"
-        aria-label={`Produção da loja ${storeSelection.nome}`}
-      >
-        <div className="flex items-start gap-3 p-3">
-          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-emerald-600 text-white shadow-sm">
-            <Store className="h-5 w-5" aria-hidden />
-          </span>
-          <div className="min-w-0 flex-1">
-            <p className="text-[10px] font-semibold uppercase tracking-wide text-emerald-700">
-              Loja selecionada
-            </p>
-            <p className="mt-0.5 truncate text-sm font-semibold leading-snug text-slate-900">
-              {storeSelection.nome.trim() || 'Loja'}
-            </p>
-            <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-slate-600">
-              <span>
-                <span className="text-slate-400">Chave</span>{' '}
-                <strong className="font-semibold text-slate-700">
-                  {storeSelection.chaveLoja || 'Não informada'}
-                </strong>
-              </span>
-              {storeSelection.codAg ? (
-                <span className="inline-flex items-center gap-1">
-                  <Building2 className="h-3 w-3 text-slate-400" aria-hidden />
-                  {storeSelection.codAg}
-                  {storeSelection.nomeAg ? ` - ${storeSelection.nomeAg}` : ''}
-                </span>
-              ) : null}
-            </div>
-          </div>
-          <button
-            type="button"
-            onClick={onDismiss}
-            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
-            aria-label="Fechar informações da loja"
-            title="Fechar informações da loja"
-          >
-            <X className="h-3.5 w-3.5" />
-          </button>
-        </div>
-
-        {storeSelection.chaveLoja ? (
-          <StoreProductionChart
-            chaveLoja={storeSelection.chaveLoja}
-            cieloM0={storeSelection.cieloM0}
-            propostaValor={storeSelection.propostaValor}
-          />
-        ) : (
-          <div className="border-t border-slate-100 px-3 py-4 text-xs text-slate-500">
-            A chave da loja não foi informada; não é possível consultar a produção.
-          </div>
-        )}
-      </div>
+      <StoreSelectedInfoCard
+        storeSelection={storeSelection}
+        onDismiss={onDismiss}
+      />
     );
   }
 

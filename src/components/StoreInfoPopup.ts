@@ -176,10 +176,10 @@ export function buildStorePopupHtml(info: StorePopupInfo): string {
       ? 'Tem'
       : 'Não tem';
   const agencyLabel = [info.codAg, info.nomeAg].filter(Boolean).join(' - ');
-  return `<article class="store-popup-card" aria-label="Informações da loja ${escapeHtml(info.nome)}">
+  return `<article class="store-popup-card" data-tutorial="map-store-hover" aria-label="Informações da loja ${escapeHtml(info.nome)}">
     <header class="store-popup-header">
       <span class="store-popup-store-icon">${icons.store}</span>
-      <span class="store-popup-heading">
+        <span class="store-popup-heading" data-tutorial-hud-anchor="identity">
         <span class="store-popup-title-row">
           <strong class="store-popup-title" title="${escapeHtml(info.nome)}">${escapeHtml(info.nome)}</strong>
           ${info.orgaoPagador ? '<span class="store-popup-payer-badge" title="Órgão pagador">Órgão pagador</span>' : ''}
@@ -188,7 +188,7 @@ export function buildStorePopupHtml(info: StorePopupInfo): string {
           <span class="store-popup-key">${info.chaveLoja ? `Chave ${escapeHtml(info.chaveLoja)}` : 'Chave não informada'}</span>
           ${agencyLabel ? `<i aria-hidden="true">•</i><span class="store-popup-agency" title="${escapeHtml(agencyLabel)}">${escapeHtml(agencyLabel)}</span>` : ''}
         </span>
-        <span class="store-popup-context">
+        <span class="store-popup-context" data-tutorial-hud-anchor="context">
           <span class="store-popup-context-group store-popup-context-group--business">
             <span title="${escapeHtml(info.tipoPosto || 'Não informado')}">${escapeHtml(info.tipoPosto || 'Não informado')}</span>
             <i aria-hidden="true">|</i>
@@ -204,12 +204,12 @@ export function buildStorePopupHtml(info: StorePopupInfo): string {
       <span class="store-popup-close" aria-hidden="true">${icons.close}</span>
     </header>
     <div class="store-popup-divider"></div>
-    <section class="store-popup-status-grid">
+    <section class="store-popup-status-grid" data-tutorial-hud-anchor="operation">
       ${statusItem(tabletModifier, icons.tablet, 'Tablet', tabletValue)}
       ${statusItem(checklistModifier, icons.checklist, 'Checklist', checklistValue)}
       ${statusItem(isBlocked ? 'danger' : 'positive', icons.lock, 'Bloqueio', isBlocked ? 'Bloqueada' : 'Não bloqueada', isBlocked ? formatDate(info.dataBloqueio) : '')}
     </section>
-    <section class="store-popup-details-grid">
+    <section class="store-popup-details-grid" data-tutorial-hud-anchor="results">
       ${detailItem(icons.cielo, 'Cielo no mês', cieloValue, info.cieloM0 ? 'cielo-positive' : 'cielo-neutral', cieloFaturamento)}
       ${detailItem(icons.proposal, 'Proposta de valor', proposalValue, info.propostaValor ? 'proposal-positive' : 'proposal-neutral')}
       ${detailItem(icons.clock, 'Última transação', formatDate(info.dataUltimaTransacao))}

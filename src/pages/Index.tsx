@@ -43,6 +43,13 @@ import { fetchSavedRoute } from '@/lib/visitRoutesApi';
 import type { VisitRouteMapView } from '@/lib/visitRouteComparison';
 import NotificationBell from '@/components/notifications/NotificationBell';
 import { cn } from '@/lib/utils';
+import { TutorialCenterButton } from '@/tutorials/TutorialCenterButton';
+import {
+  TUTORIAL_SECTION_EVENT,
+  TUTORIAL_SESSION_EVENT,
+  type TutorialSectionEventDetail,
+  type TutorialSessionEventDetail,
+} from '@/tutorials/tutorialEvents';
 
 const NAVIGATOR_PANEL_DOCK = { x: 16, y: 150 } as const;
 const DISTANCE_PANEL_TOP = 150;
@@ -621,6 +628,8 @@ const Index = () => {
     if (leavingPlanner || (section !== 'visitas' && section !== 'planejar')) clearVisitState();
     if (leavingComparar) clearCompareState();
   };
+  const handleSelectSectionRef = useRef(handleSelectSection);
+  handleSelectSectionRef.current = handleSelectSection;
 
   const handleApplyCompare = (gerenciaSel: string, coordenacaoSel: string) => {
     flushSync(() => {
@@ -863,6 +872,37 @@ const Index = () => {
     setNavigatorMinimized(false);
   };
 
+  const tutorialRestoreRef = useRef<{
+    activeSection: NavigatorSection | null;
+    navigatorMinimized: boolean;
+  } | null>(null);
+
+  useEffect(() => {
+    const onTutorialSession = (event: Event) => {
+      const detail = (event as CustomEvent<TutorialSessionEventDetail>).detail;
+      if (detail.state === 'started') {
+        tutorialRestoreRef.current = { activeSection, navigatorMinimized };
+        return;
+      }
+      const previous = tutorialRestoreRef.current;
+      tutorialRestoreRef.current = null;
+      if (!previous) return;
+      handleSelectSectionRef.current(previous.activeSection);
+      setNavigatorMinimized(previous.navigatorMinimized);
+    };
+    const onTutorialSection = (event: Event) => {
+      const { section } = (event as CustomEvent<TutorialSectionEventDetail>).detail;
+      handleSelectSectionRef.current(section);
+      setNavigatorMinimized(section === 'visitas');
+    };
+    window.addEventListener(TUTORIAL_SESSION_EVENT, onTutorialSession);
+    window.addEventListener(TUTORIAL_SECTION_EVENT, onTutorialSection);
+    return () => {
+      window.removeEventListener(TUTORIAL_SESSION_EVENT, onTutorialSession);
+      window.removeEventListener(TUTORIAL_SECTION_EVENT, onTutorialSection);
+    };
+  }, [activeSection, navigatorMinimized]);
+
   const visitasRoteirosPanel = activeSection === 'visitas' ? (
     <VisitasRoteirosPanel
       onBack={() => {
@@ -1094,10 +1134,10 @@ const Index = () => {
 
   return (
     <div className="min-h-screen bg-background">
-      <header className="border-b bg-map-surface">
+      <header className="border-b bg-map-surface" data-tutorial="app-header">
         <div className="w-full px-4 py-4">
           <div className="flex items-center gap-3">
-            <div className="flex shrink-0 items-center gap-3">
+            <div className="flex shrink-0 items-center gap-3" data-tutorial="app-identity">
               <div className="rounded-lg bg-map-primary/10 p-2">
                 <MapIcon className="h-6 w-6 text-map-primary" />
               </div>
@@ -1125,6 +1165,7 @@ const Index = () => {
                   </div>
                 </div>
                 {FEATURE_FLAGS.notifications && <NotificationBell />}
+                <TutorialCenterButton />
                 <Button type="button" variant="ghost" size="icon" onClick={() => void logout()} aria-label="Sair">
                   <LogOut className="h-4 w-4" />
                 </Button>
@@ -1136,6 +1177,7 @@ const Index = () => {
 
       <main
         data-map-workspace
+        data-tutorial="map-main-area"
         className="relative isolate h-[calc(100vh-81px)] overflow-hidden bg-slate-100"
       >
         <MapComponent

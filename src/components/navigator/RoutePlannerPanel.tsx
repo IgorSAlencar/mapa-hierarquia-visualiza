@@ -458,7 +458,7 @@ const RoutePlannerPanel: React.FC<Props> = ({
   const [resultsMinimized, setResultsMinimized] = useState(false);
   const [planningPriority, setPlanningPriority] = useState<PlanningPriority>('inteligente');
   const [originId, setOriginId] = useState('');
-  const [destination, setDestination] = useState('São Paulo');
+  const [destination, setDestination] = useState('');
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [selectedRegionKeys, setSelectedRegionKeys] = useState<string[]>([]);
   const [query, setQuery] = useState('');
@@ -607,7 +607,9 @@ const RoutePlannerPanel: React.FC<Props> = ({
           }));
         if (next.length === 0) return;
         setAgencies(next);
-        setOriginId((current) => next.some((agency) => agency.id === current) ? current : next[0].id);
+        // Mantém origem só se ainda for válida. Não pré-seleciona a primeira
+        // agência — isso pulava a tela "De onde você vai sair?" no tutorial.
+        setOriginId((current) => (next.some((agency) => agency.id === current) ? current : ''));
       })
       .catch((error) => {
         console.error('Falha ao carregar agências no planejador:', error);
@@ -1129,6 +1131,7 @@ const RoutePlannerPanel: React.FC<Props> = ({
     >
       <section
         data-route-planner-summary-dock
+        data-tutorial="routes-summary"
         aria-label="Resumo do roteiro selecionado"
         className="route-summary-dock pointer-events-auto flex w-full flex-nowrap items-center justify-start gap-2 overflow-hidden rounded-2xl border border-slate-200 bg-white p-2.5 font-sans text-slate-700 shadow-2xl shadow-slate-900/20"
       >
